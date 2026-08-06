@@ -15,6 +15,8 @@ from ui.pages.final_page import FinalPage
 from ui.pages.other_page import OtherPage
 from ui.pages.project_page import ProjectPage
 from ui.pages.residential_page import ResidentialPage
+from ui.pages.rwh_page import RWHPage
+from rwh.database import init_rwh_db
 
 
 class WaterDemandApp(ctk.CTk):
@@ -30,6 +32,7 @@ class WaterDemandApp(ctk.CTk):
         self.configure(fg_color="#F5F6FA")
 
         init_db()
+        init_rwh_db()
 
         self._build_menu()
         self._build_nav()
@@ -70,6 +73,7 @@ class WaterDemandApp(ctk.CTk):
             ("Commercial", "3. Commercial"),
             ("Other", "4. Other"),
             ("Final", "5. Report"),
+            ("RWH", "6. Rain Water Harvesting"),
         ]
         for key, label in pages:
             btn = ctk.CTkButton(
@@ -101,6 +105,13 @@ class WaterDemandApp(ctk.CTk):
         self.frames["Final"] = FinalPage(
             self.container, self.state,
             on_back=lambda: self.show_frame("Other"),
+        )
+        logo = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "logo.png")
+        self.frames["RWH"] = RWHPage(
+            self.container,
+            logo_path=logo if os.path.exists(logo) else None,
+            on_back=lambda: self.show_frame("Final"),
+            seed_project=self.state.project,
         )
         for frame in self.frames.values():
             frame.grid(row=0, column=0, sticky="nsew")

@@ -10,6 +10,7 @@ import math
 import os
 import re
 import sqlite3
+import sys
 from collections import defaultdict
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
@@ -44,6 +45,19 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(APP_DIR, "water_demand.db")
 LOGO_PATH = os.path.join(APP_DIR, "logo.png")
 JSON_SCHEMA_VERSION = "1.0"
+
+# Rain Water Harvesting module lives under water_demand_app/rwh (separate from Water Demand)
+_WDA_ROOT = os.path.join(APP_DIR, "water_demand_app")
+if _WDA_ROOT not in sys.path:
+    sys.path.insert(0, _WDA_ROOT)
+try:
+    from rwh.database import init_rwh_db
+    from ui.pages.rwh_page import RWHPage
+    RWH_AVAILABLE = True
+except Exception:
+    RWH_AVAILABLE = False
+    init_rwh_db = None  # type: ignore
+    RWHPage = None  # type: ignore
 
 
 # ==================== config/nbc_2026.py ====================
@@ -4104,7 +4118,9 @@ class WaterDemandApp(ctk.CTk):
         ("Project", "Project Details"), ("Residential", "Residential"), ("Commercial", "Commercial"),
         ("Landscape", "Landscape"), ("Swimming", "Swimming Pool"), ("HVAC", "HVAC"),
         ("UGT", "UGT / Fire Tank"), ("OHT", "OHT Details"), ("STP", "STP Summary"),
-        ("Preview", "Preview"), ("Report", "Generate Report"), ("Settings", "Settings"),
+        ("Preview", "Preview"), ("Report", "Generate Report"),
+        ("RWH", "Rain Water Harvesting"),
+        ("Settings", "Settings"),
     ]
 
     def __init__(self):
@@ -4117,6 +4133,11 @@ class WaterDemandApp(ctk.CTk):
         self.minsize(1100, 700)
         self.configure(fg_color="#F0F2F5")
         init_db()
+        if RWH_AVAILABLE and init_rwh_db is not None:
+            try:
+                init_rwh_db(DB_PATH)
+            except Exception:
+                pass
         self._sidebar()
         self.container = ctk.CTkFrame(self, fg_color="#F0F2F5")
         self.container.pack(side="right", fill="both", expand=True, padx=8, pady=8)
@@ -4136,9 +4157,15 @@ class WaterDemandApp(ctk.CTk):
                 ctk.CTkLabel(sb, image=logo_img, text="").pack(pady=(0, 5))
             except Exception:
                 pass
-        ctk.CTkLabel(sb, text="Water Demand Generator", font=("Arial", 10), text_color="white").pack(pady=(0, 15))
+        ctk.CTkLabel(sb, text="Engineering Modules", font=("Arial", 10), text_color="white").pack(pady=(0, 8))
+        # Module group labels
+        ctk.CTkLabel(sb, text="  WATER DEMAND", font=("Arial", 9, "bold"), text_color="#7F8C8D", anchor="w").pack(fill="x", padx=8, pady=(4, 2))
         self.nav_btns = {}
         for k, lbl in self.NAV:
+            if k == "RWH":
+                ctk.CTkLabel(sb, text="  RAIN WATER HARVESTING", font=("Arial", 9, "bold"), text_color="#7F8C8D", anchor="w").pack(fill="x", padx=8, pady=(10, 2))
+            if k == "Settings":
+                ctk.CTkLabel(sb, text="  SYSTEM", font=("Arial", 9, "bold"), text_color="#7F8C8D", anchor="w").pack(fill="x", padx=8, pady=(10, 2))
             b = ctk.CTkButton(sb, text=lbl, height=36, anchor="w", fg_color="transparent", hover_color=BRAND_ORANGE,
                               text_color="white", font=("Arial", 12), command=lambda x=k: self.show(x))
             b.pack(fill="x", padx=8, pady=2)
@@ -4202,6 +4229,18 @@ class WaterDemandApp(ctk.CTk):
         self.pages["Report"] = FinalPage(w, self.app_state, on_back=lambda: self.show("Preview"))
         self.pages["Report"].pack(fill="both", expand=True)
         self.wrappers["Report"] = w
+
+        if RWH_AVAILABLE and RWHPage is not None:
+            w = self._page_wrapper()
+            self.pages["RWH"] = RWHPage(
+                w,
+                logo_path=LOGO_PATH,
+                db_path=DB_PATH,
+                on_back=lambda: self.show("Report"),
+                seed_project=self.app_state.project,
+            )
+            self.pages["RWH"].pack(fill="both", expand=True)
+            self.wrappers["RWH"] = w
 
         w = self._page_wrapper()
         self.pages["Settings"] = self._settings_page(w)
@@ -4328,7 +4367,7 @@ class WaterDemandApp(ctk.CTk):
         ctk.CTkLabel(h, text="Settings", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
         ctk.CTkLabel(
             f,
-            text=f"Database: {DB_PATH}\nLogo: {LOGO_PATH}\n\nNBC-2026 Standards:\nResidential 105+30 LPCD\nLandscape 6 L/sq.m\nSTP 90% sewage",
+            text=f"Database: {DB_PATH}\nLogo: {LOGO_PATH}\n\nNBC-2026 Standards:\nResidential 105+30 LPCD\nLandscape 6 L/sq.m\nSTP 90% sewage\n\nModules:\n• Water Demand Report Generator\n• Rain Water Harvesting",
             font=("Arial", 12),
             justify="left",
         ).pack(anchor="w", padx=20, pady=10)

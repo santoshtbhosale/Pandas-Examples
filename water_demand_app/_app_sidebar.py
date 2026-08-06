@@ -8,7 +8,9 @@ class WaterDemandApp(ctk.CTk):
         ("Project", "Project Details"), ("Residential", "Residential"), ("Commercial", "Commercial"),
         ("Landscape", "Landscape"), ("Swimming", "Swimming Pool"), ("HVAC", "HVAC"),
         ("UGT", "UGT / Fire Tank"), ("OHT", "OHT Details"), ("STP", "STP Summary"),
-        ("Preview", "Preview"), ("Report", "Generate Report"), ("Settings", "Settings"),
+        ("Preview", "Preview"), ("Report", "Generate Report"),
+        ("RWH", "Rain Water Harvesting"),
+        ("Settings", "Settings"),
     ]
 
     def __init__(self):
@@ -52,10 +54,20 @@ class WaterDemandApp(ctk.CTk):
         self.pages["Swimming"] = self._form_page("Swimming Pool", self._pool_ui)
         self.pages["HVAC"] = self._form_page("HVAC Water", self._hvac_ui)
         self.pages["UGT"] = self._form_page("UGT / Fire Tank", self._ugt_ui)
-        self.pages["OHT"] = OtherPage(self.container, self.app_state, on_calculate=self._calc, on_back=lambda: self.show("UGT"))
+        self.pages["Report"] = FinalPage(self.container, self.app_state, on_back=lambda: self.show("Preview"))
         self.pages["STP"] = self._stp_page()
         self.pages["Preview"] = self._preview_page()
-        self.pages["Report"] = FinalPage(self.container, self.app_state, on_back=lambda: self.show("Preview"))
+        try:
+            from ui.pages.rwh_page import RWHPage
+            from rwh.database import init_rwh_db
+            init_rwh_db()
+            self.pages["RWH"] = RWHPage(
+                self.container,
+                seed_project=self.app_state.project,
+                on_back=lambda: self.show("Report"),
+            )
+        except Exception:
+            pass
         self.pages["Settings"] = self._settings_page()
         for p in self.pages.values():
             p.grid(row=0, column=0, sticky="nsew")
