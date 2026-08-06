@@ -1173,7 +1173,7 @@ class PDFExporter:
             pagesize=letter,
             rightMargin=20,
             leftMargin=20,
-            topMargin=20,
+            topMargin=50,
             bottomMargin=30,
         )
         story: List[Any] = []
@@ -1192,15 +1192,29 @@ class PDFExporter:
         story.extend(self._build_stp("Plot-A"))
         story.append(PageBreak())
         story.extend(self._build_stp("Plot-B"))
-        doc.build(story, onFirstPage=self._page_decorator, onLaterPages=self._page_decorator)
+        doc.build(story, onFirstPage=self._cover_page_decorator, onLaterPages=self._content_page_decorator)
 
-    def _page_decorator(self, canvas, doc) -> None:
+    def _cover_page_decorator(self, canvas, doc) -> None:
+        """Cover page: footer only (logo is embedded in cover story flow)."""
+        canvas.saveState()
+        canvas.setFont("Helvetica", 6)
+        canvas.drawCentredString(letter[0] / 2, 15, COMPANY_FOOTER)
+        canvas.restoreState()
+
+    def _content_page_decorator(self, canvas, doc) -> None:
+        """Content pages: small logo top-right, footer bottom — never overlaps engineer header."""
         canvas.saveState()
         if self.logo_path and os.path.exists(self.logo_path):
             try:
+                logo_w, logo_h = 80, 36
                 canvas.drawImage(
-                    self.logo_path, 20, letter[1] - 45, width=70, height=32,
-                    preserveAspectRatio=True, mask="auto",
+                    self.logo_path,
+                    letter[0] - logo_w - 25,
+                    letter[1] - logo_h - 18,
+                    width=logo_w,
+                    height=logo_h,
+                    preserveAspectRatio=True,
+                    mask="auto",
                 )
             except Exception:
                 pass
@@ -1247,6 +1261,21 @@ class PDFExporter:
             fontSize=7,
             fontName="Helvetica-Bold",
         )
+
+    def _content_page_start(self) -> List[Any]:
+        """Engineer header row for pages 2-8, positioned below logo area."""
+        header_table = Table(
+            [[self._eng_header(), ""]],
+            colWidths=[self.page_width - 90, 90],
+        )
+        header_table.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        return [Spacer(1, 6), header_table, Spacer(1, 8)]
 
     def _grid_style(self, header: bool = True) -> TableStyle:
         cmds = [
@@ -1345,7 +1374,7 @@ class PDFExporter:
         return story
 
     def _build_consolidated(self) -> List[Any]:
-        story: List[Any] = [self._eng_header(), Spacer(1, 5)]
+        story: List[Any] = self._content_page_start()
         story.append(self._section_bar("CONSOLIDATED STATEMENT", BRAND_DARK_GRAY))
         story.append(Spacer(1, 5))
 
@@ -1549,7 +1578,7 @@ class PDFExporter:
 
     def _build_plot_demand(self, plot_name: str) -> List[Any]:
         plot = self.results.plots[plot_name]
-        story: List[Any] = [self._eng_header(), Spacer(1, 5)]
+        story: List[Any] = self._content_page_start()
         story.append(self._section_bar(f"WATER DEMAND - {plot_name}", BRAND_DEMAND_ORANGE))
         story.append(Spacer(1, 5))
 
@@ -1711,7 +1740,7 @@ class PDFExporter:
 
     def _build_ugt_oht(self, plot_name: str) -> List[Any]:
         plot = self.results.plots[plot_name]
-        story: List[Any] = [self._eng_header(), Spacer(1, 5)]
+        story: List[Any] = self._content_page_start()
         story.append(self._section_bar(f"UGT & OHT DETAILS - {plot_name}", BRAND_UGT_TEAL))
         story.append(Spacer(1, 5))
 
@@ -1821,7 +1850,7 @@ class PDFExporter:
 
     def _build_stp(self, plot_name: str) -> List[Any]:
         plot = self.results.plots[plot_name]
-        story: List[Any] = [self._eng_header(), Spacer(1, 5)]
+        story: List[Any] = self._content_page_start()
         story.append(self._section_bar(f"STP DETAILS - {plot_name}", BRAND_STP_PURPLE))
         story.append(Spacer(1, 5))
 
