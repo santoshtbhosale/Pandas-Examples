@@ -1121,6 +1121,25 @@ def parse_project_snapshot(data: Dict[str, Any]) -> tuple:
     calculated = data.get("calculated", {})
     return project, residential, commercial, other, calculated
 
+
+def save_project_json(
+    file_path: str,
+    project: ProjectData,
+    residential: List[ResidentialWing],
+    commercial: List[CommercialUnit],
+    other: OtherDetails,
+    calculated: Optional[Dict[str, Any]] = None,
+) -> None:
+    snapshot = build_project_snapshot(project, residential, commercial, other, calculated)
+    with open(file_path, "w", encoding="utf-8") as fh:
+        json.dump(snapshot, fh, indent=2, ensure_ascii=False)
+
+
+def load_project_json(file_path: str) -> Tuple[ProjectData, List[ResidentialWing], List[CommercialUnit], OtherDetails, dict]:
+    with open(file_path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+    return parse_project_snapshot(data)
+
 # ==================== services/pdf_exporter.py ====================
 
 
@@ -1173,10 +1192,18 @@ class PDFExporter:
         story.extend(self._build_stp("Plot-A"))
         story.append(PageBreak())
         story.extend(self._build_stp("Plot-B"))
-        doc.build(story, onFirstPage=self._footer, onLaterPages=self._footer)
+        doc.build(story, onFirstPage=self._page_decorator, onLaterPages=self._page_decorator)
 
-    def _footer(self, canvas, doc) -> None:
+    def _page_decorator(self, canvas, doc) -> None:
         canvas.saveState()
+        if self.logo_path and os.path.exists(self.logo_path):
+            try:
+                canvas.drawImage(
+                    self.logo_path, 20, letter[1] - 45, width=70, height=32,
+                    preserveAspectRatio=True, mask="auto",
+                )
+            except Exception:
+                pass
         canvas.setFont("Helvetica", 6)
         canvas.drawCentredString(letter[0] / 2, 15, COMPANY_FOOTER)
         canvas.restoreState()
@@ -2537,7 +2564,16 @@ class ProjectPage(ScrollablePage):
             messagebox.showerror("Validation Error", exc.message)
 
     def refresh(self) -> None:
-        pass
+        for key, ent in self.entries.items():
+            ent.delete(0, "end")
+            val = getattr(self.state.project, key, "")
+            if key == "revision_no":
+                val = self.state.project.revision.revision_no
+            elif key == "description":
+                val = self.state.project.revision.description
+            elif key in ("prepared_by", "checked_by", "approved_by"):
+                val = getattr(self.state.project.revision, key, "")
+            ent.insert(0, str(val or ""))
 
 # ==================== ui/pages/residential_page.py ====================
 
@@ -2563,9 +2599,9 @@ class ResidentialPage(ScrollablePage):
         ).pack(pady=12)
 
         self.table_frame.pack(fill="both", expand=True, padx=15, pady=10)
-        headers = ["Plot", "Wing Name", "No. Of Flats", "Pop/Flat", "Population", ""]
+        headers = ["Plot", "Wing Name", "Flats", "Pop/Flat", "Population", "Domestic", "Flushing", "Total", ""]
         for i, h in enumerate(headers):
-            ctk.CTkLabel(self.table_frame, text=h, font=("Arial", 12, "bold")).grid(row=0, column=i, padx=5, pady=5)
+            ctk.CTkLabel(self.table_frame, text=h, font=("Arial", 11, "bold")).grid(row=0, column=i, padx=3, pady=5)
 
         if not self.state.residential:
             self._add_default_rows()
@@ -2614,42 +2650,57 @@ class ResidentialPage(ScrollablePage):
         w_ent.insert(0, wing.wing if wing else "")
         f_ent = ctk.CTkEntry(self.table_frame, width=90)
         f_ent.insert(0, str(wing.flats if wing else ""))
-        p_ent = ctk.CTkEntry(self.table_frame, width=80)
+        p_ent = ctk.CTkEntry(self.table_frame, width=70)
         p_ent.insert(0, str(wing.pop_per_flat if wing else 5))
-        pop_lbl = ctk.CTkLabel(self.table_frame, text="0", width=80)
+        pop_lbl = ctk.CTkLabel(self.table_frame, text="0", width=65)
+        dom_lbl = ctk.CTkLabel(self.table_frame, text="0", width=75)
+        flu_lbl = ctk.CTkLabel(self.table_frame, text="0", width=75)
+        tot_lbl = ctk.CTkLabel(self.table_frame, text="0", width=75)
 
         def update(*_):
             try:
                 f = int(f_ent.get() or 0)
                 p = int(p_ent.get() or 0)
-                pop_lbl.configure(text=str(f * p))
+                pop = f * p
+                dom, flu, tot = residential_demand(pop)
+                pop_lbl.configure(text=str(pop))
+                dom_lbl.configure(text=f"{dom:,}")
+                flu_lbl.configure(text=f"{flu:,}")
+                tot_lbl.configure(text=f"{tot:,}")
             except ValueError:
                 pop_lbl.configure(text="0")
+                dom_lbl.configure(text="0")
+                flu_lbl.configure(text="0")
+                tot_lbl.configure(text="0")
             self._update_subtotals()
 
         f_ent.bind("<KeyRelease>", update)
         p_ent.bind("<KeyRelease>", update)
         plot_var.trace_add("write", update)
 
-        plot_cb.grid(row=r, column=0, padx=5, pady=5)
-        w_ent.grid(row=r, column=1, padx=5, pady=5)
-        f_ent.grid(row=r, column=2, padx=5, pady=5)
-        p_ent.grid(row=r, column=3, padx=5, pady=5)
-        pop_lbl.grid(row=r, column=4, padx=5, pady=5)
+        plot_cb.grid(row=r, column=0, padx=3, pady=5)
+        w_ent.grid(row=r, column=1, padx=3, pady=5)
+        f_ent.grid(row=r, column=2, padx=3, pady=5)
+        p_ent.grid(row=r, column=3, padx=3, pady=5)
+        pop_lbl.grid(row=r, column=4, padx=3, pady=5)
+        dom_lbl.grid(row=r, column=5, padx=3, pady=5)
+        flu_lbl.grid(row=r, column=6, padx=3, pady=5)
+        tot_lbl.grid(row=r, column=7, padx=3, pady=5)
 
         def remove_row():
-            for widget in (plot_cb, w_ent, f_ent, p_ent, pop_lbl, rm_btn):
+            for widget in (plot_cb, w_ent, f_ent, p_ent, pop_lbl, dom_lbl, flu_lbl, tot_lbl, rm_btn):
                 widget.destroy()
             self.rows = [row for row in self.rows if row["row_idx"] != r]
             self._regrid()
             self._update_subtotals()
 
         rm_btn = ctk.CTkButton(self.table_frame, text="X", width=30, fg_color="#C0392B", command=remove_row)
-        rm_btn.grid(row=r, column=5, padx=5, pady=5)
+        rm_btn.grid(row=r, column=8, padx=3, pady=5)
 
         self.rows.append({
             "row_idx": r, "plot": plot_var, "wing": w_ent, "flats": f_ent,
-            "pop": p_ent, "pop_lbl": pop_lbl, "widgets": [plot_cb, w_ent, f_ent, p_ent, pop_lbl, rm_btn],
+            "pop": p_ent, "pop_lbl": pop_lbl, "dom_lbl": dom_lbl, "flu_lbl": flu_lbl, "tot_lbl": tot_lbl,
+            "widgets": [plot_cb, w_ent, f_ent, p_ent, pop_lbl, dom_lbl, flu_lbl, tot_lbl, rm_btn],
         })
         update()
 
@@ -2733,9 +2784,9 @@ class CommercialPage(ScrollablePage):
         ).pack(pady=12)
 
         self.table_frame.pack(fill="both", expand=True, padx=15, pady=10)
-        headers = ["Plot", "Block", "Type", "Floor", "Area (sq.m)", "Pop (Auto)", ""]
+        headers = ["Plot", "Block", "Type", "Floor", "Area", "Density", "Pop", "Domestic", "Flushing", "Total", ""]
         for i, h in enumerate(headers):
-            ctk.CTkLabel(self.table_frame, text=h, font=("Arial", 12, "bold")).grid(row=0, column=i, padx=4, pady=5)
+            ctk.CTkLabel(self.table_frame, text=h, font=("Arial", 10, "bold")).grid(row=0, column=i, padx=2, pady=5)
 
         if not self.state.commercial:
             self._add_default_row()
@@ -2748,7 +2799,7 @@ class CommercialPage(ScrollablePage):
         ctk.CTkButton(btn_frame, text="+ Add Commercial", command=lambda: self._add_row(), fg_color="#2980B9").grid(row=0, column=0, padx=10)
         ctk.CTkButton(btn_frame, text="<- Back", command=self.on_back, fg_color="gray").grid(row=0, column=1, padx=10)
         ctk.CTkButton(
-            btn_frame, text="Save & Next -> Other", command=self._save_and_next,
+            btn_frame, text="Save & Next -> Landscape", command=self._save_and_next,
             fg_color=BRAND_ORANGE, hover_color="#D06018"
         ).grid(row=0, column=2, padx=10)
 
@@ -2769,29 +2820,58 @@ class CommercialPage(ScrollablePage):
         type_cb = ctk.CTkComboBox(self.table_frame, values=type_values, variable=type_var, width=150)
         floor_ent = ctk.CTkEntry(self.table_frame, width=120)
         floor_ent.insert(0, unit.floor_label if unit else "")
-        area_ent = ctk.CTkEntry(self.table_frame, width=90)
+        area_ent = ctk.CTkEntry(self.table_frame, width=70)
         area_ent.insert(0, str(unit.area_sqm if unit else ""))
-        pop_var = ctk.StringVar(value="0")
-        pop_lbl = ctk.CTkLabel(self.table_frame, textvariable=pop_var, width=70)
+        density_ent = ctk.CTkEntry(self.table_frame, width=55)
+        spec_init = COMMERCIAL_TYPES.get(unit.comm_type if unit else "Shop - Ground Floor", COMMERCIAL_TYPES["Shop - Ground Floor"])
+        density_ent.insert(0, str(unit.density_override if unit and unit.density_override > 0 else spec_init.density_divisor))
+        pop_lbl = ctk.CTkLabel(self.table_frame, text="0", width=45)
+        dom_lbl = ctk.CTkLabel(self.table_frame, text="0", width=65)
+        flu_lbl = ctk.CTkLabel(self.table_frame, text="0", width=65)
+        tot_lbl = ctk.CTkLabel(self.table_frame, text="0", width=65)
 
         def update_pop(*_):
             try:
                 area = float(area_ent.get() or 0)
                 spec = COMMERCIAL_TYPES.get(type_var.get(), COMMERCIAL_TYPES["Shop - Ground Floor"])
-                pop_var.set(str(commercial_population(area, spec)))
+                density_val = float(density_ent.get() or spec.density_divisor)
+                if density_val <= 0:
+                    density_val = spec.density_divisor
+                raw = area / density_val
+                pop = int(math.ceil(raw)) if spec.use_ceil else int(round(raw))
+                dom, flu, tot = commercial_demand(pop, spec)
+                pop_lbl.configure(text=str(pop))
+                dom_lbl.configure(text=f"{dom:,}")
+                flu_lbl.configure(text=f"{flu:,}")
+                tot_lbl.configure(text=f"{tot:,}")
             except ValueError:
-                pop_var.set("0")
+                pop_lbl.configure(text="0")
+                dom_lbl.configure(text="0")
+                flu_lbl.configure(text="0")
+                tot_lbl.configure(text="0")
+
+        def on_type_change(*_):
+            spec = COMMERCIAL_TYPES.get(type_var.get(), COMMERCIAL_TYPES["Shop - Ground Floor"])
+            if type_var.get() != "Custom":
+                density_ent.delete(0, "end")
+                density_ent.insert(0, str(spec.density_divisor))
+            update_pop()
 
         area_ent.bind("<KeyRelease>", update_pop)
-        type_var.trace_add("write", update_pop)
+        density_ent.bind("<KeyRelease>", update_pop)
+        type_var.trace_add("write", on_type_change)
         update_pop()
 
-        plot_cb.grid(row=r, column=0, padx=4, pady=5)
-        block_ent.grid(row=r, column=1, padx=4, pady=5)
-        type_cb.grid(row=r, column=2, padx=4, pady=5)
-        floor_ent.grid(row=r, column=3, padx=4, pady=5)
-        area_ent.grid(row=r, column=4, padx=4, pady=5)
-        pop_lbl.grid(row=r, column=5, padx=4, pady=5)
+        plot_cb.grid(row=r, column=0, padx=2, pady=5)
+        block_ent.grid(row=r, column=1, padx=2, pady=5)
+        type_cb.grid(row=r, column=2, padx=2, pady=5)
+        floor_ent.grid(row=r, column=3, padx=2, pady=5)
+        area_ent.grid(row=r, column=4, padx=2, pady=5)
+        density_ent.grid(row=r, column=5, padx=2, pady=5)
+        pop_lbl.grid(row=r, column=6, padx=2, pady=5)
+        dom_lbl.grid(row=r, column=7, padx=2, pady=5)
+        flu_lbl.grid(row=r, column=8, padx=2, pady=5)
+        tot_lbl.grid(row=r, column=9, padx=2, pady=5)
 
         def remove_row():
             for w in row_data["widgets"]:
@@ -2799,13 +2879,14 @@ class CommercialPage(ScrollablePage):
             self.rows = [row for row in self.rows if row["row_idx"] != r]
             self._regrid()
 
-        rm_btn = ctk.CTkButton(self.table_frame, text="X", width=30, fg_color="#C0392B", command=remove_row)
-        rm_btn.grid(row=r, column=6, padx=4, pady=5)
+        rm_btn = ctk.CTkButton(self.table_frame, text="X", width=28, fg_color="#C0392B", command=remove_row)
+        rm_btn.grid(row=r, column=10, padx=2, pady=5)
 
         row_data = {
             "row_idx": r, "plot": plot_var, "block": block_ent, "type": type_var,
-            "floor": floor_ent, "area": area_ent, "pop_var": pop_var,
-            "widgets": [plot_cb, block_ent, type_cb, floor_ent, area_ent, pop_lbl, rm_btn],
+            "floor": floor_ent, "area": area_ent, "density": density_ent,
+            "pop_lbl": pop_lbl, "dom_lbl": dom_lbl, "flu_lbl": flu_lbl, "tot_lbl": tot_lbl,
+            "widgets": [plot_cb, block_ent, type_cb, floor_ent, area_ent, density_ent, pop_lbl, dom_lbl, flu_lbl, tot_lbl, rm_btn],
         }
         self.rows.append(row_data)
 
@@ -2813,7 +2894,7 @@ class CommercialPage(ScrollablePage):
         for i, row in enumerate(self.rows, 1):
             row["row_idx"] = i
             for j, widget in enumerate(row["widgets"]):
-                widget.grid(row=i, column=j, padx=4, pady=5)
+                widget.grid(row=i, column=j, padx=2, pady=5)
 
     def _save_and_next(self) -> None:
         units: list = []
@@ -2821,12 +2902,14 @@ class CommercialPage(ScrollablePage):
             for idx, row in enumerate(self.rows):
                 area = validate_positive_float(row["area"].get(), "Area (sq.m)", allow_zero=False)
                 if area > 0:
+                    density_override = float(row["density"].get() or 0)
                     units.append(CommercialUnit(
                         plot=row["plot"].get(),
                         block=validate_required(row["block"].get(), "Block"),
                         comm_type=row["type"].get(),
                         floor_label=row["floor"].get().strip(),
                         area_sqm=area,
+                        density_override=density_override if row["type"].get() == "Custom" else 0,
                         sort_order=idx,
                     ))
             self.state.commercial = units
@@ -2835,7 +2918,20 @@ class CommercialPage(ScrollablePage):
             messagebox.showerror("Validation Error", exc.message)
 
     def refresh(self) -> None:
-        pass
+        for row in self.rows:
+            try:
+                area = float(row["area"].get() or 0)
+                spec = COMMERCIAL_TYPES.get(row["type"].get(), COMMERCIAL_TYPES["Shop - Ground Floor"])
+                density_val = float(row["density"].get() or spec.density_divisor)
+                raw = area / density_val if density_val > 0 else 0
+                pop = int(math.ceil(raw)) if spec.use_ceil else int(round(raw))
+                dom, flu, tot = commercial_demand(pop, spec)
+                row["pop_lbl"].configure(text=str(pop))
+                row["dom_lbl"].configure(text=f"{dom:,}")
+                row["flu_lbl"].configure(text=f"{flu:,}")
+                row["tot_lbl"].configure(text=f"{tot:,}")
+            except (ValueError, KeyError):
+                continue
 
 # ==================== ui/pages/other_page.py ====================
 
@@ -2972,7 +3068,23 @@ class OtherPage(ScrollablePage):
             messagebox.showerror("Validation Error", exc.message)
 
     def refresh(self) -> None:
-        pass
+        for plot, ent in getattr(self, "entries", {}).items():
+            if "landscape" in plot:
+                p = "Plot-A" if "a" in plot else "Plot-B"
+                ent.delete(0, "end")
+                ent.insert(0, str(self.state.other.landscape_area.get(p, 0)))
+            elif "pool" in plot:
+                p = "Plot-A" if "a" in plot else "Plot-B"
+                ent.delete(0, "end")
+                ent.insert(0, str(int(self.state.other.swimming_pool.get(p, 0))))
+            elif "hvac" in plot:
+                p = "Plot-A" if "a" in plot else "Plot-B"
+                ent.delete(0, "end")
+                ent.insert(0, str(int(self.state.other.hvac_water.get(p, 0))))
+            elif "fire" in plot:
+                p = "Plot-A" if "a" in plot else "Plot-B"
+                ent.delete(0, "end")
+                ent.insert(0, str(int(self.state.other.fire_tank.get(p, 0))))
 
 # ==================== ui/pages/final_page.py ====================
 
@@ -3043,7 +3155,13 @@ class FinalPage(ScrollablePage):
 
     def _ensure_results(self) -> bool:
         if not self.state.results:
-            messagebox.showwarning("No Data", "Please calculate first from the Other Details page.")
+            try:
+                self.state.run_calculations()
+            except Exception as exc:
+                messagebox.showerror("Calculation Error", str(exc))
+                return False
+        if not self.state.results:
+            messagebox.showwarning("No Data", "Please enter project data and calculate first.")
             return False
         return True
 
@@ -3064,8 +3182,8 @@ class FinalPage(ScrollablePage):
             return
 
         def do_export():
-            logo = os.path.join(APP_DIR, "assets", "logo.png")
-            export_pdf(file_path, self.state.project, self.state.results, logo if os.path.exists(logo) else None)
+            logo = LOGO_PATH if os.path.exists(LOGO_PATH) else None
+            export_pdf(file_path, self.state.project, self.state.results, logo)
 
         if safe_execute(do_export, lambda msg: messagebox.showerror("PDF Error", msg)):
             messagebox.showinfo("Success", "8-Page Professional PDF Exported Successfully!")
@@ -3158,6 +3276,13 @@ class WaterDemandApp(ctk.CTk):
         sb.pack(side="left", fill="y")
         sb.pack_propagate(False)
         ctk.CTkLabel(sb, text="AMERICAN EDGE\nENGINEERS", font=("Arial", 14, "bold"), text_color=BRAND_ORANGE, justify="center").pack(pady=(20, 5))
+        if os.path.exists(LOGO_PATH):
+            try:
+                from PIL import Image as PILImage
+                logo_img = ctk.CTkImage(light_image=PILImage.open(LOGO_PATH), size=(160, 70))
+                ctk.CTkLabel(sb, image=logo_img, text="").pack(pady=(0, 5))
+            except Exception:
+                pass
         ctk.CTkLabel(sb, text="Water Demand Generator", font=("Arial", 10), text_color="white").pack(pady=(0, 15))
         self.nav_btns = {}
         for k, lbl in self.NAV:
