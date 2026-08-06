@@ -2294,7 +2294,8 @@ class AppState:
 
 class ScrollablePage(ctk.CTkScrollableFrame):
     def __init__(self, master, **kwargs) -> None:
-        kwargs.setdefault("fg_color", "transparent")
+        kwargs.setdefault("fg_color", "#FFFFFF")
+        kwargs.setdefault("corner_radius", 0)
         super().__init__(master, **kwargs)
 
 # ==================== ui/components/preview_dialog.py ====================
@@ -2938,6 +2939,182 @@ class CommercialPage(ScrollablePage):
 
 
 
+class OHTPage(ScrollablePage):
+    """Dedicated OHT Details page — overhead tank sizing per wing/block."""
+
+    def __init__(self, master, state: AppState, on_calculate, on_back) -> None:
+        super().__init__(master)
+        self.state = state
+        self.on_calculate = on_calculate
+        self.on_back = on_back
+        self.oht_rows: list = []
+        self.oht_frame = ctk.CTkFrame(self, fg_color="#FFFFFF")
+        self._build()
+
+    def _build(self) -> None:
+        header = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=8)
+        header.pack(fill="x", padx=10, pady=(5, 10))
+        ctk.CTkLabel(
+            header, text="OHT Details (Overhead Tank)", font=("Arial", 20, "bold"), text_color="white"
+        ).pack(pady=12)
+
+        info = ctk.CTkLabel(
+            self,
+            text="Enter overhead tank capacities per wing/block. Use Auto-Fill to populate from residential & commercial data.",
+            font=("Arial", 12),
+            text_color="#555555",
+            wraplength=700,
+        )
+        info.pack(padx=20, pady=(5, 10))
+
+        btn_top = ctk.CTkFrame(self, fg_color="transparent")
+        btn_top.pack(fill="x", padx=15, pady=5)
+        ctk.CTkButton(
+            btn_top, text="Auto-Fill from Wings & Commercial", fg_color="#2980B9",
+            command=self._auto_fill,
+        ).pack(side="left", padx=5)
+        ctk.CTkButton(btn_top, text="+ Add OHT Row", fg_color="#27AE60", command=lambda: self._add_oht_row()).pack(side="left", padx=5)
+
+        self.oht_frame.pack(fill="both", expand=True, padx=15, pady=5)
+        headers = ["Plot", "Wing / Block", "Domestic (KLD)", "Flushing (KLD)", "Fire Break (KLD)", "Fire OHT (KLD)", ""]
+        for i, h in enumerate(headers):
+            ctk.CTkLabel(self.oht_frame, text=h, font=("Arial", 12, "bold")).grid(row=0, column=i, padx=4, pady=6)
+
+        if self.state.other.oht_details:
+            for oht in self.state.other.oht_details:
+                self._add_oht_row(oht)
+        else:
+            self._auto_fill()
+
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(pady=15)
+        ctk.CTkButton(btn_frame, text="<- Back", command=self.on_back, fg_color="gray", width=100).grid(row=0, column=0, padx=10)
+        ctk.CTkButton(
+            btn_frame, text="Save & Calculate", command=self._save_and_calculate,
+            fg_color=BRAND_ORANGE, hover_color="#D06018", width=180,
+        ).grid(row=0, column=1, padx=10)
+        ctk.CTkButton(
+            btn_frame, text="Continue to STP ->", command=self._save_and_go_stp,
+            fg_color="#8E44AD", width=160,
+        ).grid(row=0, column=2, padx=10)
+
+    def _clear_rows(self) -> None:
+        for row in self.oht_rows:
+            for w in row.get("widgets", []):
+                w.destroy()
+        self.oht_rows.clear()
+
+    def _auto_fill(self) -> None:
+        self._clear_rows()
+        for wing in self.state.residential:
+            if not wing.wing:
+                continue
+            pop = wing.population
+            dom_kld = round(pop * RES_DOMESTIC_LPCD / 1000.0, 2)
+            flu_kld = round(pop * RES_FLUSHING_LPCD / 1000.0, 2)
+            self._add_oht_row(OHTDetail(
+                plot=wing.plot, wing=wing.wing,
+                domestic_kld=dom_kld, flushing_kld=flu_kld,
+                fire_break_kld=0.0, fire_oht_kld=20.0 if "WING" in wing.wing.upper() else 0.0,
+            ))
+        blocks: Dict[str, Dict[str, Any]] = {}
+        for unit in self.state.commercial:
+            key = f"{unit.plot}|{unit.block}"
+            if key not in blocks:
+                blocks[key] = {"plot": unit.plot, "name": unit.block, "dom": 0.0, "flu": 0.0}
+            spec = unit.type_spec()
+            pop = unit.auto_population
+            blocks[key]["dom"] += pop * spec.domestic_lpcd / 1000.0
+            blocks[key]["flu"] += pop * spec.flushing_lpcd / 1000.0
+        for data in blocks.values():
+            self._add_oht_row(OHTDetail(
+                plot=data["plot"], wing=data["name"],
+                domestic_kld=round(data["dom"], 2), flushing_kld=round(data["flu"], 2),
+                fire_break_kld=0.0, fire_oht_kld=20.0,
+            ))
+        if not self.oht_rows:
+            self._add_oht_row()
+
+    def _add_oht_row(self, oht: OHTDetail | None = None) -> None:
+        r = len(self.oht_rows) + 1
+        plot_var = ctk.StringVar(value=oht.plot if oht else "Plot-A")
+        plot_cb = ctk.CTkComboBox(self.oht_frame, values=["Plot-A", "Plot-B"], variable=plot_var, width=95)
+        wing_ent = ctk.CTkEntry(self.oht_frame, width=130)
+        wing_ent.insert(0, oht.wing if oht else "")
+        dom_ent = ctk.CTkEntry(self.oht_frame, width=100)
+        dom_ent.insert(0, str(oht.domestic_kld if oht else ""))
+        flu_ent = ctk.CTkEntry(self.oht_frame, width=100)
+        flu_ent.insert(0, str(oht.flushing_kld if oht else ""))
+        fb_ent = ctk.CTkEntry(self.oht_frame, width=100)
+        fb_ent.insert(0, str(oht.fire_break_kld if oht else ""))
+        fo_ent = ctk.CTkEntry(self.oht_frame, width=100)
+        fo_ent.insert(0, str(oht.fire_oht_kld if oht else ""))
+
+        plot_cb.grid(row=r, column=0, padx=4, pady=4)
+        wing_ent.grid(row=r, column=1, padx=4, pady=4)
+        dom_ent.grid(row=r, column=2, padx=4, pady=4)
+        flu_ent.grid(row=r, column=3, padx=4, pady=4)
+        fb_ent.grid(row=r, column=4, padx=4, pady=4)
+        fo_ent.grid(row=r, column=5, padx=4, pady=4)
+
+        def remove():
+            for w in widgets:
+                w.destroy()
+            self.oht_rows = [row for row in self.oht_rows if row["idx"] != r]
+            self._regrid_oht()
+
+        rm_btn = ctk.CTkButton(self.oht_frame, text="X", width=32, fg_color="#C0392B", command=remove)
+        rm_btn.grid(row=r, column=6, padx=4, pady=4)
+        widgets = [plot_cb, wing_ent, dom_ent, flu_ent, fb_ent, fo_ent, rm_btn]
+        self.oht_rows.append({
+            "idx": r, "plot": plot_var, "wing": wing_ent,
+            "dom": dom_ent, "flu": flu_ent, "fb": fb_ent, "fo": fo_ent,
+            "widgets": widgets,
+        })
+
+    def _regrid_oht(self) -> None:
+        for i, row in enumerate(self.oht_rows, 1):
+            row["idx"] = i
+            for j, widget in enumerate(row["widgets"]):
+                widget.grid(row=i, column=j, padx=4, pady=4)
+
+    def _collect_oht(self) -> List[OHTDetail]:
+        oht_list: List[OHTDetail] = []
+        for row in self.oht_rows:
+            wing = row["wing"].get().strip()
+            if wing:
+                oht_list.append(OHTDetail(
+                    plot=row["plot"].get(),
+                    wing=wing,
+                    domestic_kld=validate_positive_float(row["dom"].get(), f"OHT Domestic ({wing})"),
+                    flushing_kld=validate_positive_float(row["flu"].get(), f"OHT Flushing ({wing})"),
+                    fire_break_kld=validate_positive_float(row["fb"].get(), f"OHT Fire Break ({wing})"),
+                    fire_oht_kld=validate_positive_float(row["fo"].get(), f"OHT Fire OHT ({wing})"),
+                ))
+        return oht_list
+
+    def _save_and_calculate(self) -> None:
+        try:
+            self.state.other.oht_details = self._collect_oht()
+            self.on_calculate()
+            messagebox.showinfo("Calculated", "OHT details saved and calculations updated.")
+        except ValidationError as exc:
+            messagebox.showerror("Validation Error", exc.message)
+
+    def _save_and_go_stp(self) -> None:
+        try:
+            self.state.other.oht_details = self._collect_oht()
+            self.on_calculate()
+            top = self.winfo_toplevel()
+            if hasattr(top, "show"):
+                top.show("STP")
+        except ValidationError as exc:
+            messagebox.showerror("Validation Error", exc.message)
+
+    def refresh(self) -> None:
+        pass
+
+
 class OtherPage(ScrollablePage):
     def __init__(self, master, state: AppState, on_calculate, on_back) -> None:
         super().__init__(master)
@@ -3265,7 +3442,7 @@ class WaterDemandApp(ctk.CTk):
         self.configure(fg_color="#F0F2F5")
         init_db()
         self._sidebar()
-        self.container = ctk.CTkFrame(self, fg_color="transparent")
+        self.container = ctk.CTkFrame(self, fg_color="#F0F2F5")
         self.container.pack(side="right", fill="both", expand=True, padx=8, pady=8)
         self.pages = {}
         self._pages()
@@ -3294,29 +3471,77 @@ class WaterDemandApp(ctk.CTk):
         ctk.CTkButton(sb, text="Open Project", fg_color="#2980B9", command=self._open_db).pack(side="bottom", fill="x", padx=10, pady=4)
         ctk.CTkButton(sb, text="New Project", fg_color="#27AE60", command=self._new).pack(side="bottom", fill="x", padx=10, pady=(4, 15))
 
-    def _pages(self):
-        self.pages["Project"] = ProjectPage(self.container, self.app_state, on_next=lambda: self.show("Residential"))
-        self.pages["Residential"] = ResidentialPage(self.container, self.app_state, on_next=lambda: self.show("Commercial"), on_back=lambda: self.show("Project"))
-        self.pages["Commercial"] = CommercialPage(self.container, self.app_state, on_next=lambda: self.show("Landscape"), on_back=lambda: self.show("Residential"))
-        self.pages["Landscape"] = self._form_page("Landscape (NBC-2026)", self._landscape_ui)
-        self.pages["Swimming"] = self._form_page("Swimming Pool", self._pool_ui)
-        self.pages["HVAC"] = self._form_page("HVAC Water", self._hvac_ui)
-        self.pages["UGT"] = self._form_page("UGT / Fire Tank", self._ugt_ui)
-        self.pages["OHT"] = OtherPage(self.container, self.app_state, on_calculate=self._calc, on_back=lambda: self.show("UGT"))
-        self.pages["STP"] = self._stp_page()
-        self.pages["Preview"] = self._preview_page()
-        self.pages["Report"] = FinalPage(self.container, self.app_state, on_back=lambda: self.show("Preview"))
-        self.pages["Settings"] = self._settings_page()
-        for p in self.pages.values():
-            p.grid(row=0, column=0, sticky="nsew")
+    def _page_wrapper(self) -> ctk.CTkFrame:
+        return ctk.CTkFrame(self.container, fg_color="#FFFFFF", corner_radius=0)
 
-    def _form_page(self, title, builder):
-        f = ScrollablePage(self.container)
+    def _pages(self):
+        self.wrappers: Dict[str, ctk.CTkFrame] = {}
+        self.pages = {}
+
+        w = self._page_wrapper()
+        self.pages["Project"] = ProjectPage(w, self.app_state, on_next=lambda: self.show("Residential"))
+        self.pages["Project"].pack(fill="both", expand=True)
+        self.wrappers["Project"] = w
+
+        w = self._page_wrapper()
+        self.pages["Residential"] = ResidentialPage(w, self.app_state, on_next=lambda: self.show("Commercial"), on_back=lambda: self.show("Project"))
+        self.pages["Residential"].pack(fill="both", expand=True)
+        self.wrappers["Residential"] = w
+
+        w = self._page_wrapper()
+        self.pages["Commercial"] = CommercialPage(w, self.app_state, on_next=lambda: self.show("Landscape"), on_back=lambda: self.show("Residential"))
+        self.pages["Commercial"].pack(fill="both", expand=True)
+        self.wrappers["Commercial"] = w
+
+        w = self._page_wrapper()
+        self.pages["Landscape"] = self._form_page(w, "Landscape (NBC-2026)", self._landscape_ui)
+        self.wrappers["Landscape"] = w
+
+        w = self._page_wrapper()
+        self.pages["Swimming"] = self._form_page(w, "Swimming Pool", self._pool_ui)
+        self.wrappers["Swimming"] = w
+
+        w = self._page_wrapper()
+        self.pages["HVAC"] = self._form_page(w, "HVAC Water", self._hvac_ui)
+        self.wrappers["HVAC"] = w
+
+        w = self._page_wrapper()
+        self.pages["UGT"] = self._form_page(w, "UGT / Fire Tank", self._ugt_ui)
+        self.wrappers["UGT"] = w
+
+        w = self._page_wrapper()
+        self.pages["OHT"] = OHTPage(w, self.app_state, on_calculate=self._calc, on_back=lambda: self.show("UGT"))
+        self.pages["OHT"].pack(fill="both", expand=True)
+        self.wrappers["OHT"] = w
+
+        w = self._page_wrapper()
+        self.pages["STP"] = self._stp_page(w)
+        self.wrappers["STP"] = w
+
+        w = self._page_wrapper()
+        self.pages["Preview"] = self._preview_page(w)
+        self.wrappers["Preview"] = w
+
+        w = self._page_wrapper()
+        self.pages["Report"] = FinalPage(w, self.app_state, on_back=lambda: self.show("Preview"))
+        self.pages["Report"].pack(fill="both", expand=True)
+        self.wrappers["Report"] = w
+
+        w = self._page_wrapper()
+        self.pages["Settings"] = self._settings_page(w)
+        self.wrappers["Settings"] = w
+
+        for wrapper in self.wrappers.values():
+            wrapper.place_forget()
+
+    def _form_page(self, parent, title, builder):
+        f = ScrollablePage(parent, fg_color="#FFFFFF")
+        f.pack(fill="both", expand=True)
         h = ctk.CTkFrame(f, fg_color=BRAND_NAVY, corner_radius=8)
         h.pack(fill="x", padx=5, pady=5)
         ctk.CTkLabel(h, text=title, font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
         builder(f)
-        return f
+        return parent
 
     def _landscape_ui(self, p):
         self._le = {}
@@ -3381,15 +3606,16 @@ class WaterDemandApp(ctk.CTk):
         for plot, e in entries.items():
             target[plot] = float(e.get() or 0)
 
-    def _stp_page(self):
-        f = ScrollablePage(self.container)
+    def _stp_page(self, parent):
+        f = ScrollablePage(parent, fg_color="#FFFFFF")
+        f.pack(fill="both", expand=True)
         h = ctk.CTkFrame(f, fg_color=BRAND_NAVY, corner_radius=8)
         h.pack(fill="x", padx=5, pady=5)
         ctk.CTkLabel(h, text="STP Summary", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
         self.stp_box = ctk.CTkTextbox(f, height=400, font=("Courier", 11))
         self.stp_box.pack(fill="both", expand=True, padx=15, pady=10)
         ctk.CTkButton(f, text="Calculate STP", fg_color=BRAND_ORANGE, command=self._refresh_stp).pack(pady=10)
-        return f
+        return parent
 
     def _refresh_stp(self):
         self._calc()
@@ -3408,17 +3634,19 @@ class WaterDemandApp(ctk.CTk):
         self.stp_box.delete("1.0", "end")
         self.stp_box.insert("1.0", "\n".join(lines))
 
-    def _preview_page(self):
-        f = ScrollablePage(self.container)
+    def _preview_page(self, parent):
+        f = ScrollablePage(parent, fg_color="#FFFFFF")
+        f.pack(fill="both", expand=True)
         h = ctk.CTkFrame(f, fg_color=BRAND_NAVY, corner_radius=8)
         h.pack(fill="x", padx=5, pady=5)
         ctk.CTkLabel(h, text="Report Preview (8 Pages)", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
         ctk.CTkButton(f, text="Calculate & Open Preview", fg_color="#8E44AD", height=42, command=self._open_preview).pack(pady=20)
         ctk.CTkButton(f, text="Go to Generate Report", fg_color=BRAND_ORANGE, height=38, command=lambda: (self._calc(), self.show("Report"))).pack(pady=8)
-        return f
+        return parent
 
-    def _settings_page(self):
-        f = ScrollablePage(self.container)
+    def _settings_page(self, parent):
+        f = ScrollablePage(parent, fg_color="#FFFFFF")
+        f.pack(fill="both", expand=True)
         h = ctk.CTkFrame(f, fg_color=BRAND_NAVY, corner_radius=8)
         h.pack(fill="x", padx=5, pady=5)
         ctk.CTkLabel(h, text="Settings", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
@@ -3430,12 +3658,20 @@ class WaterDemandApp(ctk.CTk):
         ).pack(anchor="w", padx=20, pady=10)
         ctk.CTkButton(f, text="Export JSON", command=self._exp_json).pack(pady=8)
         ctk.CTkButton(f, text="Import JSON", command=self._imp_json).pack(pady=8)
-        return f
+        return parent
 
-    def show(self, name):
-        self.pages[name].tkraise()
-        if hasattr(self.pages[name], "refresh"):
-            self.pages[name].refresh()
+    def show(self, name: str) -> None:
+        if name not in self.wrappers:
+            return
+        for key, wrapper in self.wrappers.items():
+            if key == name:
+                wrapper.place(relx=0, rely=0, relwidth=1, relheight=1)
+                wrapper.lift()
+            else:
+                wrapper.place_forget()
+        page = self.pages.get(name)
+        if page and hasattr(page, "refresh"):
+            page.refresh()
         for k, b in self.nav_btns.items():
             b.configure(fg_color=BRAND_ORANGE if k == name else "transparent")
 
@@ -3445,6 +3681,10 @@ class WaterDemandApp(ctk.CTk):
         except Exception as ex:
             messagebox.showerror("Error", str(ex))
 
+    def _calc_and_show_stp(self):
+        self._calc()
+        self.show("STP")
+
     def _open_preview(self):
         self._calc()
         if self.app_state.results:
@@ -3453,8 +3693,8 @@ class WaterDemandApp(ctk.CTk):
     def _new(self):
         if messagebox.askyesno("New", "Start new project?"):
             self.app_state = AppState()
-            for p in self.pages.values():
-                p.destroy()
+            for wrapper in self.wrappers.values():
+                wrapper.destroy()
             self._pages()
             self.show("Project")
 
