@@ -22,10 +22,23 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter
+from reportlab.lib.pagesizes import letter, landscape as pagesize_landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
-from reportlab.platypus import Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import (
+    BaseDocTemplate,
+    Frame,
+    Image,
+    KeepTogether,
+    NextPageTemplate,
+    PageBreak,
+    PageTemplate,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(APP_DIR, "water_demand.db")
@@ -1141,9 +1154,20 @@ def load_project_json(file_path: str) -> Tuple[ProjectData, List[ResidentialWing
     return parse_project_snapshot(data)
 
 # ==================== services/pdf_exporter.py ====================
+"""ReportLab PDF exporter — landscape pages 1-4, portrait pages 5-8, matching reference layout."""
 
 
+# PDF layout colors (matched to reference Excel export)
+PDF_BLUE_BANNER = colors.Color(0.773, 0.851, 0.945)  # cover / consolidated title
+PDF_BLUE_HEADER = colors.Color(0.863, 0.902, 0.945)  # table headers / section bars
+PDF_BLUE_SUBTOTAL = colors.Color(0.553, 0.706, 0.886)
+PDF_PEACH_TITLE = colors.Color(0.902, 0.722, 0.718)
+PDF_ORANGE_PLOT = colors.Color(0.969, 0.588, 0.275)
+PDF_GRAY_ROW = colors.Color(0.949, 0.949, 0.949)
+PDF_NOTE_RED = colors.Color(1.0, 0.0, 0.0)
 
+PAGE_LANDSCAPE = pagesize_landscape(letter)  # 792 x 612
+PAGE_PORTRAIT = letter  # 612 x 792
 
 
 class PDFExporter:
@@ -1156,34 +1180,73 @@ class PDFExporter:
         self.project = project
         self.results = results
         self.logo_path = logo_path or self._default_logo_path()
+        self.footer_banner_path = self._default_footer_path()
         self.styles = getSampleStyleSheet()
-        self.page_width = letter[0] - 40
+        self._page_mode = "cover"
 
     def _default_logo_path(self) -> Optional[str]:
-        base = APP_DIR
         for name in ("logo.png", "logo.jpg"):
-            path = os.path.join(base, name)
+            path = os.path.join(APP_DIR, name)
             if os.path.exists(path):
                 return path
         return None
 
+    def _default_footer_path(self) -> Optional[str]:
+        path = os.path.join(APP_DIR, "footer_banner.png")
+        return path if os.path.exists(path) else None
+
     def export(self, file_path: str) -> None:
-        doc = SimpleDocTemplate(
+        doc = BaseDocTemplate(
             file_path,
-            pagesize=letter,
-            rightMargin=20,
-            leftMargin=20,
-            topMargin=50,
-            bottomMargin=30,
+            pagesize=PAGE_LANDSCAPE,
+            leftMargin=0,
+            rightMargin=0,
+            topMargin=0,
+            bottomMargin=0,
         )
+
+        # Landscape frames (pages 1-4)
+        lw, lh = PAGE_LANDSCAPE
+        cover_frame = Frame(36, 70, lw - 72, lh - 100, id="cover", showBoundary=0)
+        land_frame = Frame(28, 44, lw - 56, lh - 92, id="land", showBoundary=0)
+
+        # Portrait frames (pages 5-8)
+        pw, ph = PAGE_PORTRAIT
+        port_frame = Frame(42, 48, pw - 84, ph - 108, id="port", showBoundary=0)
+
+        doc.addPageTemplates(
+            [
+                PageTemplate(
+                    id="cover",
+                    frames=[cover_frame],
+                    pagesize=PAGE_LANDSCAPE,
+                    onPage=self._on_cover,
+                ),
+                PageTemplate(
+                    id="landscape",
+                    frames=[land_frame],
+                    pagesize=PAGE_LANDSCAPE,
+                    onPage=self._on_landscape,
+                ),
+                PageTemplate(
+                    id="portrait",
+                    frames=[port_frame],
+                    pagesize=PAGE_PORTRAIT,
+                    onPage=self._on_portrait,
+                ),
+            ]
+        )
+
         story: List[Any] = []
         story.extend(self._build_cover())
+        story.append(NextPageTemplate("landscape"))
         story.append(PageBreak())
         story.extend(self._build_consolidated())
         story.append(PageBreak())
         story.extend(self._build_plot_demand("Plot-A"))
         story.append(PageBreak())
         story.extend(self._build_plot_demand("Plot-B"))
+        story.append(NextPageTemplate("portrait"))
         story.append(PageBreak())
         story.extend(self._build_ugt_oht("Plot-A"))
         story.append(PageBreak())
@@ -1192,690 +1255,1274 @@ class PDFExporter:
         story.extend(self._build_stp("Plot-A"))
         story.append(PageBreak())
         story.extend(self._build_stp("Plot-B"))
-        doc.build(story, onFirstPage=self._cover_page_decorator, onLaterPages=self._content_page_decorator)
+        doc.build(story)
 
-    def _cover_page_decorator(self, canvas, doc) -> None:
-        """Cover page: footer only (logo is embedded in cover story flow)."""
-        canvas.saveState()
-        canvas.setFont("Helvetica", 6)
-        canvas.drawCentredString(letter[0] / 2, 15, COMPANY_FOOTER)
-        canvas.restoreState()
+    # ── page decorators ──────────────────────────────────────────────
 
-    def _content_page_decorator(self, canvas, doc) -> None:
-        """Content pages: small logo top-right, footer bottom — never overlaps engineer header."""
-        canvas.saveState()
-        if self.logo_path and os.path.exists(self.logo_path):
+    def _draw_logo(self, canvas, page_w: float, page_h: float, logo_w: float, logo_h: float, right: float = 8, top: float = 8) -> None:
+        if not self.logo_path or not os.path.exists(self.logo_path):
+            return
+        try:
+            canvas.drawImage(
+                self.logo_path,
+                page_w - logo_w - right,
+                page_h - logo_h - top,
+                width=logo_w,
+                height=logo_h,
+                preserveAspectRatio=True,
+                mask="auto",
+            )
+        except Exception:
+            pass
+
+    def _draw_footer(self, canvas, page_w: float) -> None:
+        if self.footer_banner_path and os.path.exists(self.footer_banner_path):
             try:
-                logo_w, logo_h = 80, 36
+                banner_w = min(page_w - 80, 520)
+                banner_h = banner_w * (79 / 1133)
                 canvas.drawImage(
-                    self.logo_path,
-                    letter[0] - logo_w - 25,
-                    letter[1] - logo_h - 18,
-                    width=logo_w,
-                    height=logo_h,
+                    self.footer_banner_path,
+                    (page_w - banner_w) / 2,
+                    10,
+                    width=banner_w,
+                    height=banner_h,
                     preserveAspectRatio=True,
                     mask="auto",
                 )
+                return
             except Exception:
                 pass
         canvas.setFont("Helvetica", 6)
-        canvas.drawCentredString(letter[0] / 2, 15, COMPANY_FOOTER)
+        canvas.setFillColor(colors.black)
+        canvas.drawCentredString(page_w / 2, 22, COMPANY_ADDRESS)
+        canvas.drawCentredString(page_w / 2, 12, COMPANY_CONTACT)
+
+    def _on_cover(self, canvas, doc) -> None:
+        canvas.saveState()
+        w, h = PAGE_LANDSCAPE
+        # Outer frame matching reference — no separate footer strip on cover
+        canvas.setStrokeColor(colors.black)
+        canvas.setLineWidth(1.2)
+        canvas.rect(30, 85, w - 60, h - 170, stroke=1, fill=0)
         canvas.restoreState()
 
-    def _p(self, text: str, style_name: str = "Normal", **kwargs) -> Paragraph:
-        style = ParagraphStyle(style_name, parent=self.styles["Normal"], **kwargs)
-        return Paragraph(text, style)
+    def _on_landscape(self, canvas, doc) -> None:
+        canvas.saveState()
+        w, h = PAGE_LANDSCAPE
+        self._draw_logo(canvas, w, h, logo_w=110, logo_h=52, right=0, top=6)
+        canvas.setStrokeColor(colors.black)
+        canvas.setLineWidth(0.6)
+        canvas.line(36, 42, w - 36, 42)
+        self._draw_footer(canvas, w)
+        canvas.restoreState()
 
-    def _th(self, text: str) -> Paragraph:
-        return self._p(
-            f"<b>{text}</b>",
-            "TH",
-            fontSize=6.5,
-            textColor=colors.whitesmoke,
-            alignment=1,
-            fontName="Helvetica-Bold",
-        )
+    def _on_portrait(self, canvas, doc) -> None:
+        canvas.saveState()
+        w, h = PAGE_PORTRAIT
+        self._draw_logo(canvas, w, h, logo_w=100, logo_h=48, right=12, top=10)
+        # Outer content border
+        canvas.setStrokeColor(colors.black)
+        canvas.setLineWidth(1.2)
+        canvas.rect(36, 46, w - 72, h - 100, stroke=1, fill=0)
+        self._draw_footer(canvas, w)
+        canvas.restoreState()
 
-    def _tc(self, text: str, align: int = 1) -> Paragraph:
-        return self._p(str(text), "TC", fontSize=6, textColor=colors.HexColor("#111111"), alignment=align)
+    # ── text helpers ─────────────────────────────────────────────────
 
-    def _section_bar(self, title: str, color: str) -> Table:
-        sec_style = ParagraphStyle(
-            "Sec",
+    def _p(self, text: str, size: float = 8, bold: bool = False, align: int = 0, color=colors.black, leading: Optional[float] = None) -> Paragraph:
+        style = ParagraphStyle(
+            f"P_{size}_{bold}_{align}",
             parent=self.styles["Normal"],
-            fontSize=8,
-            textColor=colors.whitesmoke,
-            alignment=1,
-            fontName="Helvetica-Bold",
+            fontName="Helvetica-Bold" if bold else "Helvetica",
+            fontSize=size,
+            leading=leading or (size + 2),
+            alignment=align,
+            textColor=color,
         )
-        return Table(
-            [[Paragraph(f"<b>{title}</b>", sec_style)]],
-            colWidths=[self.page_width],
-            style=[("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(color))],
-        )
+        return Paragraph(str(text), style)
 
-    def _eng_header(self) -> Paragraph:
-        return self._p(
-            f"<b>DESIGN ENGINEER NAME :- MR.{self.project.engineer_name.upper()} &nbsp;&nbsp;&nbsp;&nbsp; DATE :- {self.project.date}</b>",
-            "Eng",
-            fontSize=7,
-            fontName="Helvetica-Bold",
-        )
+    def _th(self, text: str, size: float = 7) -> Paragraph:
+        return self._p(f"<b>{text.replace(chr(10), '<br/>')}</b>", size=size, bold=True, align=1)
 
-    def _content_page_start(self) -> List[Any]:
-        """Engineer header row for pages 2-8, positioned below logo area."""
-        header_table = Table(
-            [[self._eng_header(), ""]],
-            colWidths=[self.page_width - 90, 90],
-        )
-        header_table.setStyle(TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 0),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-            ("TOPPADDING", (0, 0), (-1, -1), 0),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-        ]))
-        return [Spacer(1, 6), header_table, Spacer(1, 8)]
+    def _tc(self, text: Any, size: float = 7, align: int = 1, bold: bool = False) -> Paragraph:
+        return self._p(str(text), size=size, bold=bold, align=align)
 
-    def _grid_style(self, header: bool = True) -> TableStyle:
-        cmds = [
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("PADDING", (0, 0), (-1, -1), 4),
+    def _eng_block(self, size: float = 8) -> List[Any]:
+        name = self.project.engineer_name.upper()
+        date = self.project.date
+        return [
+            self._p(f"<b>DESIGN ENGINEER NAME :- MR.{name}</b>", size=size, bold=True),
+            self._p(f"<b>DATE :- {date}</b>", size=size, bold=True),
+            Spacer(1, 4),
         ]
-        if header:
-            cmds.append(("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BRAND_HEADER_GRAY)))
-        return TableStyle(cmds)
 
-    def _build_cover(self) -> List[Any]:
-        story: List[Any] = []
-        if self.logo_path and os.path.exists(self.logo_path):
-            try:
-                img = Image(self.logo_path, width=2.5 * inch, height=1.2 * inch)
-                img.hAlign = "CENTER"
-                story.append(Spacer(1, 40))
-                story.append(img)
-            except Exception:
-                story.append(Spacer(1, 80))
-        else:
-            story.append(Spacer(1, 80))
-
-        story.append(
-            self._p(
-                f"<b>{COMPANY_NAME}</b>",
-                "H1",
-                fontSize=16,
-                alignment=1,
-                fontName="Helvetica-Bold",
-            )
-        )
-        story.append(Spacer(1, 30))
-        tc_left = ParagraphStyle(
-            "TCL", parent=self.styles["Normal"], fontSize=8, alignment=0
-        )
-        cover_meta = [
-            [Paragraph("<b>TITLE</b>", tc_left), Paragraph(": WATER DEMAND", tc_left)],
-            [
-                Paragraph("<b>PROJECT NAME</b>", tc_left),
-                Paragraph(f": {self.project.project_name.upper()}", tc_left),
-            ],
-            [
-                Paragraph("<b>CLIENT NAME</b>", tc_left),
-                Paragraph(f": {self.project.client_name.upper()}", tc_left),
-            ],
-            [
-                Paragraph("<b>PROJECT LOCATION</b>", tc_left),
-                Paragraph(f": {self.project.project_location.upper()}", tc_left),
-            ],
-            [
-                Paragraph("<b>PROJECT NO.</b>", tc_left),
-                Paragraph(f": {self.project.project_no}", tc_left),
-            ],
-        ]
-        t_cover = Table(cover_meta, colWidths=[130, 400])
-        t_cover.setStyle(
+    def _title_bar(self, text: str, width: float, bg, size: float = 14, height: float = 18) -> Table:
+        t = Table([[self._p(f"<b>{text}</b>", size=size, bold=True, align=1)]], colWidths=[width], rowHeights=[height])
+        t.setStyle(
             TableStyle(
                 [
-                    ("GRID", (0, 0), (-1, -1), 1, colors.black),
-                    ("PADDING", (0, 0), (-1, -1), 8),
+                    ("BACKGROUND", (0, 0), (-1, -1), bg),
+                    ("BOX", (0, 0), (-1, -1), 0.7, colors.black),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 2),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+                    ("TOPPADDING", (0, 0), (-1, -1), 2),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
                 ]
             )
         )
-        story.append(t_cover)
-        story.append(Spacer(1, 20))
+        return t
 
-        rev = self.project.revision
-        rev_data = [
-            [
-                self._th("DATE"),
-                self._th("REV. NO."),
-                self._th("DESCRIPTION"),
-                self._th("PRPD. BY"),
-                self._th("CHKD. BY"),
-                self._th("APPRD. BY"),
-            ],
-            [
-                self._tc(rev.date or self.project.date),
-                self._tc(rev.revision_no),
-                self._tc(rev.description),
-                self._tc(rev.prepared_by),
-                self._tc(rev.checked_by),
-                self._tc(rev.approved_by),
-            ],
+    def _base_grid(self, header_rows: int = 1, font_pad: float = 2) -> List[Any]:
+        cmds: List[Any] = [
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), font_pad),
+            ("RIGHTPADDING", (0, 0), (-1, -1), font_pad),
+            ("TOPPADDING", (0, 0), (-1, -1), font_pad),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), font_pad),
         ]
-        t_rev = Table(rev_data, colWidths=[80, 60, 180, 70, 70, 70])
-        t_rev.setStyle(self._grid_style())
-        story.append(t_rev)
-        story.append(Spacer(1, 20))
-        story.append(
-            self._p(COMPANY_ADDRESS, "Addr", fontSize=6, alignment=1)
+        if header_rows > 0:
+            cmds.append(("BACKGROUND", (0, 0), (-1, header_rows - 1), PDF_BLUE_HEADER))
+        return cmds
+
+    @staticmethod
+    def _kld(v: float) -> str:
+        return f"{v / 1000.0:.2f}"
+
+    @staticmethod
+    def _fmt_int(v: Any) -> str:
+        if isinstance(v, float):
+            if abs(v - round(v)) < 1e-9:
+                return str(int(round(v)))
+            return f"{v:.2f}"
+        return str(v)
+
+    # ── COVER ────────────────────────────────────────────────────────
+
+    def _build_cover(self) -> List[Any]:
+        story: List[Any] = []
+        usable = PAGE_LANDSCAPE[0] - 72  # ~720
+
+        # Top logo band (light blue)
+        logo_cell: Any = ""
+        if self.logo_path and os.path.exists(self.logo_path):
+            try:
+                logo_cell = Image(self.logo_path, width=178, height=68)
+            except Exception:
+                logo_cell = self._p(COMPANY_NAME, size=12, bold=True, align=1)
+        else:
+            logo_cell = self._p(COMPANY_NAME, size=12, bold=True, align=1)
+
+        addr = self._p(
+            f"{COMPANY_ADDRESS} Mail Address- {COMPANY_CONTACT}",
+            size=7.5,
+            bold=True,
+            align=1,
+            leading=10,
         )
-        story.append(self._p(COMPANY_CONTACT, "Contact", fontSize=6, alignment=1))
+        top_inner = Table(
+            [[logo_cell], [addr]],
+            colWidths=[usable - 106],
+        )
+        top_inner.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), PDF_BLUE_BANNER),
+                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("TOPPADDING", (0, 0), (-1, 0), 10),
+                    ("BOTTOMPADDING", (0, -1), (-1, -1), 6),
+                ]
+            )
+        )
+        # Side gutters like reference (white side columns)
+        top = Table([["", top_inner, ""]], colWidths=[53, usable - 106, 53])
+        top.setStyle(
+            TableStyle(
+                [
+                    ("BOX", (0, 0), (-1, -1), 1, colors.black),
+                    ("INNERGRID", (0, 0), (-1, -1), 1, colors.black),
+                    ("BACKGROUND", (1, 0), (1, 0), PDF_BLUE_BANNER),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ]
+            )
+        )
+        story.append(Spacer(1, 8))
+        story.append(top)
+        story.append(Spacer(1, 10))
+
+        # Meta fields
+        left_style = ParagraphStyle("CoverL", parent=self.styles["Normal"], fontName="Helvetica-Bold", fontSize=9, leading=12)
+        meta_rows = [
+            [Paragraph("&nbsp;&nbsp;TITLE", left_style), Paragraph(f": WATER DEMAND", left_style)],
+            [Paragraph("&nbsp;&nbsp;PROJECT NAME", left_style), Paragraph(f": {self.project.project_name.upper()}", left_style)],
+            [Paragraph("&nbsp;&nbsp;CLIENT NAME", left_style), Paragraph(f": {self.project.client_name.upper()}", left_style)],
+            [Paragraph("&nbsp;&nbsp;PROJECT LOCATION", left_style), Paragraph(f": {self.project.project_location.upper()}", left_style)],
+            [Paragraph("&nbsp;&nbsp;PROJECT NO.", left_style), Paragraph(f":  {self.project.project_no}", left_style)],
+        ]
+        meta = Table(meta_rows, colWidths=[130, usable - 236], rowHeights=[24] * 5)
+        meta.setStyle(
+            TableStyle(
+                [
+                    ("BOX", (0, 0), (-1, -1), 1, colors.black),
+                    ("INNERGRID", (0, 0), (-1, -1), 0.7, colors.black),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ]
+            )
+        )
+        meta_wrap = Table([["", meta, ""]], colWidths=[53, usable - 106, 53])
+        meta_wrap.setStyle(
+            TableStyle(
+                [
+                    ("BOX", (0, 0), (-1, -1), 1, colors.black),
+                    ("INNERGRID", (0, 0), (-1, -1), 1, colors.black),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ]
+            )
+        )
+        story.append(meta_wrap)
+        story.append(Spacer(1, 10))
+
+        # Revision table with empty rows
+        rev = self.project.revision
+        hdr = [
+            self._th("DATE", 8),
+            self._th("REV. NO.", 8),
+            self._th("DESCRIPTION", 8),
+            self._th("PRPD. BY", 8),
+            self._th("CHKD. BY", 8),
+            self._th("APPRD. BY", 8),
+        ]
+        data_row = [
+            self._tc(rev.date or self.project.date, 8),
+            self._tc(rev.revision_no, 8),
+            self._tc(rev.description, 8),
+            self._tc(rev.prepared_by, 8),
+            self._tc(rev.checked_by, 8),
+            self._tc(rev.approved_by, 8),
+        ]
+        empty = [self._tc("", 8) for _ in range(6)]
+        rev_rows = [hdr, data_row] + [empty[:] for _ in range(5)]
+        col_w = [90, 70, 200, 90, 90, usable - 106 - 540]
+        # normalize last col
+        col_w[5] = max(90, usable - 106 - sum(col_w[:5]))
+        t_rev = Table(rev_rows, colWidths=col_w, rowHeights=[16] + [14] * 6)
+        t_rev.setStyle(
+            TableStyle(
+                [
+                    ("GRID", (0, 0), (-1, -1), 0.7, colors.black),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 2),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                ]
+            )
+        )
+        rev_wrap = Table([["", t_rev, ""]], colWidths=[53, usable - 106, 53])
+        rev_wrap.setStyle(
+            TableStyle(
+                [
+                    ("BOX", (0, 0), (-1, -1), 1, colors.black),
+                    ("INNERGRID", (0, 0), (-1, -1), 1, colors.black),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ]
+            )
+        )
+        story.append(rev_wrap)
         return story
 
+    # ── CONSOLIDATED ─────────────────────────────────────────────────
+
+    def _stp_column_split(self, plot: PlotResults) -> Dict[str, float]:
+        """Split STP totals into residential vs commercial columns for consolidated page."""
+        out = {
+            "treated_res": 0.0,
+            "treated_com": 0.0,
+            "excess_res": 0.0,
+            "excess_com": 0.0,
+            "sewage_res": 0.0,
+            "sewage_com": 0.0,
+            "stp_res": 0.0,
+            "stp_com": 0.0,
+        }
+        for s in plot.stp_sections:
+            scope = s.scope.upper()
+            is_com = "COMMERCIAL" in scope and "RESIDENTIAL & COMMERCIAL" not in scope and scope != "TOTAL"
+            key = "com" if is_com else "res"
+            out[f"treated_{key}"] += s.treated_water_lpd
+            out[f"excess_{key}"] += s.excess_treated_lpd
+            out[f"sewage_{key}"] += s.sewage_lpd
+            out[f"stp_{key}"] += s.say_stp_kld * 1000.0
+        return out
+
+    def _ugt_kld_split(self, plot: PlotResults) -> Dict[str, float]:
+        groups = self._group_ugt_sections(plot)
+        res_dom = res_flu = res_fire = 0.0
+        com_dom = com_flu = com_fire = 0.0
+        for name, secs in groups.items():
+            bucket_dom = bucket_flu = bucket_fire = 0.0
+            for sec in secs:
+                d = sec.description.upper()
+                if "DOMESTIC" in d:
+                    bucket_dom += sec.total_storage_kld
+                elif "FLUSHING" in d:
+                    bucket_flu += sec.total_storage_kld
+                elif "FIRE" in d:
+                    bucket_fire += sec.total_storage_kld
+            if name.startswith("FOR RESIDENTIAL"):
+                res_dom += bucket_dom
+                res_flu += bucket_flu
+                res_fire += bucket_fire
+            else:
+                com_dom += bucket_dom
+                com_flu += bucket_flu
+                com_fire += bucket_fire
+        return {
+            "dom_res": res_dom,
+            "dom_com": com_dom,
+            "flu_res": res_flu,
+            "flu_com": com_flu,
+            "fire_res": res_fire,
+            "fire_com": com_fire,
+        }
+
     def _build_consolidated(self) -> List[Any]:
-        story: List[Any] = self._content_page_start()
-        story.append(self._section_bar("CONSOLIDATED STATEMENT", BRAND_DARK_GRAY))
-        story.append(Spacer(1, 5))
+        story: List[Any] = []
+        story.extend(self._eng_block(size=8))
+        usable = PAGE_LANDSCAPE[0] - 72
+
+        story.append(self._title_bar("CONSOLIDATED STATEMENT", usable, PDF_BLUE_BANNER, size=14, height=20))
+        story.append(Spacer(1, 2))
 
         pa = self.results.plots["Plot-A"]
         pb = self.results.plots["Plot-B"]
         tot = self.results.total
+        pa_stp = self._stp_column_split(pa)
+        pb_stp = self._stp_column_split(pb)
+        pa_ugt = self._ugt_kld_split(pa)
+        pb_ugt = self._ugt_kld_split(pb)
 
-        def kld(v: float) -> str:
-            return f"{v / 1000:.2f}"
+        # Column widths matching reference proportions
+        # SR | DESC | A-RES | A-COM | A-SUB | B-RES | B-COM | B-SUB | TOTAL | UNITS
+        cw = [28, 175, 52, 48, 55, 52, 48, 55, 52, 40]
+        # scale to usable
+        scale = usable / sum(cw)
+        cw = [c * scale for c in cw]
 
-        header = [
-            self._th("SR.NO"),
-            self._th("DESCRIPTION"),
-            self._th("PLOT-A RES"),
-            self._th("PLOT-A COMM"),
-            self._th("PLOT-A SUB"),
-            self._th("PLOT-B RES"),
-            self._th("PLOT-B COMM"),
-            self._th("PLOT-B SUB"),
-            self._th("TOTAL"),
-            self._th("UNITS"),
+        def cell(v: Any, bold: bool = False, align: int = 1) -> Paragraph:
+            return self._tc(v, size=7, align=align, bold=bold)
+
+        def desc(v: str, bold: bool = False) -> Paragraph:
+            return self._tc(v, size=7, align=0, bold=bold)
+
+        # Multi-row header
+        header1 = [
+            cell("SR.NO", True),
+            cell("DISCRIPTION", True),
+            cell("PLOT - A", True),
+            "",
+            "",
+            cell("PLOT - B", True),
+            "",
+            "",
+            cell("TOTAL", True),
+            cell("UNITS", True),
+        ]
+        header2 = [
+            "",
+            "",
+            cell("RESIDENTIAL", True),
+            cell("COMM", True),
+            cell("SUB-TOTAL", True),
+            cell("RESIDENTIAL", True),
+            cell("COMM", True),
+            cell("SUB-TOTAL", True),
+            "",
+            "",
         ]
 
-        rows = [header]
-        rows.append(
-            [
-                self._tc("SECTION-8", 0),
-                self._tc("Number Of Building", 0),
-                self._tc(pa.num_buildings_res),
-                self._tc(pa.num_buildings_com),
-                self._tc(pa.num_buildings_res + pa.num_buildings_com),
-                self._tc(pb.num_buildings_res),
-                self._tc(pb.num_buildings_com),
-                self._tc(pb.num_buildings_res + pb.num_buildings_com),
-                self._tc(pa.num_buildings_res + pa.num_buildings_com + pb.num_buildings_res + pb.num_buildings_com),
-                self._tc("NO.S"),
+        rows: List[List[Any]] = [header1, header2]
+
+        def section_row(label: str) -> List[Any]:
+            return [cell(label, True), "", "", "", "", "", "", "", "", ""]
+
+        def season_row(label: str) -> List[Any]:
+            return [desc(label, True), "", "", "", "", "", "", "", "", ""]
+
+        def data_row(
+            sr: str,
+            description: str,
+            a_res: Any,
+            a_com: Any,
+            a_sub: Any,
+            b_res: Any,
+            b_com: Any,
+            b_sub: Any,
+            total: Any,
+            units: str,
+            bold: bool = False,
+        ) -> List[Any]:
+            return [
+                cell(sr, bold),
+                desc(description, bold),
+                cell(a_res, bold),
+                cell(a_com, bold),
+                cell(a_sub, bold),
+                cell(b_res, bold),
+                cell(b_com, bold),
+                cell(b_sub, bold),
+                cell(total, bold),
+                cell(units, bold),
             ]
+
+        # SECTION-7 population
+        rows.append(section_row("SECTION-7"))
+        a_bldg_sub = pa.num_buildings_res + pa.num_buildings_com
+        b_bldg_sub = pb.num_buildings_res + pb.num_buildings_com
+        rows.append(
+            data_row(
+                "1",
+                "Number Of Building",
+                pa.num_buildings_res,
+                pa.num_buildings_com,
+                a_bldg_sub,
+                pb.num_buildings_res,
+                pb.num_buildings_com,
+                b_bldg_sub,
+                a_bldg_sub + b_bldg_sub,
+                "NO.S",
+            )
         )
         rows.append(
-            [
-                self._tc("", 0),
-                self._tc("Total Number Of Flats", 0),
-                self._tc(pa.total_flats),
-                self._tc(0),
-                self._tc(pa.total_flats),
-                self._tc(pb.total_flats),
-                self._tc(0),
-                self._tc(pb.total_flats),
-                self._tc(tot.get("Total Flats", 0)),
-                self._tc("NO.S"),
-            ]
+            data_row(
+                "2",
+                "Total Number Of Flats",
+                pa.total_flats,
+                "-",
+                pa.total_flats,
+                pb.total_flats,
+                "-",
+                pb.total_flats,
+                tot.get("Total Flats", pa.total_flats + pb.total_flats),
+                "NO.S",
+            )
         )
         rows.append(
-            [
-                self._tc("", 0),
-                self._tc("Total Residential Building Population", 0),
-                self._tc(pa.res_population),
-                self._tc(pa.com_population),
-                self._tc(pa.total_population),
-                self._tc(pb.res_population),
-                self._tc(pb.com_population),
-                self._tc(pb.total_population),
-                self._tc(tot.get("Total Population", 0)),
-                self._tc("NO.S"),
-            ]
+            data_row(
+                "3",
+                "Total Number Of Residential Building Population",
+                pa.res_population,
+                pa.com_population,
+                pa.total_population,
+                pb.res_population,
+                pb.com_population,
+                pb.total_population,
+                tot.get("Total Population", pa.total_population + pb.total_population),
+                "NO.S",
+            )
         )
 
-        dry_rows = [
-            ("Fresh Water Requirement", pa.res_domestic_lpd, pa.com_domestic_lpd, pb.res_domestic_lpd, pb.com_domestic_lpd),
-            ("Flushing Water Requirement", pa.res_flushing_lpd, pa.com_flushing_lpd, pb.res_flushing_lpd, pb.com_flushing_lpd),
-            ("Landscape Water Requirement", pa.landscape_dry_lpd, 0, pb.landscape_dry_lpd, 0),
-            ("Swimming Pool Makeup Water Requirement", pa.swimming_pool_lpd, 0, pb.swimming_pool_lpd, 0),
-            ("HVAC Water Requirement", pa.hvac_lpd, 0, pb.hvac_lpd, 0),
-            ("Total Water Requirement", pa.dry_total_water_lpd, pa.com_total_lpd + pa.landscape_dry_lpd + pa.swimming_pool_lpd + pa.hvac_lpd, pb.dry_total_water_lpd, pb.com_total_lpd + pb.landscape_dry_lpd + pb.swimming_pool_lpd + pb.hvac_lpd),
-            ("Total Treated Water", pa.dry_treated_water_lpd, 0, pb.dry_treated_water_lpd, 0),
-            ("Excess Treated Water To Corporation Line", pa.dry_excess_treated_lpd, 0, pb.dry_excess_treated_lpd, 0),
+        # SECTION-8 / DRY SEASON
+        rows.append(section_row("SECTION-8"))
+        rows.append(season_row("DRY SEASON"))
+
+        dry_items = [
+            ("1", "Fresh Water Requirement", pa.res_domestic_lpd, pa.com_domestic_lpd, pb.res_domestic_lpd, pb.com_domestic_lpd),
+            ("2", "Flushing Water Requirement", pa.res_flushing_lpd, pa.com_flushing_lpd, pb.res_flushing_lpd, pb.com_flushing_lpd),
+            ("3", "Landscape Water Requirement", pa.landscape_dry_lpd, 0, pb.landscape_dry_lpd, 0),
+            ("4", "Swimming Pool Makeup Water Requirement", pa.swimming_pool_lpd, 0, pb.swimming_pool_lpd, 0),
+            ("5", "HVAC Water Requirement", pa.hvac_lpd, 0, pb.hvac_lpd, 0),
         ]
-        for idx, (desc, a_res, a_com, b_res, b_com) in enumerate(dry_rows, 1):
-            a_sub = (a_res if idx <= 2 else 0) + (a_com if idx <= 2 else a_res)
-            if idx == 1:
-                a_sub = a_res + a_com
-            elif idx == 2:
-                a_sub = a_res + a_com
-            elif idx in (3, 4, 5):
-                a_sub = a_res
-                b_sub = b_res
-            elif idx == 6:
-                a_sub = pa.dry_total_water_lpd
-                b_sub = pb.dry_total_water_lpd
-            elif idx == 7:
-                a_sub = pa.dry_treated_water_lpd
-                b_sub = pb.dry_treated_water_lpd
-            else:
-                a_sub = pa.dry_excess_treated_lpd
-                b_sub = pb.dry_excess_treated_lpd
-            if idx <= 5:
-                b_sub = b_res + (b_com if idx <= 2 else 0) if idx <= 2 else b_res
-            rows.append(
-                [
-                    self._tc(f"SECTION-7" if idx == 1 else "", 0),
-                    self._tc(desc, 0),
-                    self._tc(kld(a_res if idx <= 5 else a_sub)),
-                    self._tc(kld(a_com if idx <= 2 else 0)),
-                    self._tc(kld(a_sub)),
-                    self._tc(kld(b_res if idx <= 5 else b_sub)),
-                    self._tc(kld(b_com if idx <= 2 else 0)),
-                    self._tc(kld(b_sub)),
-                    self._tc(kld(a_sub + b_sub)),
-                    self._tc("KLD"),
-                ]
+        for sr, label, ar, ac, br, bc in dry_items:
+            a_sub = ar + ac
+            b_sub = br + bc
+            rows.append(data_row(sr, label, self._kld(ar), self._kld(ac), self._kld(a_sub), self._kld(br), self._kld(bc), self._kld(b_sub), self._kld(a_sub + b_sub), "KLD"))
+
+        # Total water dry — res = res total, com = com + landscape + swim + hvac for that plot's commercial share style from reference
+        # Reference: Plot-A RES 203.04 (= res_total 198450 + landscape 4590), COMM 51.21 (= com_total), SUB 254.25
+        pa_dry_res = pa.res_total_lpd + pa.landscape_dry_lpd + pa.swimming_pool_lpd + pa.hvac_lpd
+        pa_dry_com = pa.com_total_lpd
+        pb_dry_res = pb.res_total_lpd + pb.landscape_dry_lpd + pb.swimming_pool_lpd + pb.hvac_lpd
+        pb_dry_com = pb.com_total_lpd
+        rows.append(
+            data_row(
+                "6",
+                "Total Water Requirement",
+                self._kld(pa_dry_res),
+                self._kld(pa_dry_com),
+                self._kld(pa.dry_total_water_lpd),
+                self._kld(pb_dry_res),
+                self._kld(pb_dry_com),
+                self._kld(pb.dry_total_water_lpd),
+                self._kld(pa.dry_total_water_lpd + pb.dry_total_water_lpd),
+                "KLD",
+                bold=True,
+            )
+        )
+        rows.append(
+            data_row(
+                "7",
+                "Total Treated Water",
+                self._kld(pa_stp["treated_res"]),
+                self._kld(pa_stp["treated_com"]),
+                self._kld(pa.dry_treated_water_lpd),
+                self._kld(pb_stp["treated_res"]),
+                self._kld(pb_stp["treated_com"]),
+                self._kld(pb.dry_treated_water_lpd),
+                self._kld(pa.dry_treated_water_lpd + pb.dry_treated_water_lpd),
+                "KLD",
+            )
+        )
+        rows.append(
+            data_row(
+                "8",
+                "Excess Treated Water To Corporation Line",
+                self._kld(pa_stp["excess_res"]),
+                self._kld(pa_stp["excess_com"]),
+                self._kld(pa.dry_excess_treated_lpd),
+                self._kld(pb_stp["excess_res"]),
+                self._kld(pb_stp["excess_com"]),
+                self._kld(pb.dry_excess_treated_lpd),
+                self._kld(pa.dry_excess_treated_lpd + pb.dry_excess_treated_lpd),
+                "KLD",
+            )
+        )
+
+        # WET SEASON
+        rows.append(season_row("WET SEASON"))
+        wet_items = [
+            ("1", "FRESH WATER REQUIREMENT", pa.res_domestic_lpd, pa.com_domestic_lpd, pb.res_domestic_lpd, pb.com_domestic_lpd),
+            ("2", "FLUSHING WATER REQUIREMENTS", pa.res_flushing_lpd, pa.com_flushing_lpd, pb.res_flushing_lpd, pb.com_flushing_lpd),
+            ("3", "LANDSCAPE WATER REQUIRED", pa.landscape_wet_lpd, 0, pb.landscape_wet_lpd, 0),
+            ("4", "SWIMMING POOL MAKEUP WATER REQUIRMENT", pa.swimming_pool_lpd, 0, pb.swimming_pool_lpd, 0),
+            ("5", "HVAC WATER REQUIREMENT", pa.hvac_lpd, 0, pb.hvac_lpd, 0),
+        ]
+        for sr, label, ar, ac, br, bc in wet_items:
+            a_sub = ar + ac
+            b_sub = br + bc
+            rows.append(data_row(sr, label, self._kld(ar), self._kld(ac), self._kld(a_sub), self._kld(br), self._kld(bc), self._kld(b_sub), self._kld(a_sub + b_sub), "KLD"))
+
+        pa_wet_res = pa.res_total_lpd + pa.landscape_wet_lpd + pa.swimming_pool_lpd + pa.hvac_lpd
+        pb_wet_res = pb.res_total_lpd + pb.landscape_wet_lpd + pb.swimming_pool_lpd + pb.hvac_lpd
+        # Reference puts wet com as com_total (+ any wet landscape assigned to com in their sheet); keep com_total
+        rows.append(
+            data_row(
+                "6",
+                "TOTAL WATER REQUIREMENT",
+                self._kld(pa_wet_res),
+                self._kld(pa.com_total_lpd),
+                self._kld(pa.wet_total_water_lpd),
+                self._kld(pb_wet_res),
+                self._kld(pb.com_total_lpd),
+                self._kld(pb.wet_total_water_lpd),
+                self._kld(pa.wet_total_water_lpd + pb.wet_total_water_lpd),
+                "KLD",
+                bold=True,
+            )
+        )
+        rows.append(
+            data_row(
+                "7",
+                "TOTAL TREATED WATER",
+                self._kld(pa_stp["treated_res"]),
+                self._kld(pa_stp["treated_com"]),
+                self._kld(pa.wet_treated_water_lpd),
+                self._kld(pb_stp["treated_res"]),
+                self._kld(pb_stp["treated_com"]),
+                self._kld(pb.wet_treated_water_lpd),
+                self._kld(pa.wet_treated_water_lpd + pb.wet_treated_water_lpd),
+                "KLD",
+            )
+        )
+        rows.append(
+            data_row(
+                "8",
+                "EXCESS TREATED WATER WATER TO COPORATION LINE",
+                self._kld(pa_stp["excess_res"]),
+                self._kld(pa_stp["excess_com"]),
+                self._kld(pa.wet_excess_treated_lpd),
+                self._kld(pb_stp["excess_res"]),
+                self._kld(pb_stp["excess_com"]),
+                self._kld(pb.wet_excess_treated_lpd),
+                self._kld(pa.wet_excess_treated_lpd + pb.wet_excess_treated_lpd),
+                "KLD",
+            )
+        )
+
+        # SECTION-9 UGT
+        rows.append(section_row("SECTION-9"))
+        rows.append(season_row("UGT DETAILS"))
+
+        def ugt_row(sr: str, label: str, ar: float, ac: float, br: float, bc: float) -> List[Any]:
+            a_sub, b_sub = ar + ac, br + bc
+            return data_row(
+                sr,
+                label,
+                f"{ar:.0f}",
+                f"{ac:.0f}",
+                f"{a_sub:.0f}",
+                f"{br:.0f}",
+                f"{bc:.0f}",
+                f"{b_sub:.0f}",
+                f"{a_sub + b_sub:.0f}",
+                "LIT/DAY",
             )
 
-        wet_rows = [
-            ("FRESH WATER REQUIREMENT", pa.res_domestic_lpd, pa.com_domestic_lpd),
-            ("FLUSHING WATER REQUIREMENTS", pa.res_flushing_lpd, pa.com_flushing_lpd),
-            ("LANDSCAPE WATER REQUIRED", pa.landscape_wet_lpd, 0),
-            ("SWIMMING POOL MAKEUP WATER REQUIRMENT", pa.swimming_pool_lpd, 0),
-            ("HVAC WATER REQUIREMENT", pa.hvac_lpd, 0),
-            ("TOTAL WATER REQUIREMENT", pa.wet_total_water_lpd, pa.com_total_lpd),
-            ("TOTAL TREATED WATER", pa.wet_treated_water_lpd, 0),
-            ("EXCESS TREATED WATER WATER TO COPORATION LINE", pa.wet_excess_treated_lpd, 0),
-        ]
-        for idx, (desc, a_val, a_com) in enumerate(wet_rows, 1):
-            b_val = {
-                1: pb.res_domestic_lpd,
-                2: pb.res_flushing_lpd,
-                3: pb.landscape_wet_lpd,
-                4: pb.swimming_pool_lpd,
-                5: pb.hvac_lpd,
-                6: pb.wet_total_water_lpd,
-                7: pb.wet_treated_water_lpd,
-                8: pb.wet_excess_treated_lpd,
-            }[idx]
-            b_com = pb.com_domestic_lpd if idx == 1 else (pb.com_flushing_lpd if idx == 2 else (pb.com_total_lpd if idx == 6 else 0))
-            a_sub = a_val + (a_com if idx <= 2 else 0) if idx <= 2 else a_val
-            b_sub = b_val + (b_com if idx <= 2 else 0) if idx <= 2 else b_val
-            if idx == 6:
-                a_sub = pa.wet_total_water_lpd
-                b_sub = pb.wet_total_water_lpd
-            rows.append(
-                [
-                    self._tc(f"SECTION-9" if idx == 1 else "", 0),
-                    self._tc(desc, 0),
-                    self._tc(kld(a_val if idx <= 5 else a_sub)),
-                    self._tc(kld(a_com if idx <= 2 else 0)),
-                    self._tc(kld(a_sub)),
-                    self._tc(kld(b_val if idx <= 5 else b_sub)),
-                    self._tc(kld(b_com if idx <= 2 else 0)),
-                    self._tc(kld(b_sub)),
-                    self._tc(kld(a_sub + b_sub)),
-                    self._tc("KLD"),
-                ]
-            )
+        rows.append(ugt_row("1", "DOMESTIC UGT CAPACITY", pa_ugt["dom_res"], pa_ugt["dom_com"], pb_ugt["dom_res"], pb_ugt["dom_com"]))
+        rows.append(ugt_row("2", "FLUSHING UGT CAPACITY", pa_ugt["flu_res"], pa_ugt["flu_com"], pb_ugt["flu_res"], pb_ugt["flu_com"]))
+        rows.append(ugt_row("3", "FIRE UGT CAPACITY", pa_ugt["fire_res"], pa_ugt["fire_com"], pb_ugt["fire_res"], pb_ugt["fire_com"]))
 
-        ugt_rows = [
-            ("DOMESTIC UGT CAPACITY", pa.ugt_domestic_liters, pb.ugt_domestic_liters),
-            ("FLUSHING UGT CAPACITY", pa.ugt_flushing_liters, pb.ugt_flushing_liters),
-            ("FIRE UGT CAPACITY", pa.fire_tank_liters, pb.fire_tank_liters),
-        ]
-        for idx, (desc, a_v, b_v) in enumerate(ugt_rows, 1):
-            rows.append(
-                [
-                    self._tc(f"SECTION-10" if idx == 1 else "UGT DETAILS", 0),
-                    self._tc(desc, 0),
-                    self._tc(f"{a_v / 1000:.2f}"),
-                    self._tc("0.00"),
-                    self._tc(f"{a_v / 1000:.2f}"),
-                    self._tc(f"{b_v / 1000:.2f}"),
-                    self._tc("0.00"),
-                    self._tc(f"{b_v / 1000:.2f}"),
-                    self._tc(f"{(a_v + b_v) / 1000:.2f}"),
-                    self._tc("LIT/DAY"),
-                ]
+        # SECTION-10 STP
+        rows.append(section_row("SECTION-10"))
+        rows.append(season_row("STP DETAILS"))
+        rows.append(
+            data_row(
+                "1",
+                "SEWAGE GENERATION",
+                self._kld(pa_stp["sewage_res"]),
+                self._kld(pa_stp["sewage_com"]),
+                self._kld(pa.sewage_lpd),
+                self._kld(pb_stp["sewage_res"]),
+                self._kld(pb_stp["sewage_com"]),
+                self._kld(pb.sewage_lpd),
+                self._kld(pa.sewage_lpd + pb.sewage_lpd),
+                "LIT/DAY",
             )
-
-        stp_rows = [
-            ("SEWAGE GENERATION", pa.sewage_lpd, pb.sewage_lpd),
-            ("STP Capacity", pa.stp_capacity_kld * 1000, pb.stp_capacity_kld * 1000),
-        ]
-        for idx, (desc, a_v, b_v) in enumerate(stp_rows, 1):
-            rows.append(
-                [
-                    self._tc("STP DETAILS" if idx == 1 else "", 0),
-                    self._tc(desc, 0),
-                    self._tc(f"{a_v / 1000:.2f}"),
-                    self._tc("0.00"),
-                    self._tc(f"{a_v / 1000:.2f}"),
-                    self._tc(f"{b_v / 1000:.2f}"),
-                    self._tc("0.00"),
-                    self._tc(f"{b_v / 1000:.2f}"),
-                    self._tc(f"{(a_v + b_v) / 1000:.2f}"),
-                    self._tc("LIT/DAY"),
-                ]
+        )
+        rows.append(
+            data_row(
+                "2",
+                "STP Capacity",
+                f"{pa_stp['stp_res'] / 1000:.2f}",
+                f"{pa_stp['stp_com'] / 1000:.2f}",
+                f"{pa.stp_capacity_kld:.2f}",
+                f"{pb_stp['stp_res'] / 1000:.2f}",
+                f"{pb_stp['stp_com'] / 1000:.2f}",
+                f"{pb.stp_capacity_kld:.2f}",
+                f"{pa.stp_capacity_kld + pb.stp_capacity_kld:.0f}",
+                "LIT/DAY",
             )
+        )
 
-        col_widths = [35, 130, 55, 55, 55, 55, 55, 55, 55, 45]
-        t = Table(rows, colWidths=col_widths, repeatRows=1)
-        t.setStyle(self._grid_style())
+        t = Table(rows, colWidths=cw, repeatRows=2)
+        style_cmds = self._base_grid(header_rows=2, font_pad=1.5)
+        style_cmds.extend(
+            [
+                ("SPAN", (2, 0), (4, 0)),  # PLOT-A
+                ("SPAN", (5, 0), (7, 0)),  # PLOT-B
+                ("SPAN", (0, 0), (0, 1)),  # SR.NO
+                ("SPAN", (1, 0), (1, 1)),  # DISCRIPTION
+                ("SPAN", (8, 0), (8, 1)),  # TOTAL
+                ("SPAN", (9, 0), (9, 1)),  # UNITS
+                ("BACKGROUND", (0, 0), (-1, 1), PDF_BLUE_HEADER),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ]
+        )
+        # Style section / season rows
+        for i, row in enumerate(rows):
+            first = row[0]
+            text = ""
+            if isinstance(first, Paragraph):
+                text = first.text.replace("<b>", "").replace("</b>", "").strip().upper()
+            if text.startswith("SECTION-"):
+                style_cmds.append(("SPAN", (0, i), (-1, i)))
+                style_cmds.append(("BACKGROUND", (0, i), (-1, i), PDF_GRAY_ROW))
+            elif text in ("DRY SEASON", "WET SEASON", "UGT DETAILS", "STP DETAILS"):
+                style_cmds.append(("SPAN", (0, i), (-1, i)))
+                style_cmds.append(("BACKGROUND", (0, i), (-1, i), PDF_GRAY_ROW))
+                style_cmds.append(("ALIGN", (0, i), (0, i), "LEFT"))
+
+        t.setStyle(TableStyle(style_cmds))
         story.append(t)
         return story
 
+    # ── PLOT DEMAND ──────────────────────────────────────────────────
+
     def _build_plot_demand(self, plot_name: str) -> List[Any]:
         plot = self.results.plots[plot_name]
-        story: List[Any] = self._content_page_start()
-        story.append(self._section_bar(f"WATER DEMAND - {plot_name}", BRAND_DEMAND_ORANGE))
-        story.append(Spacer(1, 5))
+        story: List[Any] = []
+        story.extend(self._eng_block(size=7))
+        usable = PAGE_LANDSCAPE[0] - 160  # tighter centered table like reference
+        left_pad = 40
 
-        section_num = 1 if plot_name == "Plot-A" else 4
-        story.append(self._p(f"<b>SECTION-{section_num} RESIDENTIAL</b>", "SecH", fontSize=7, fontName="Helvetica-Bold"))
+        # Centered content wrapper via spacer + fixed width tables
+        story.append(Spacer(1, 2))
+        outer: List[Any] = []
+        outer.append(self._title_bar("WATER DEMAND", usable, PDF_PEACH_TITLE, size=12, height=16))
+        outer.append(Spacer(1, 1))
+        outer.append(self._title_bar(plot_name.upper().replace("PLOT-", "PLOT - "), usable, PDF_ORANGE_PLOT, size=10, height=14))
+        outer.append(Spacer(1, 2))
 
-        res_header = [
-            self._th("SR.NO"),
-            self._th("BLDG/WING"),
-            self._th("NO. OF FLAT"),
-            self._th("POPULATION PER FLAT"),
-            self._th("POPULATION"),
-            self._th("DOMESTIC WATER DEMAND (LIT/DAY)"),
-            self._th("FLUSHING WATER DEMAND (LIT/DAY)"),
-            self._th("TOTAL WATER DEMAND (LIT/DAY)"),
-        ]
-        res_rows = [res_header]
-        for idx, w in enumerate(plot.residential_wings, 1):
-            res_rows.append(
-                [
-                    self._tc(idx),
-                    self._tc(w.wing),
-                    self._tc(w.flats),
-                    self._tc(w.pop_per_flat),
-                    self._tc(w.population),
-                    self._tc(w.domestic_lpd),
-                    self._tc(w.flushing_lpd),
-                    self._tc(w.total_lpd),
-                ]
-            )
-        res_rows.append(
-            [
-                self._tc(""),
-                self._tc("SUB-TOTAL", 0),
-                self._tc(plot.total_flats),
-                self._tc(""),
-                self._tc(plot.res_population),
-                self._tc(plot.res_domestic_lpd),
-                self._tc(plot.res_flushing_lpd),
-                self._tc(plot.res_total_lpd),
-            ]
-        )
-        t_res = Table(res_rows, colWidths=[30, 80, 55, 65, 60, 90, 90, 90])
-        t_res.setStyle(self._grid_style())
-        story.append(t_res)
-        story.append(Spacer(1, 8))
+        section_base = 1 if plot_name == "Plot-A" else 4
 
-        blocks: Dict[str, list] = {}
+        # SECTION residential
+        outer.append(self._section_label_bar(f"SECTION-{section_base}", "RESIDENTIAL", usable))
+        outer.append(self._residential_table(plot, usable))
+        outer.append(Spacer(1, 4))
+
+        # SECTION other measures
+        other_sec = section_base + 1
+        outer.append(self._section_label_bar(f"SECTION-{other_sec}", "WATER REQUIRMENTS FOR OTHER MEASURES", usable))
+        outer.append(self._other_measures_table(plot, plot_name, usable))
+        outer.append(Spacer(1, 4))
+
+        # SECTION commercial
+        comm_sec = section_base + 2
+        outer.append(self._section_label_bar(f"SECTION-{comm_sec}", "COMMERCIAL", usable))
+
+        blocks: Dict[str, List[CommercialResult]] = {}
         for cu in plot.commercial_units:
             blocks.setdefault(cu.block, []).append(cu)
+        for block_name in sorted(blocks.keys()):
+            outer.append(self._block_label_bar(block_name, usable))
+            outer.append(self._commercial_table(blocks[block_name], usable))
+            outer.append(Spacer(1, 3))
 
-        comm_section = 2 if plot_name == "Plot-A" else 6
-        for block_name, units in sorted(blocks.items()):
-            story.append(
+        # Grand total
+        grand = plot.res_total_lpd + plot.com_total_lpd
+        outer.append(
+            self._p(
+                f"<b>GRAND TOTAL RESIDETIAL + COMMERCIAL &nbsp;&nbsp; {grand}</b>",
+                size=8,
+                bold=True,
+                align=1,
+            )
+        )
+        if plot_name == "Plot-B":
+            outer.append(Spacer(1, 4))
+            outer.append(
                 self._p(
-                    f"<b>SECTION-{comm_section} COMMERCIAL - {block_name}</b>",
-                    "SecH",
-                    fontSize=7,
-                    fontName="Helvetica-Bold",
+                    "<b>NOTE :- WATER DEMAND CALCULATION AS PER THE NBCS-2026</b>",
+                    size=7,
+                    bold=True,
+                    align=0,
                 )
             )
-            comm_header = [
-                self._th("SR.NO"),
-                self._th("BLDG/WING"),
-                self._th("AREA (SQ.M)"),
-                self._th("POPULATION PER/SQ.M"),
-                self._th("POPULATION"),
-                self._th("DOMESTIC WATER DEMAND (LIT/DAY)"),
-                self._th("FLUSHING WATER DEMAND (LIT/DAY)"),
-                self._th("TOTAL WATER DEMAND (LIT/DAY)"),
-            ]
-            comm_rows = [comm_header]
-            for idx, u in enumerate(units, 1):
-                label = u.floor_label or u.comm_type
-                comm_rows.append(
-                    [
-                        self._tc(idx),
-                        self._tc(label),
-                        self._tc(f"{u.area_sqm:.0f}"),
-                        self._tc(f"{u.density:.1f}"),
-                        self._tc(u.population),
-                        self._tc(u.domestic_lpd),
-                        self._tc(u.flushing_lpd),
-                        self._tc(u.total_lpd),
-                    ]
+
+        # Left-indent content to approximate reference centering
+        for item in outer:
+            if isinstance(item, Spacer):
+                story.append(item)
+            else:
+                wrap = Table([[Spacer(left_pad, 1), item]], colWidths=[left_pad, usable + 4])
+                wrap.setStyle(
+                    TableStyle(
+                        [
+                            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                            ("TOPPADDING", (0, 0), (-1, -1), 0),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                        ]
+                    )
                 )
-            comm_rows.append(
+                story.append(wrap)
+        return story
+
+    def _section_label_bar(self, section: str, title: str, width: float) -> Table:
+        t = Table(
+            [[self._p(f"<b>{section}</b>", size=7, bold=True, align=0), self._p(f"<b>{title}</b>", size=7, bold=True, align=1)]],
+            colWidths=[90, width - 90],
+            rowHeights=[14],
+        )
+        t.setStyle(
+            TableStyle(
                 [
-                    self._tc(""),
-                    self._tc("SUB-TOTAL", 0),
-                    self._tc(""),
-                    self._tc(""),
-                    self._tc(sum(u.population for u in units)),
-                    self._tc(sum(u.domestic_lpd for u in units)),
-                    self._tc(sum(u.flushing_lpd for u in units)),
-                    self._tc(sum(u.total_lpd for u in units)),
+                    ("BACKGROUND", (0, 0), (-1, -1), PDF_BLUE_HEADER),
+                    ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
                 ]
             )
-            t_com = Table(comm_rows, colWidths=[30, 90, 55, 65, 55, 85, 85, 85])
-            t_com.setStyle(self._grid_style())
-            story.append(t_com)
-            story.append(Spacer(1, 8))
-            comm_section += 1
+        )
+        return t
 
-        other_section = 3 if plot_name == "Plot-A" else 5
-        story.append(
-            self._p(
-                f"<b>SECTION-{other_section} WATER REQUIRMENTS FOR OTHER MEASURES</b>",
-                "SecH",
-                fontSize=7,
-                fontName="Helvetica-Bold",
+    def _block_label_bar(self, block: str, width: float) -> Table:
+        t = Table([[self._p(f"<b>{block}</b>", size=7, bold=True, align=1)]], colWidths=[width], rowHeights=[12])
+        t.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), PDF_BLUE_HEADER),
+                    ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ]
             )
         )
-        other_rows = [
-            [self._th("SR.NO"), self._th("DESCRIPTION"), self._th("AREA (SQ.M) / VALUE"), self._th("WATER REQUIREMENT"), self._th("UNITS")],
+        return t
+
+    def _residential_table(self, plot: PlotResults, width: float) -> Table:
+        # SR | WING | FLATS | POP/FLAT | POP | DOM lpcd | DOM | FLU lpcd | FLU | TOT lpcd | TOT
+        cw = [28, 70, 42, 55, 50, 32, 58, 32, 58, 32, 58]
+        scale = width / sum(cw)
+        cw = [c * scale for c in cw]
+
+        hdr = [
             [
-                self._tc(1),
-                self._tc(f"WATER REQUIRMENT FOR LANDSCAPE-{plot_name} (AS PER NBC-2026)", 0),
-                self._tc(f"{self.results.plots[plot_name].landscape_dry_lpd / 6:.0f}" if plot.landscape_dry_lpd else "0"),
-                self._tc(plot.landscape_dry_lpd),
-                self._tc("LITER/DAY"),
+                self._th("SR.NO", 6),
+                self._th("BLDG/<br/>WING", 6),
+                self._th("NO. OF<br/>FLAT", 6),
+                self._th("POPULATION<br/>PER FLAT", 6),
+                self._th("POPULATION", 6),
+                self._th("DOMESTIC WATER<br/>DEMAND (LIT/DAY)", 6),
+                "",
+                self._th("FLUSHING WATER<br/>DEMAND (LIT/DAY)", 6),
+                "",
+                self._th("TOTAL WATER<br/>DEMAND (LIT/DAY)", 6),
+                "",
+            ]
+        ]
+        rows: List[List[Any]] = hdr[:]
+        for idx, w in enumerate(plot.residential_wings, 1):
+            rows.append(
+                [
+                    self._tc(idx, 6),
+                    self._tc(w.wing, 6, align=0),
+                    self._tc(w.flats, 6),
+                    self._tc(w.pop_per_flat, 6),
+                    self._tc(w.population, 6),
+                    self._tc(RES_DOMESTIC_LPCD, 6),
+                    self._tc(w.domestic_lpd, 6),
+                    self._tc(RES_FLUSHING_LPCD, 6),
+                    self._tc(w.flushing_lpd, 6),
+                    self._tc(RES_TOTAL_LPCD, 6),
+                    self._tc(w.total_lpd, 6),
+                ]
+            )
+        sub_idx = len(rows)
+        rows.append(
+            [
+                self._tc("", 6),
+                self._tc("SUB-TOTAL", 6, bold=True, align=0),
+                self._tc(plot.total_flats, 6, bold=True),
+                self._tc("", 6),
+                self._tc(plot.res_population, 6, bold=True),
+                self._tc("", 6),
+                self._tc(plot.res_domestic_lpd, 6, bold=True),
+                self._tc("", 6),
+                self._tc(plot.res_flushing_lpd, 6, bold=True),
+                self._tc("", 6),
+                self._tc(plot.res_total_lpd, 6, bold=True),
+            ]
+        )
+        t = Table(rows, colWidths=cw)
+        cmds = self._base_grid(header_rows=1, font_pad=1.5)
+        cmds.extend(
+            [
+                ("SPAN", (5, 0), (6, 0)),
+                ("SPAN", (7, 0), (8, 0)),
+                ("SPAN", (9, 0), (10, 0)),
+                ("BACKGROUND", (0, sub_idx), (-1, sub_idx), PDF_BLUE_SUBTOTAL),
+                ("FONTSIZE", (0, 0), (-1, -1), 6),
+            ]
+        )
+        t.setStyle(TableStyle(cmds))
+        return t
+
+    def _commercial_table(self, units: List[CommercialResult], width: float) -> Table:
+        cw = [28, 90, 48, 55, 48, 28, 55, 28, 55, 28, 55]
+        scale = width / sum(cw)
+        cw = [c * scale for c in cw]
+        rows: List[List[Any]] = [
+            [
+                self._th("SR.NO", 6),
+                self._th("BLDG/\nWING", 6),
+                self._th("AREA\n(SQ.M)", 6),
+                self._th("POPULATION\nPER/SQ.M", 6),
+                self._th("POPULATION", 6),
+                self._th("DOMESTIC WATER\nDEMAND (LIT/DAY)", 6),
+                "",
+                self._th("FLUSHING WATER\nDEMAND (LIT/DAY)", 6),
+                "",
+                self._th("TOTAL WATER\nDEMAND (LIT/DAY)", 6),
+                "",
+            ]
+        ]
+        tot_pop = tot_dom = tot_flu = tot_all = 0
+        for idx, u in enumerate(units, 1):
+            dom_lpcd = int(round(u.domestic_lpd / u.population)) if u.population else 0
+            flu_lpcd = int(round(u.flushing_lpd / u.population)) if u.population else 0
+            tot_lpcd = dom_lpcd + flu_lpcd
+            label = u.floor_label or u.comm_type
+            rows.append(
+                [
+                    self._tc(idx, 6),
+                    self._tc(label, 6, align=0),
+                    self._tc(f"{u.area_sqm:.0f}", 6),
+                    self._tc(f"{u.density:.1f}".rstrip("0").rstrip(".") if isinstance(u.density, float) else u.density, 6),
+                    self._tc(u.population, 6),
+                    self._tc(dom_lpcd, 6),
+                    self._tc(u.domestic_lpd, 6),
+                    self._tc(flu_lpcd, 6),
+                    self._tc(u.flushing_lpd, 6),
+                    self._tc(tot_lpcd, 6),
+                    self._tc(u.total_lpd, 6),
+                ]
+            )
+            tot_pop += u.population
+            tot_dom += u.domestic_lpd
+            tot_flu += u.flushing_lpd
+            tot_all += u.total_lpd
+        sub_idx = len(rows)
+        rows.append(
+            [
+                self._tc("", 6),
+                self._tc("SUB-TOTAL", 6, bold=True, align=0),
+                self._tc("", 6),
+                self._tc("", 6),
+                self._tc(tot_pop, 6, bold=True),
+                self._tc("", 6),
+                self._tc(tot_dom, 6, bold=True),
+                self._tc("", 6),
+                self._tc(tot_flu, 6, bold=True),
+                self._tc("", 6),
+                self._tc(tot_all, 6, bold=True),
+            ]
+        )
+        t = Table(rows, colWidths=cw)
+        cmds = self._base_grid(header_rows=1, font_pad=1.5)
+        cmds.extend(
+            [
+                ("SPAN", (5, 0), (6, 0)),
+                ("SPAN", (7, 0), (8, 0)),
+                ("SPAN", (9, 0), (10, 0)),
+                ("BACKGROUND", (0, sub_idx), (-1, sub_idx), PDF_BLUE_SUBTOTAL),
+            ]
+        )
+        t.setStyle(TableStyle(cmds))
+        return t
+
+    def _other_measures_table(self, plot: PlotResults, plot_name: str, width: float) -> Table:
+        area = plot.landscape_dry_lpd / LANDSCAPE_L_PER_SQM if plot.landscape_dry_lpd else 0
+        if plot_name == "Plot-A":
+            label = f"WATER REQUIRMENT FOR LANDSCAPE-{plot_name.upper()}<br/>(AS PER NBC-2026)"
+        else:
+            label = "WATER REQUIRMENT FOR LANDSCAPE<br/>(AS PER NBC-2026)"
+        rows = [
+            [
+                self._th("SR.NO", 6),
+                self._p(label, size=6, bold=True, align=0),
+                self._th("AREA (SQ.M)", 6),
+                self._th("WATER<br/>REQUIREMENT", 6),
+                self._th("UNITS", 6),
             ],
             [
-                self._tc(2),
-                self._tc("MAKE UP WATER FOR SWIMMING POOL", 0),
-                self._tc("0"),
-                self._tc(plot.swimming_pool_lpd),
-                self._tc("LITER/DAY"),
+                self._tc("1", 6),
+                self._tc("", 6),
+                self._tc(f"{area:.0f}", 6),
+                self._tc(plot.landscape_dry_lpd, 6),
+                self._tc("LITER/DAY", 6),
             ],
             [
-                self._tc(3),
-                self._tc("WATER REQUIRMENT FOR HVAC", 0),
-                self._tc("0"),
-                self._tc(plot.hvac_lpd),
-                self._tc("LITER/DAY"),
+                self._tc("2", 6),
+                self._tc("MAKE UP WATER FOR SWIMMING POOL", 6, align=0),
+                self._tc("0", 6),
+                self._tc(plot.swimming_pool_lpd, 6),
+                self._tc("LITER/DAY", 6),
+            ],
+            [
+                self._tc("3", 6),
+                self._tc("WATER REQUIRMENT FOR HVAC", 6, align=0),
+                self._tc("", 6),
+                self._tc(plot.hvac_lpd, 6),
+                self._tc("LITER/DAY", 6),
             ],
         ]
-        t_other = Table(other_rows, colWidths=[30, 220, 80, 90, 70])
-        t_other.setStyle(self._grid_style())
-        story.append(t_other)
-        story.append(Spacer(1, 8))
-        story.append(
-            self._p(
-                f"<b>GRAND TOTAL RESIDENTIAL + COMMERCIAL: {plot.dry_total_water_lpd} LIT/DAY</b>",
-                "Grand",
-                fontSize=7,
-                fontName="Helvetica-Bold",
-            )
+        cw = [36, width - 280, 70, 100, 74]
+        t = Table(rows, colWidths=cw)
+        cmds = self._base_grid(header_rows=0, font_pad=2)
+        cmds.extend(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), PDF_BLUE_HEADER),
+                ("SPAN", (1, 0), (1, 1)),
+                ("VALIGN", (1, 0), (1, 1), "MIDDLE"),
+            ]
         )
-        story.append(
-            self._p(
-                "<b>NOTE :- WATER DEMAND CALCULATION AS PER THE NBC-2026</b>",
-                "Note",
-                fontSize=6,
-                fontName="Helvetica-Oblique",
-            )
-        )
-        return story
+        t.setStyle(TableStyle(cmds))
+        return t
+
+    # ── UGT & OHT ────────────────────────────────────────────────────
+
+    def _group_ugt_sections(self, plot: PlotResults) -> Dict[str, List[UGTResult]]:
+        groups: Dict[str, List[UGTResult]] = {}
+        current = "FOR RESIDENTIAL"
+        groups[current] = []
+        for sec in plot.ugt_sections:
+            desc = sec.description.upper()
+            if "COMM-A" in desc or "(A&B)" in desc:
+                current = "FOR COMMERCIAL-A"
+            elif "COMM-B" in desc:
+                current = "FOR COMMERCIAL-B"
+            elif "COMM-C" in desc:
+                current = "FOR COMMERCIAL-C"
+            elif re.search(r"COMM-[A-Z]", desc):
+                m = re.search(r"COMM-([A-Z])", desc)
+                current = f"FOR COMMERCIAL-{m.group(1)}" if m else "FOR COMMERCIAL"
+            elif desc in ("DOMESTIC WATER TANK", "FLUSHING WATER TANK NEAR STP", "FIRE WATER TANK"):
+                current = "FOR RESIDENTIAL"
+            elif "FLUSHING WATER TANK" in desc and "COMM" not in desc and "(A&B)" not in desc:
+                # keep current group
+                pass
+            groups.setdefault(current, []).append(sec)
+        return groups
 
     def _build_ugt_oht(self, plot_name: str) -> List[Any]:
         plot = self.results.plots[plot_name]
-        story: List[Any] = self._content_page_start()
-        story.append(self._section_bar(f"UGT & OHT DETAILS - {plot_name}", BRAND_UGT_TEAL))
-        story.append(Spacer(1, 5))
+        story: List[Any] = []
+        usable = PAGE_PORTRAIT[0] - 90
 
-        ugt_groups = self._group_ugt_sections(plot)
-        for gidx, (group_name, sections) in enumerate(ugt_groups.items(), 1):
-            story.append(self._p(f"<b>{group_name}</b>", "UGTH", fontSize=7, fontName="Helvetica-Bold"))
-            ugt_header = [
-                self._th("SR.NO."),
-                self._th("DISCRIPTION"),
-                self._th("WATER REQUIREMENT (LIT/DAY)"),
-                self._th("STORAGE OF WATER (DAYS)"),
-                self._th("TOTAL WATER STORAGE (LIT/DAY)"),
-                self._th("TOTAL WATER STORAGE (KLD)"),
+        if plot_name == "Plot-A":
+            story.append(self._title_bar("SECTION-7", usable, PDF_BLUE_HEADER, size=10, height=16))
+            story.append(Spacer(1, 2))
+            story.append(self._title_bar("*UGT & OHT DETAILS", usable, PDF_BLUE_HEADER, size=11, height=18))
+            story.append(Spacer(1, 2))
+        story.append(self._title_bar(plot_name.upper().replace("PLOT-", "PLOT -"), usable, PDF_ORANGE_PLOT, size=10, height=14))
+        story.append(Spacer(1, 4))
+
+        groups = self._group_ugt_sections(plot)
+        for gidx, (group_name, sections) in enumerate(groups.items(), 1):
+            # Group title
+            gt = Table(
+                [[self._p(f"<b>{gidx} &nbsp; {group_name}</b>", size=8, bold=True, align=1)]],
+                colWidths=[usable],
+                rowHeights=[14],
+            )
+            gt.setStyle(
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, -1), PDF_BLUE_HEADER),
+                        ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
+                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ]
+                )
+            )
+            story.append(gt)
+
+            hdr = [
+                self._th("SR.NO.", 7),
+                self._th("DISCRIPTION", 7),
+                self._th("WATER REQUIREMENT\n(LIT/DAY)", 7),
+                self._th("STORAGE OF\nWATER (DAYS)", 7),
+                self._th("TOTAL WATER\nSTORAGE\n(LIT/DAY)", 7),
+                self._th("TOTAL WATER\nSTORAGE (KLD)", 7),
             ]
-            ugt_rows = [ugt_header]
+            rows: List[List[Any]] = [hdr]
             total_kld = 0.0
             for idx, sec in enumerate(sections, 1):
-                ugt_rows.append(
+                # Strip block suffix from description for display like reference
+                desc = sec.description
+                for suffix in (" (COMM-A)", " (COMM-B)", " (COMM-C)", " (A&B)"):
+                    if suffix in desc:
+                        if "FLUSHING" in desc.upper() and "A&B" in desc:
+                            desc = "FLUSHING WATER TANK (A&B)"
+                        elif "FLUSHING" in desc.upper():
+                            desc = "FLUSHING WATER TANK"
+                        elif "DOMESTIC" in desc.upper():
+                            desc = "DOMESTIC WATER TANK"
+                        elif "FIRE" in desc.upper():
+                            desc = "FIRE WATER TANK"
+                        break
+                rows.append(
                     [
-                        self._tc(idx),
-                        self._tc(sec.description, 0),
-                        self._tc(sec.water_requirement_lpd),
-                        self._tc(sec.storage_days),
-                        self._tc(sec.total_storage_liters),
-                        self._tc(f"{sec.total_storage_kld:.2f}"),
+                        self._tc(idx, 7),
+                        self._tc(desc, 7, align=0),
+                        self._tc(sec.water_requirement_lpd, 7),
+                        self._tc(sec.storage_days, 7),
+                        self._tc(sec.total_storage_liters, 7),
+                        self._tc(f"{sec.total_storage_kld:.2f}", 7),
                     ]
                 )
                 total_kld += sec.total_storage_kld
-            t_ugt = Table(ugt_rows, colWidths=[35, 160, 100, 80, 100, 80])
-            t_ugt.setStyle(self._grid_style())
-            story.append(t_ugt)
-            story.append(
-                self._p(
-                    f"<b>TOTAL STORAGE CAPACITY: {total_kld:.2f} KLD</b>",
-                    "Tot",
-                    fontSize=7,
-                    fontName="Helvetica-Bold",
-                )
+            tot_idx = len(rows)
+            rows.append(
+                [
+                    self._tc("", 7),
+                    self._tc("TOTAL STORAGE CAPACITY", 7, bold=True, align=0),
+                    self._tc("", 7),
+                    self._tc("", 7),
+                    self._tc("", 7),
+                    self._tc(f"{total_kld:.2f}", 7, bold=True),
+                ]
             )
+            cw = [40, 160, 95, 80, 85, 85]
+            scale = usable / sum(cw)
+            cw = [c * scale for c in cw]
+            t = Table(rows, colWidths=cw)
+            cmds = self._base_grid(header_rows=1, font_pad=2)
+            cmds.append(("BACKGROUND", (0, tot_idx), (-1, tot_idx), PDF_BLUE_HEADER))
+            cmds.append(("SPAN", (1, tot_idx), (4, tot_idx)))
+            t.setStyle(TableStyle(cmds))
+            story.append(t)
+
+            if gidx == 1:
+                story.append(Spacer(1, 3))
+                story.append(
+                    self._p(
+                        "<b>NOTE:- FIRE WATER TANK CAPACITY TAKEN AS PER NBCS-2026, "
+                        "SO KINDLY CONFIRM WITH FIRE LIOSANING VENDOR & NOC</b>",
+                        size=7,
+                        bold=True,
+                        align=1,
+                        color=PDF_NOTE_RED,
+                    )
+                )
             story.append(Spacer(1, 6))
 
-        story.append(self._p("<b>*OHT DETAILS</b>", "OHT", fontSize=7, fontName="Helvetica-Bold"))
-        oht_header = [
-            self._th("SR.NO"),
-            self._th("BLDG/WING"),
-            self._th("DOMESTIC (KLD)"),
-            self._th("FLUSHING (KLD)"),
-            self._th("FIRE BREAK TANK (KLD)"),
-            self._th("FIRE OHT TANK (KLD)"),
+        # OHT
+        ot = Table(
+            [[self._p("<b>*OHT DETAILS</b>", size=8, bold=True, align=1)]],
+            colWidths=[usable],
+            rowHeights=[14],
+        )
+        ot.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), PDF_BLUE_HEADER),
+                    ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ]
+            )
+        )
+        story.append(ot)
+        story.append(
+            Table(
+                [[self._p("<b>RESIDENTIAL & COMMERCIAL</b>", size=7, bold=True, align=1)]],
+                colWidths=[usable],
+                rowHeights=[12],
+                style=[("BACKGROUND", (0, 0), (-1, -1), PDF_BLUE_HEADER), ("BOX", (0, 0), (-1, -1), 0.5, colors.black)],
+            )
+        )
+
+        oht_hdr = [
+            self._th("SR.NO", 7),
+            self._th("BLDG/\nWING", 7),
+            self._th("DOMESTIC\n(KLD)", 7),
+            self._th("FLUSHING\n(KLD)", 7),
+            self._th("FIRE BREAK TANK\n(KLD)", 7),
+            self._th("FIRE OHT TANK\n(KLD)", 7),
         ]
-        oht_rows = [oht_header]
-        total_dom = total_flu = total_fb = total_fo = 0.0
+        oht_rows: List[List[Any]] = [oht_hdr]
+        td = tf = tb = to = 0.0
         for idx, row in enumerate(plot.oht_rows, 1):
             oht_rows.append(
                 [
-                    self._tc(idx),
-                    self._tc(row["wing"]),
-                    self._tc(f"{row['domestic_kld']:.2f}"),
-                    self._tc(f"{row['flushing_kld']:.2f}"),
-                    self._tc(f"{row['fire_break_kld']:.2f}"),
-                    self._tc(f"{row['fire_oht_kld']:.2f}"),
+                    self._tc(idx, 7),
+                    self._tc(row["wing"], 7, align=0),
+                    self._tc(f"{row['domestic_kld']:.2f}", 7),
+                    self._tc(f"{row['flushing_kld']:.2f}", 7),
+                    self._tc(f"{row['fire_break_kld']:.2f}", 7),
+                    self._tc(f"{row['fire_oht_kld']:.2f}", 7),
                 ]
             )
-            total_dom += row["domestic_kld"]
-            total_flu += row["flushing_kld"]
-            total_fb += row["fire_break_kld"]
-            total_fo += row["fire_oht_kld"]
+            td += row["domestic_kld"]
+            tf += row["flushing_kld"]
+            tb += row["fire_break_kld"]
+            to += row["fire_oht_kld"]
+        tot_i = len(oht_rows)
         oht_rows.append(
             [
-                self._tc(""),
-                self._tc("TOTAL OHT CAPACITY", 0),
-                self._tc(f"{total_dom:.2f}"),
-                self._tc(f"{total_flu:.2f}"),
-                self._tc(f"{total_fb:.2f}"),
-                self._tc(f"{total_fo:.2f}"),
+                self._tc("", 7),
+                self._tc("TOTAL OHT CAPACITY", 7, bold=True, align=0),
+                self._tc(f"{td:.2f}", 7, bold=True),
+                self._tc(f"{tf:.2f}", 7, bold=True),
+                self._tc(f"{tb:.2f}", 7, bold=True),
+                self._tc(f"{to:.2f}", 7, bold=True),
             ]
         )
-        t_oht = Table(oht_rows, colWidths=[35, 120, 90, 90, 100, 100])
-        t_oht.setStyle(self._grid_style())
+        cw = [40, 120, 80, 80, 100, 100]
+        scale = usable / sum(cw)
+        cw = [c * scale for c in cw]
+        t_oht = Table(oht_rows, colWidths=cw)
+        cmds = self._base_grid(header_rows=1, font_pad=2)
+        cmds.append(("BACKGROUND", (0, tot_i), (-1, tot_i), PDF_BLUE_HEADER))
+        t_oht.setStyle(TableStyle(cmds))
         story.append(t_oht)
         story.append(Spacer(1, 6))
         story.append(
             self._p(
                 "<b>NOTE:- FIRE WATER TANK CAPACITY TAKEN AS PER NBC-2026, "
                 "SO KINDLY CONFIRM WITH FIRE LIOSANING VENDOR & NOC</b>",
-                "Note",
-                fontSize=6,
-                fontName="Helvetica-Oblique",
+                size=7,
+                bold=True,
+                align=1,
+                color=PDF_NOTE_RED,
             )
         )
+        if plot_name == "Plot-A":
+            story.append(Spacer(1, 8))
+            story.append(self._title_bar("SECTION-8", usable, PDF_BLUE_HEADER, size=10, height=14))
         return story
 
-    def _group_ugt_sections(self, plot: PlotResults) -> Dict[str, list]:
-        groups: Dict[str, list] = {"FOR RESIDENTIAL": []}
-        current_group = "FOR RESIDENTIAL"
-        for sec in plot.ugt_sections:
-            if "COMM" in sec.description.upper():
-                if "COMM-A" in sec.description.upper():
-                    current_group = "FOR COMMERCIAL-A"
-                elif "COMM-B" in sec.description.upper() or "A&B" in sec.description.upper():
-                    current_group = "FOR COMMERCIAL-B"
-                else:
-                    current_group = "FOR COMMERCIAL"
-                groups.setdefault(current_group, [])
-            groups.setdefault(current_group, []).append(sec)
-        return groups
+    # ── STP ──────────────────────────────────────────────────────────
 
     def _build_stp(self, plot_name: str) -> List[Any]:
         plot = self.results.plots[plot_name]
-        story: List[Any] = self._content_page_start()
-        story.append(self._section_bar(f"STP DETAILS - {plot_name}", BRAND_STP_PURPLE))
-        story.append(Spacer(1, 5))
+        story: List[Any] = []
+        usable = PAGE_PORTRAIT[0] - 120
+        left = 30
 
-        for sidx, stp in enumerate(plot.stp_sections, 1):
+        blocks: List[Any] = []
+        if plot_name == "Plot-A":
+            blocks.append(self._title_bar("SECTION-9", usable, PDF_BLUE_HEADER, size=10, height=16))
+            blocks.append(Spacer(1, 2))
+            blocks.append(self._title_bar("STP DETAILS PLOT-A", usable, PDF_BLUE_HEADER, size=12, height=18))
+        else:
+            blocks.append(self._title_bar("STP DETAILS PLOT-B", usable, PDF_BLUE_HEADER, size=12, height=18))
+        blocks.append(Spacer(1, 6))
+
+        for stp in plot.stp_sections:
             scope_label = f"STP FOR {stp.scope}"
-            story.append(self._p(f"<b>{scope_label}</b>", "STPH", fontSize=7, fontName="Helvetica-Bold"))
-            stp_header = [self._th("SR.NO."), self._th("DISCRIPTION"), self._th("CAPACITY"), self._th("UNITS")]
-            stp_rows = [stp_header]
+            blocks.append(self._title_bar(scope_label, usable, PDF_BLUE_HEADER, size=9, height=14))
+
+            hdr = [self._th("SR.NO.", 9), self._th("DISCRIPTION", 9), self._th("CAPACITY", 9), self._th("UNITS", 9)]
+            rows: List[List[Any]] = [hdr]
             stp_data = [
-                ("TOTAL WATER REQUIREMENT FOR RESIDENTIAL TENAMENTS", stp.total_water_lpd, "LITERS/DAY"),
-                ("TOTAL SEWAGE GENERATION @90% REQUREMENT (10% INFLITRATION LOSS)", stp.sewage_lpd, "LITERS/DAY"),
+                ("TOTAL WATER REQUIREMENT FOR\nRESIDENTIAL TENAMENTS", stp.total_water_lpd, "LITERS/DAY"),
+                ("TOTAL SEWAGE GENERATION @90%\nREQUREMENT (10% INFLITRATION LOSS)", stp.sewage_lpd, "LITERS/DAY"),
                 ("CAPACITY OF SEWAGE GENERATION", f"{stp.sewage_kld:.2f}", "KLD"),
                 ("SAY STP CAPACITY", f"{stp.say_stp_kld:.2f}", "KLD"),
-                ("TREATED WATER AFTER FILTRATION STP PROCESS", stp.treated_water_lpd, "LITERS/DAY"),
+                ("TREATED WATER AFTER FILTRATION STP\nPROCESS", stp.treated_water_lpd, "LITERS/DAY"),
                 ("REUSE WATER FOR FLUSHING", stp.reuse_flushing_lpd, "LITERS/DAY"),
                 ("REUSE WATER FOR LANDSCAPE", stp.reuse_landscape_lpd, "LITERS/DAY"),
                 ("REUSE WATER FOR HVAC", stp.reuse_hvac_lpd, "LITERS/DAY"),
-                ("EXCESS TREATED WATER TO EXTERNAL MUNCIPAL DRAIN", stp.excess_treated_lpd, "LITERS/DAY"),
+                ("EXCESS TREATED WATER TO EXTERNAL\nMUNCIPAL DRAIN", stp.excess_treated_lpd, "LITERS/DAY"),
             ]
             for idx, (desc, cap, unit) in enumerate(stp_data, 1):
-                stp_rows.append([self._tc(idx), self._tc(desc, 0), self._tc(cap), self._tc(unit)])
-            t_stp = Table(stp_rows, colWidths=[40, 280, 100, 80])
-            t_stp.setStyle(self._grid_style())
-            story.append(t_stp)
-            story.append(Spacer(1, 10))
+                rows.append(
+                    [
+                        self._tc(idx, 9),
+                        self._p(desc.replace("\n", "<br/>"), size=9, align=0),
+                        self._tc(cap, 9),
+                        self._tc(unit, 9),
+                    ]
+                )
+            cw = [50, usable - 220, 90, 80]
+            t = Table(rows, colWidths=cw, rowHeights=[16] + [28] * 2 + [18] * 2 + [28] + [18] * 3 + [28])
+            cmds = self._base_grid(header_rows=1, font_pad=3)
+            t.setStyle(TableStyle(cmds))
+            blocks.append(t)
+            blocks.append(Spacer(1, 14))
+
+        for item in blocks:
+            if isinstance(item, Spacer):
+                story.append(item)
+            else:
+                wrap = Table([[Spacer(left, 1), item]], colWidths=[left, usable + 4])
+                wrap.setStyle(
+                    TableStyle(
+                        [
+                            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                            ("TOPPADDING", (0, 0), (-1, -1), 0),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                        ]
+                    )
+                )
+                story.append(wrap)
         return story
 
 
