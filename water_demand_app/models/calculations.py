@@ -12,6 +12,7 @@ class WingResult:
     population: int
     domestic_lpd: int
     flushing_lpd: int
+    kitchen_water_lpd: int
     total_lpd: int
 
 
@@ -69,6 +70,7 @@ class PlotResults:
     landscape_wet_lpd: int = 0
     swimming_pool_lpd: int = 0
     hvac_lpd: int = 0
+    kitchen_water_lpd: int = 0
     dry_total_water_lpd: int = 0
     wet_total_water_lpd: int = 0
     dry_treated_water_lpd: int = 0

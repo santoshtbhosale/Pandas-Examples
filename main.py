@@ -60,6 +60,7 @@ except Exception:
     RWHPage = None  # type: ignore
 
 
+
 # ==================== config/nbc_2026.py ====================
 """NBC-2026 water demand constants and calculation parameters."""
 
@@ -74,24 +75,93 @@ BRAND_DEMAND_ORANGE = "#E67E22"
 BRAND_UGT_TEAL = "#16A085"
 BRAND_STP_PURPLE = "#8E44AD"
 
-# Residential LPCD (Liters Per Capita Per Day)
+# Residential LPCD (Liters Per Capita Per Day) — NBC 2026
 RES_DOMESTIC_LPCD = 105
 RES_FLUSHING_LPCD = 30
 RES_TOTAL_LPCD = 135
 
+# Kitchen water (litres/day per flat) — NBC fixture-based allowance
+KITCHEN_LPD_PER_FLAT: Dict[str, int] = {
+    "1BHK": 25,
+    "2BHK": 35,
+    "3BHK": 45,
+    "PH": 55,
+}
+
+# Default population per flat type when BHK mix is used
+BHK_POPULATION: Dict[str, int] = {
+    "1BHK": 2,
+    "2BHK": 4,
+    "3BHK": 5,
+    "PH": 5,
+}
+
+BUILDING_TYPES: Tuple[str, ...] = (
+    "High Rise Tower",
+    "Mid Rise Tower",
+    "Low Rise",
+    "Bungalow",
+    "Row House",
+    "Villa",
+)
+
+# Staff dropdowns
+STAFF_ENGINEERS: Tuple[str, ...] = (
+    "AKASH KHADE",
+    "SWAPNIL",
+    "RAHUL PATIL",
+    "PRATHMESH GAIKWAD",
+    "OTHER",
+)
+STAFF_APPROVAL: Tuple[str, ...] = (
+    "AKASH",
+    "SWAPNIL",
+    "PRATHMESH GAIKWAD",
+    "OTHER",
+)
+
+# Plot configuration
+PLOT_MODE_DUAL = "dual"
+PLOT_MODE_SINGLE = "single"
+PLOT_MODE_LABELS: Dict[str, str] = {
+    "Dual (Plot-A & Plot-B)": PLOT_MODE_DUAL,
+    "Single Plot": PLOT_MODE_SINGLE,
+}
+PLOTS = ("Plot-A", "Plot-B")
+
+# Project type — controls HVAC visibility
+PROJECT_TYPE_RESIDENTIAL = "residential"
+PROJECT_TYPE_MIXED = "residential_commercial"
+PROJECT_TYPE_COMMERCIAL = "commercial"
+PROJECT_TYPE_LABELS: Dict[str, str] = {
+    "Residential": PROJECT_TYPE_RESIDENTIAL,
+    "Residential + Commercial": PROJECT_TYPE_MIXED,
+    "Commercial": PROJECT_TYPE_COMMERCIAL,
+}
+
 # Landscape NBC-2026
 LANDSCAPE_L_PER_SQM = 6
-WET_SEASON_LANDSCAPE_FACTOR = 1000 / 4590  # derived from reference project
+WET_SEASON_LANDSCAPE_FACTOR = 1000 / 4590
 
 # STP parameters
 SEWAGE_GENERATION_FACTOR = 0.90
-STP_TREATED_WATER_PER_KLD = 882  # liters per KLD of STP capacity
+STP_TREATED_WATER_PER_KLD = 882
 STP_ROUNDING_KLD = 10
 
 # UGT storage days
 UGT_DOMESTIC_DAYS = 2
 UGT_FLUSHING_DAYS = 1
 UGT_FIRE_DAYS = 1
+
+# NBC 2016 Part 4 — residential fire water storage (litres) by building height (m)
+FIRE_TANK_RESIDENTIAL_BY_HEIGHT: Tuple[Tuple[float, int], ...] = (
+    (15.0, 50_000),
+    (24.0, 100_000),
+    (30.0, 200_000),
+    (45.0, 300_000),
+    (60.0, 400_000),
+    (9999.0, 500_000),
+)
 
 COMPANY_NAME = "AMERICAN EDGE ENGINEERS PVT. LTD."
 COMPANY_FOOTER = (
@@ -103,33 +173,111 @@ COMPANY_ADDRESS = (
 )
 COMPANY_CONTACT = "Info@americanedgeee.com, Mo-No-9623134045/8087009611"
 
-PLOTS = ("Plot-A", "Plot-B")
+
+def active_plots(plot_mode: str = PLOT_MODE_DUAL) -> Tuple[str, ...]:
+    if plot_mode == PLOT_MODE_SINGLE:
+        return ("Plot-A",)
+    return PLOTS
+
+
+def plot_choices(plot_mode: str = PLOT_MODE_DUAL) -> List[str]:
+    return list(active_plots(plot_mode))
+
+
+def hvac_applicable(project_type: str) -> bool:
+    return project_type in (PROJECT_TYPE_MIXED, PROJECT_TYPE_COMMERCIAL)
+
+
+def fire_tank_capacity_liters(building_height_m: float) -> int:
+    """NBC 2016 Part 4 residential static water storage by height."""
+    height = max(0.0, float(building_height_m or 0))
+    for limit, capacity in FIRE_TANK_RESIDENTIAL_BY_HEIGHT:
+        if height <= limit:
+            return capacity
+    return FIRE_TANK_RESIDENTIAL_BY_HEIGHT[-1][1]
+
+
+def kitchen_water_lpd(
+    flats_1bhk: int = 0,
+    flats_2bhk: int = 0,
+    flats_3bhk: int = 0,
+    flats_penthouse: int = 0,
+) -> int:
+    return (
+        flats_1bhk * KITCHEN_LPD_PER_FLAT["1BHK"]
+        + flats_2bhk * KITCHEN_LPD_PER_FLAT["2BHK"]
+        + flats_3bhk * KITCHEN_LPD_PER_FLAT["3BHK"]
+        + flats_penthouse * KITCHEN_LPD_PER_FLAT["PH"]
+    )
+
+
+def bhk_population(
+    flats_1bhk: int = 0,
+    flats_2bhk: int = 0,
+    flats_3bhk: int = 0,
+    flats_penthouse: int = 0,
+) -> int:
+    return (
+        flats_1bhk * BHK_POPULATION["1BHK"]
+        + flats_2bhk * BHK_POPULATION["2BHK"]
+        + flats_3bhk * BHK_POPULATION["3BHK"]
+        + flats_penthouse * BHK_POPULATION["PH"]
+    )
+
+
+def bhk_flat_count(
+    flats_1bhk: int = 0,
+    flats_2bhk: int = 0,
+    flats_3bhk: int = 0,
+    flats_penthouse: int = 0,
+) -> int:
+    return flats_1bhk + flats_2bhk + flats_3bhk + flats_penthouse
 
 
 @dataclass(frozen=True)
 class CommercialTypeSpec:
     label: str
-    density_divisor: float
+    density_divisor: float  # sq.m per person (NBC occupant load)
     domestic_lpcd: int
     flushing_lpcd: int
     use_ceil: bool = False
+    nbc_reference: str = ""
 
     @property
     def total_lpcd(self) -> int:
         return self.domestic_lpcd + self.flushing_lpcd
 
 
+# NBC 2016 / 2026 Part 9 Table 7 — Occupant Load (sq.m per person)
 COMMERCIAL_TYPES: Dict[str, CommercialTypeSpec] = {
-    "Shop - Ground Floor": CommercialTypeSpec("Shop - Ground Floor", 3.0, 25, 20),
-    "Shop - Upper Floor": CommercialTypeSpec("Shop - Upper Floor", 6.0, 25, 20),
-    "Office": CommercialTypeSpec("Office", 10.0, 25, 20),
-    "Restaurant": CommercialTypeSpec("Restaurant", 1.4, 55, 15, use_ceil=True),
-    "Food Court": CommercialTypeSpec("Food Court", 10.0, 25, 10),
-    "Clubhouse": CommercialTypeSpec("Clubhouse", 10.0, 25, 20),
+    "Shop - Ground Floor": CommercialTypeSpec(
+        "Shop - Ground Floor", 3.0, 25, 20, nbc_reference="Mercantile — ground floor"
+    ),
+    "Shop - Upper Floor": CommercialTypeSpec(
+        "Shop - Upper Floor", 6.0, 25, 20, nbc_reference="Mercantile — upper floors"
+    ),
     "Shop": CommercialTypeSpec("Shop - Ground Floor", 3.0, 25, 20),
-    "Hospital": CommercialTypeSpec("Hospital", 15.0, 340, 110),
-    "School": CommercialTypeSpec("School", 10.0, 25, 20),
-    "Mall": CommercialTypeSpec("Mall", 5.0, 25, 20),
+    "Office": CommercialTypeSpec("Office", 10.0, 25, 20, nbc_reference="Business"),
+    "Restaurant": CommercialTypeSpec(
+        "Restaurant", 1.4, 55, 15, use_ceil=True, nbc_reference="Assembly — dining"
+    ),
+    "Food Court": CommercialTypeSpec("Food Court", 1.4, 55, 15, use_ceil=True, nbc_reference="Assembly"),
+    "Banquet Hall": CommercialTypeSpec("Banquet Hall", 1.4, 55, 15, use_ceil=True, nbc_reference="Assembly"),
+    "Cinema / Auditorium": CommercialTypeSpec(
+        "Cinema / Auditorium", 1.0, 25, 10, use_ceil=True, nbc_reference="Assembly"
+    ),
+    "Clubhouse": CommercialTypeSpec("Clubhouse", 10.0, 25, 20, nbc_reference="Assembly"),
+    "Hospital": CommercialTypeSpec("Hospital", 15.0, 340, 110, nbc_reference="Institutional"),
+    "School / Classroom": CommercialTypeSpec("School / Classroom", 4.0, 25, 20, nbc_reference="Educational"),
+    "School": CommercialTypeSpec("School / Classroom", 4.0, 25, 20),
+    "Mall": CommercialTypeSpec("Mall", 5.0, 25, 20, nbc_reference="Mercantile"),
+    "Bank": CommercialTypeSpec("Bank", 10.0, 25, 20, nbc_reference="Business"),
+    "Library": CommercialTypeSpec("Library", 4.6, 25, 20, nbc_reference="Assembly"),
+    "Gymnasium": CommercialTypeSpec("Gymnasium", 1.8, 25, 20, use_ceil=True, nbc_reference="Assembly"),
+    "Warehouse / Storage": CommercialTypeSpec(
+        "Warehouse / Storage", 30.0, 25, 10, nbc_reference="Storage"
+    ),
+    "Parking": CommercialTypeSpec("Parking", 50.0, 25, 10, nbc_reference="Parking"),
     "Custom": CommercialTypeSpec("Custom", 10.0, 25, 20),
 }
 
@@ -187,6 +335,7 @@ def treated_water_lpd(say_stp_kld: float) -> int:
 
 
 
+
 @dataclass
 class RevisionInfo:
     date: str = ""
@@ -213,6 +362,8 @@ class ProjectData:
     engineer_name: str = "AKASH KHADE"
     project_no: str = ""
     date: str = ""
+    plot_mode: str = PLOT_MODE_DUAL
+    project_type: str = PROJECT_TYPE_MIXED
     revision: RevisionInfo = field(default_factory=RevisionInfo)
 
     def __post_init__(self) -> None:
@@ -230,6 +381,8 @@ class ProjectData:
             "engineer_name": self.engineer_name,
             "project_no": self.project_no,
             "date": self.date,
+            "plot_mode": self.plot_mode,
+            "project_type": self.project_type,
             "revision": self.revision.to_dict(),
         }
 
@@ -248,6 +401,8 @@ class ProjectData:
             engineer_name=data.get("engineer_name", data.get("Engineer Name", "AKASH KHADE")),
             project_no=data.get("project_no", data.get("Project No.", "")),
             date=data.get("date", data.get("Date", "")),
+            plot_mode=data.get("plot_mode", PLOT_MODE_DUAL),
+            project_type=data.get("project_type", PROJECT_TYPE_MIXED),
             revision=revision,
         )
 
@@ -265,17 +420,49 @@ class ProjectData:
 
 
 
+
 @dataclass
 class ResidentialWing:
     plot: str = "Plot-A"
     wing: str = ""
+    building_type: str = "High Rise Tower"
+    building_height_m: float = 0.0
     flats: int = 0
+    flats_1bhk: int = 0
+    flats_2bhk: int = 0
+    flats_3bhk: int = 0
+    flats_penthouse: int = 0
     pop_per_flat: int = 5
     sort_order: int = 0
 
     @property
+    def has_bhk_mix(self) -> bool:
+        return bhk_flat_count(
+            self.flats_1bhk, self.flats_2bhk, self.flats_3bhk, self.flats_penthouse
+        ) > 0
+
+    @property
+    def effective_flats(self) -> int:
+        bhk_total = bhk_flat_count(
+            self.flats_1bhk, self.flats_2bhk, self.flats_3bhk, self.flats_penthouse
+        )
+        return bhk_total if bhk_total > 0 else self.flats
+
+    @property
     def population(self) -> int:
+        if self.has_bhk_mix:
+            return bhk_population(
+                self.flats_1bhk, self.flats_2bhk, self.flats_3bhk, self.flats_penthouse
+            )
         return self.flats * self.pop_per_flat
+
+    @property
+    def kitchen_water(self) -> int:
+        if not self.has_bhk_mix:
+            return 0
+        return kitchen_water_lpd(
+            self.flats_1bhk, self.flats_2bhk, self.flats_3bhk, self.flats_penthouse
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -285,7 +472,13 @@ class ResidentialWing:
         return cls(
             plot=data.get("plot", data.get("Plot", "Plot-A")),
             wing=data.get("wing", data.get("Wing", "")),
+            building_type=data.get("building_type", "High Rise Tower"),
+            building_height_m=float(data.get("building_height_m", 0) or 0),
             flats=int(data.get("flats", data.get("No. Of Flats", 0)) or 0),
+            flats_1bhk=int(data.get("flats_1bhk", 0) or 0),
+            flats_2bhk=int(data.get("flats_2bhk", 0) or 0),
+            flats_3bhk=int(data.get("flats_3bhk", 0) or 0),
+            flats_penthouse=int(data.get("flats_penthouse", data.get("flats_ph", 0)) or 0),
             pop_per_flat=int(data.get("pop_per_flat", data.get("Pop/Flat", 5)) or 5),
             sort_order=int(data.get("sort_order", 0)),
         )
@@ -294,7 +487,7 @@ class ResidentialWing:
         return {
             "Plot": self.plot,
             "Wing": self.wing,
-            "No. Of Flats": self.flats,
+            "No. Of Flats": self.effective_flats,
             "Population": self.population,
         }
 
@@ -383,6 +576,7 @@ class OHTDetail:
 class OtherDetails:
     landscape_area: Dict[str, float] = field(default_factory=lambda: {"Plot-A": 765.0, "Plot-B": 762.0})
     swimming_pool: Dict[str, float] = field(default_factory=lambda: {"Plot-A": 0.0, "Plot-B": 0.0})
+    swimming_pool_na: Dict[str, bool] = field(default_factory=lambda: {"Plot-A": False, "Plot-B": False})
     hvac_water: Dict[str, float] = field(default_factory=lambda: {"Plot-A": 0.0, "Plot-B": 0.0})
     fire_tank: Dict[str, float] = field(default_factory=lambda: {"Plot-A": 300000.0, "Plot-B": 230000.0})
     fire_tank_commercial: Dict[str, Dict[str, float]] = field(default_factory=dict)
@@ -397,6 +591,7 @@ class OtherDetails:
         return {
             "landscape_area": self.landscape_area,
             "swimming_pool": self.swimming_pool,
+            "swimming_pool_na": self.swimming_pool_na,
             "hvac_water": self.hvac_water,
             "fire_tank": self.fire_tank,
             "fire_tank_commercial": self.fire_tank_commercial,
@@ -412,9 +607,11 @@ class OtherDetails:
                 "Plot-B": float(data.get("Fire Tank Plot-B", 230000) or 230000),
             }
         oht_list = [OHTDetail.from_dict(o) for o in data.get("oht_details", [])]
+        pool_na = data.get("swimming_pool_na", {"Plot-A": False, "Plot-B": False})
         return cls(
             landscape_area=data.get("landscape_area", {"Plot-A": 765.0, "Plot-B": 762.0}),
             swimming_pool=data.get("swimming_pool", {"Plot-A": 0.0, "Plot-B": 0.0}),
+            swimming_pool_na=pool_na,
             hvac_water=data.get("hvac_water", {"Plot-A": 0.0, "Plot-B": 0.0}),
             fire_tank=data.get("fire_tank", legacy_fire or {"Plot-A": 300000.0, "Plot-B": 230000.0}),
             fire_tank_commercial=data.get("fire_tank_commercial", {}),
@@ -439,6 +636,7 @@ class WingResult:
     population: int
     domestic_lpd: int
     flushing_lpd: int
+    kitchen_water_lpd: int
     total_lpd: int
 
 
@@ -496,6 +694,7 @@ class PlotResults:
     landscape_wet_lpd: int = 0
     swimming_pool_lpd: int = 0
     hvac_lpd: int = 0
+    kitchen_water_lpd: int = 0
     dry_total_water_lpd: int = 0
     wet_total_water_lpd: int = 0
     dry_treated_water_lpd: int = 0
@@ -571,17 +770,36 @@ class WaterDemandCalculator:
         residential: List[ResidentialWing],
         commercial: List[CommercialUnit],
         other: OtherDetails,
+        project: Optional[ProjectData] = None,
     ) -> None:
         self.residential = residential
         self.commercial = commercial
         self.other = other
+        self.project = project or ProjectData()
+        self._plots = active_plots(self.project.plot_mode)
 
     def calculate(self) -> CalculationResults:
+        self._apply_auto_fire_tanks()
         results = CalculationResults()
         for plot in PLOTS:
-            results.plots[plot] = self._calculate_plot(plot)
+            if plot in self._plots:
+                results.plots[plot] = self._calculate_plot(plot)
+            else:
+                results.plots[plot] = PlotResults(plot=plot)
         results.total = self._calculate_totals(results.plots)
         return results
+
+    def _apply_auto_fire_tanks(self) -> None:
+        for plot in self._plots:
+            heights = [
+                w.building_height_m
+                for w in self.residential
+                if w.plot == plot and w.building_height_m > 0
+            ]
+            if heights:
+                self.other.fire_tank[plot] = float(
+                    fire_tank_capacity_liters(max(heights))
+                )
 
     def _calculate_plot(self, plot: str) -> PlotResults:
         plot_res = PlotResults(plot=plot)
@@ -590,13 +808,15 @@ class WaterDemandCalculator:
 
         for wing in sorted(res_wings, key=lambda w: w.sort_order):
             dom, flu, tot = residential_demand(wing.population)
+            kitchen = wing.kitchen_water
             wr = WingResult(
                 wing=wing.wing,
-                flats=wing.flats,
+                flats=wing.effective_flats,
                 pop_per_flat=wing.pop_per_flat,
                 population=wing.population,
                 domestic_lpd=dom,
                 flushing_lpd=flu,
+                kitchen_water_lpd=kitchen,
                 total_lpd=tot,
             )
             plot_res.residential_wings.append(wr)
@@ -604,7 +824,8 @@ class WaterDemandCalculator:
             plot_res.res_domestic_lpd += dom
             plot_res.res_flushing_lpd += flu
             plot_res.res_total_lpd += tot
-            plot_res.total_flats += wing.flats
+            plot_res.kitchen_water_lpd += kitchen
+            plot_res.total_flats += wing.effective_flats
 
         plot_res.num_buildings_res = len(res_wings)
 
@@ -640,11 +861,27 @@ class WaterDemandCalculator:
         landscape_area = self.other.landscape_area.get(plot, 0.0)
         plot_res.landscape_dry_lpd = landscape_demand(landscape_area)
         plot_res.landscape_wet_lpd = wet_landscape_demand(plot_res.landscape_dry_lpd)
-        plot_res.swimming_pool_lpd = int(self.other.swimming_pool.get(plot, 0))
-        plot_res.hvac_lpd = int(self.other.hvac_water.get(plot, 0))
 
-        dry_other = plot_res.landscape_dry_lpd + plot_res.swimming_pool_lpd + plot_res.hvac_lpd
-        wet_other = plot_res.landscape_wet_lpd + plot_res.swimming_pool_lpd + plot_res.hvac_lpd
+        pool_na = self.other.swimming_pool_na.get(plot, False)
+        plot_res.swimming_pool_lpd = 0 if pool_na else int(self.other.swimming_pool.get(plot, 0))
+
+        if hvac_applicable(self.project.project_type):
+            plot_res.hvac_lpd = int(self.other.hvac_water.get(plot, 0))
+        else:
+            plot_res.hvac_lpd = 0
+
+        dry_other = (
+            plot_res.landscape_dry_lpd
+            + plot_res.swimming_pool_lpd
+            + plot_res.hvac_lpd
+            + plot_res.kitchen_water_lpd
+        )
+        wet_other = (
+            plot_res.landscape_wet_lpd
+            + plot_res.swimming_pool_lpd
+            + plot_res.hvac_lpd
+            + plot_res.kitchen_water_lpd
+        )
 
         plot_res.dry_total_water_lpd = (
             plot_res.res_total_lpd + plot_res.com_total_lpd + dry_other
@@ -720,7 +957,6 @@ class WaterDemandCalculator:
         )
 
         for block_name in sorted(blocks.keys()):
-            block_units = blocks[block_name]
             block_dom = sum(u.domestic_lpd for u in plot_res.commercial_units if u.block == block_name)
             block_flu = sum(u.flushing_lpd for u in plot_res.commercial_units if u.block == block_name)
             block_fire = int(self.other.get_fire_tank(plot, block_name) or 0)
@@ -826,7 +1062,15 @@ class WaterDemandCalculator:
 
         res_water = plot_res.res_total_lpd
         if res_water > 0:
-            sections.append(self._stp_calc("RESIDENTIAL", res_water, plot_res.res_flushing_lpd, plot_res.landscape_dry_lpd, plot_res.hvac_lpd))
+            sections.append(
+                self._stp_calc(
+                    "RESIDENTIAL",
+                    res_water,
+                    plot_res.res_flushing_lpd,
+                    plot_res.landscape_dry_lpd,
+                    plot_res.hvac_lpd,
+                )
+            )
 
         com_blocks = sorted(blocks.keys())
         if com_blocks:
@@ -908,21 +1152,30 @@ class WaterDemandCalculator:
     def _calculate_totals(self, plots: Dict[str, PlotResults]) -> Dict[str, Any]:
         plot_a = plots.get("Plot-A")
         plot_b = plots.get("Plot-B")
-        if not plot_a or not plot_b:
+        if not plot_a:
             return {}
+        active = [p for p in (plot_a, plot_b) if p and (p.total_population > 0 or p.dry_total_water_lpd > 0)]
+        if self.project.plot_mode == PLOT_MODE_SINGLE:
+            active = [plot_a]
+        total_pop = sum(p.total_population for p in active)
+        total_water = sum(p.dry_total_water_lpd for p in active)
+        total_stp = sum(p.stp_capacity_kld for p in active)
+        total_res_pop = sum(p.res_population for p in active)
+        total_com_pop = sum(p.com_population for p in active)
+        total_flats = sum(p.total_flats for p in active)
         return {
-            "Total Population": plot_a.total_population + plot_b.total_population,
-            "Total Water (LPD)": plot_a.dry_total_water_lpd + plot_b.dry_total_water_lpd,
-            "Total STP Capacity (KLD)": plot_a.stp_capacity_kld + plot_b.stp_capacity_kld,
-            "Total Residential Population": plot_a.res_population + plot_b.res_population,
-            "Total Commercial Population": plot_a.com_population + plot_b.com_population,
-            "Total Flats": plot_a.total_flats + plot_b.total_flats,
+            "Total Population": total_pop,
+            "Total Water (LPD)": total_water,
+            "Total STP Capacity (KLD)": total_stp,
+            "Total Residential Population": total_res_pop,
+            "Total Commercial Population": total_com_pop,
+            "Total Flats": total_flats,
             "Plot-A Res Pop": plot_a.res_population,
-            "Plot-B Res Pop": plot_b.res_population,
+            "Plot-B Res Pop": plot_b.res_population if plot_b else 0,
             "Plot-A Total Water (LPD)": plot_a.dry_total_water_lpd,
-            "Plot-B Total Water (LPD)": plot_b.dry_total_water_lpd,
+            "Plot-B Total Water (LPD)": plot_b.dry_total_water_lpd if plot_b else 0,
             "Plot-A STP Capacity (KLD)": plot_a.stp_capacity_kld,
-            "Plot-B STP Capacity (KLD)": plot_b.stp_capacity_kld,
+            "Plot-B STP Capacity (KLD)": plot_b.stp_capacity_kld if plot_b else 0,
         }
 
 
@@ -930,11 +1183,13 @@ def perform_calculations(
     residential_data: List[dict],
     commercial_data: List[dict],
     other_data: dict,
-) -> Tuple[CalculationResults, Dict[str, Dict[str, Any]]]:
+    project_data: Optional[dict] = None,
+) -> tuple:
     residential = [ResidentialWing.from_dict(r) for r in residential_data]
     commercial = [CommercialUnit.from_dict(c) for c in commercial_data]
     other = OtherDetails.from_dict(other_data)
-    calc = WaterDemandCalculator(residential, commercial, other)
+    project = ProjectData.from_dict(project_data or {})
+    calc = WaterDemandCalculator(residential, commercial, other, project)
     results = calc.calculate()
     return results, results.legacy_dict()
 
@@ -1147,26 +1402,6 @@ def parse_project_snapshot(data: Dict[str, Any]) -> tuple:
     other = OtherDetails.from_dict(data.get("other", {}))
     calculated = data.get("calculated", {})
     return project, residential, commercial, other, calculated
-
-
-def save_project_json(
-    file_path: str,
-    project: ProjectData,
-    residential: List[ResidentialWing],
-    commercial: List[CommercialUnit],
-    other: OtherDetails,
-    calculated: Optional[Dict[str, Any]] = None,
-) -> None:
-    snapshot = build_project_snapshot(project, residential, commercial, other, calculated)
-    with open(file_path, "w", encoding="utf-8") as fh:
-        json.dump(snapshot, fh, indent=2, ensure_ascii=False)
-
-
-def load_project_json(file_path: str) -> Tuple[ProjectData, List[ResidentialWing], List[CommercialUnit], OtherDetails, dict]:
-    with open(file_path, "r", encoding="utf-8") as fh:
-        data = json.load(fh)
-    return parse_project_snapshot(data)
-
 # ==================== services/pdf_exporter.py ====================
 """ReportLab PDF exporter — landscape pages 1-4, portrait pages 5-8, matching reference layout."""
 
@@ -2549,6 +2784,7 @@ def export_pdf(
     exporter = PDFExporter(project, results, logo_path)
     exporter.export(file_path)
 
+
 # ==================== services/excel_exporter.py ====================
 
 
@@ -2578,12 +2814,10 @@ class ExcelExporter:
     def export(self, file_path: str) -> None:
         self._build_cover()
         self._build_consolidated()
-        self._build_plot_demand("Plot-A")
-        self._build_plot_demand("Plot-B")
-        self._build_ugt_oht("Plot-A")
-        self._build_ugt_oht("Plot-B")
-        self._build_stp("Plot-A")
-        self._build_stp("Plot-B")
+        for plot in active_plots(self.project.plot_mode):
+            self._build_plot_demand(plot)
+            self._build_ugt_oht(plot)
+            self._build_stp(plot)
         self._build_summary()
         if "Sheet" in self.wb.sheetnames:
             del self.wb["Sheet"]
@@ -2691,10 +2925,10 @@ class ExcelExporter:
 
         ws["A3"] = "RESIDENTIAL"
         ws["A3"].font = Font(bold=True)
-        res_headers = ["SR.NO", "WING", "FLATS", "POP/FLAT", "POPULATION", "DOMESTIC", "FLUSHING", "TOTAL"]
+        res_headers = ["SR.NO", "WING", "FLATS", "POP/FLAT", "POPULATION", "DOMESTIC", "FLUSHING", "KITCHEN", "TOTAL"]
         for i, h in enumerate(res_headers, 1):
             ws.cell(row=4, column=i, value=h)
-        self._style_header_row(ws, 4, 8)
+        self._style_header_row(ws, 4, 9)
         row = 5
         for idx, w in enumerate(plot.residential_wings, 1):
             ws.cell(row=row, column=1, value=idx)
@@ -2704,14 +2938,16 @@ class ExcelExporter:
             ws.cell(row=row, column=5, value=w.population)
             ws.cell(row=row, column=6, value=w.domestic_lpd)
             ws.cell(row=row, column=7, value=w.flushing_lpd)
-            ws.cell(row=row, column=8, value=w.total_lpd)
+            ws.cell(row=row, column=8, value=w.kitchen_water_lpd)
+            ws.cell(row=row, column=9, value=w.total_lpd)
             row += 1
         ws.cell(row=row, column=2, value="SUB-TOTAL")
         ws.cell(row=row, column=5, value=plot.res_population)
         ws.cell(row=row, column=6, value=plot.res_domestic_lpd)
         ws.cell(row=row, column=7, value=plot.res_flushing_lpd)
-        ws.cell(row=row, column=8, value=plot.res_total_lpd)
-        self._style_data_area(ws, 5, row, 8)
+        ws.cell(row=row, column=8, value=plot.kitchen_water_lpd)
+        ws.cell(row=row, column=9, value=plot.res_total_lpd)
+        self._style_data_area(ws, 5, row, 9)
         row += 2
 
         ws.cell(row=row, column=1, value="COMMERCIAL")
@@ -2742,12 +2978,17 @@ class ExcelExporter:
         ws.cell(row=row, column=1, value="Landscape (NBC-2026)")
         ws.cell(row=row, column=2, value=plot.landscape_dry_lpd)
         ws.cell(row=row + 1, column=1, value="Swimming Pool")
-        ws.cell(row=row + 1, column=2, value=plot.swimming_pool_lpd)
-        ws.cell(row=row + 2, column=1, value="HVAC")
-        ws.cell(row=row + 2, column=2, value=plot.hvac_lpd)
-        ws.cell(row=row + 3, column=1, value="GRAND TOTAL")
-        ws.cell(row=row + 3, column=1).font = Font(bold=True)
-        ws.cell(row=row + 3, column=2, value=plot.dry_total_water_lpd)
+        ws.cell(row=row + 1, column=2, value=plot.swimming_pool_lpd if plot.swimming_pool_lpd else "NA")
+        next_row = row + 2
+        if hvac_applicable(self.project.project_type):
+            ws.cell(row=next_row, column=1, value="HVAC")
+            ws.cell(row=next_row, column=2, value=plot.hvac_lpd)
+            next_row += 1
+        ws.cell(row=next_row, column=1, value="Kitchen Water")
+        ws.cell(row=next_row, column=2, value=plot.kitchen_water_lpd)
+        ws.cell(row=next_row + 1, column=1, value="GRAND TOTAL")
+        ws.cell(row=next_row + 1, column=1).font = Font(bold=True)
+        ws.cell(row=next_row + 1, column=2, value=plot.dry_total_water_lpd)
         self._auto_width(ws)
 
     def _build_ugt_oht(self, plot_name: str) -> None:
@@ -2959,7 +3200,9 @@ class AppState:
         return self.project.legacy_dict()
 
     def run_calculations(self) -> None:
-        calc = WaterDemandCalculator(self.residential, self.commercial, self.other)
+        calc = WaterDemandCalculator(
+            self.residential, self.commercial, self.other, self.project
+        )
         self.results = calc.calculate()
         self.calculated_legacy = self.results.legacy_dict()
 
@@ -2984,8 +3227,7 @@ class AppState:
 
 class ScrollablePage(ctk.CTkScrollableFrame):
     def __init__(self, master, **kwargs) -> None:
-        kwargs.setdefault("fg_color", "#FFFFFF")
-        kwargs.setdefault("corner_radius", 0)
+        kwargs.setdefault("fg_color", "transparent")
         super().__init__(master, **kwargs)
 
 # ==================== ui/components/preview_dialog.py ====================
@@ -3190,7 +3432,6 @@ class ProjectPage(ScrollablePage):
             ("project_name", "Project Name", "PROPOSED RESIDENTIAL & COMM. AT PUNAVALE"),
             ("client_name", "Client Name", "MR.PRATHMESH GAIKWAD"),
             ("project_location", "Project Location", "PUNAVALE, PUNE"),
-            ("engineer_name", "Engineer Name", "AKASH KHADE"),
             ("project_no", "Project No.", "078"),
         ]
         for i, (key, label, default) in enumerate(fields):
@@ -3201,27 +3442,60 @@ class ProjectPage(ScrollablePage):
             ent.grid(row=i, column=1, padx=20, pady=10)
             self.entries[key] = ent
 
-        ctk.CTkLabel(form, text="Date", font=("Arial", 14)).grid(row=5, column=0, padx=20, pady=10, sticky="w")
+        ctk.CTkLabel(form, text="Engineer Name", font=("Arial", 14)).grid(row=4, column=0, padx=20, pady=10, sticky="w")
+        self.engineer_var = ctk.StringVar(value=self.state.project.engineer_name or STAFF_ENGINEERS[0])
+        ctk.CTkComboBox(
+            form, values=list(STAFF_ENGINEERS), variable=self.engineer_var, width=400
+        ).grid(row=4, column=1, padx=20, pady=10)
+
+        ctk.CTkLabel(form, text="Plot Mode", font=("Arial", 14)).grid(row=5, column=0, padx=20, pady=10, sticky="w")
+        plot_label = next(
+            (k for k, v in PLOT_MODE_LABELS.items() if v == self.state.project.plot_mode),
+            list(PLOT_MODE_LABELS.keys())[0],
+        )
+        self.plot_mode_var = ctk.StringVar(value=plot_label)
+        ctk.CTkComboBox(
+            form, values=list(PLOT_MODE_LABELS.keys()), variable=self.plot_mode_var, width=400
+        ).grid(row=5, column=1, padx=20, pady=10)
+
+        ctk.CTkLabel(form, text="Project Type", font=("Arial", 14)).grid(row=6, column=0, padx=20, pady=10, sticky="w")
+        type_label = next(
+            (k for k, v in PROJECT_TYPE_LABELS.items() if v == self.state.project.project_type),
+            list(PROJECT_TYPE_LABELS.keys())[1],
+        )
+        self.project_type_var = ctk.StringVar(value=type_label)
+        ctk.CTkComboBox(
+            form, values=list(PROJECT_TYPE_LABELS.keys()), variable=self.project_type_var, width=400
+        ).grid(row=6, column=1, padx=20, pady=10)
+
+        ctk.CTkLabel(form, text="Date", font=("Arial", 14)).grid(row=7, column=0, padx=20, pady=10, sticky="w")
         self.date_entry = DateEntry(form, width=18, date_pattern="dd-mm-yyyy")
-        self.date_entry.grid(row=5, column=1, padx=20, pady=10, sticky="w")
+        self.date_entry.grid(row=7, column=1, padx=20, pady=10, sticky="w")
 
         ctk.CTkLabel(form, text="Revision Details", font=("Arial", 16, "bold")).grid(
-            row=6, column=0, columnspan=2, pady=(20, 5)
+            row=8, column=0, columnspan=2, pady=(20, 5)
         )
         rev_fields = [
-            ("revision_no", "Rev. No.", "R0"),
-            ("description", "Description", "ISSUED FOR REFERENCE"),
-            ("prepared_by", "Prepared By", "AKASH"),
-            ("checked_by", "Checked By", "AKASH"),
-            ("approved_by", "Approved By", "SWAPNIL"),
+            ("revision_no", "Rev. No.", "R0", "entry"),
+            ("description", "Description", "ISSUED FOR REFERENCE", "entry"),
+            ("prepared_by", "Prepared By", "AKASH", "combo"),
+            ("checked_by", "Checked By", "AKASH", "combo"),
+            ("approved_by", "Approved By", "SWAPNIL", "combo"),
         ]
-        for i, (key, label, default) in enumerate(rev_fields, start=7):
+        for i, (key, label, default, kind) in enumerate(rev_fields, start=9):
             ctk.CTkLabel(form, text=label, font=("Arial", 13)).grid(row=i, column=0, padx=20, pady=8, sticky="w")
-            ent = ctk.CTkEntry(form, width=400)
             val = getattr(self.state.project.revision, key, default)
-            ent.insert(0, val or default)
-            ent.grid(row=i, column=1, padx=20, pady=8)
-            self.entries[key] = ent
+            if kind == "combo":
+                var = ctk.StringVar(value=val or default)
+                ctk.CTkComboBox(form, values=list(STAFF_APPROVAL), variable=var, width=400).grid(
+                    row=i, column=1, padx=20, pady=8
+                )
+                self.entries[key] = var
+            else:
+                ent = ctk.CTkEntry(form, width=400)
+                ent.insert(0, val or default)
+                ent.grid(row=i, column=1, padx=20, pady=8)
+                self.entries[key] = ent
 
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=15)
@@ -3234,37 +3508,40 @@ class ProjectPage(ScrollablePage):
             width=220,
         ).pack()
 
+    def _field_value(self, key: str) -> str:
+        widget = self.entries[key]
+        return widget.get().strip() if hasattr(widget, "get") else str(widget.get()).strip()
+
     def _save_and_next(self) -> None:
         try:
             self.state.project.project_name = validate_required(self.entries["project_name"].get(), "Project Name")
             self.state.project.client_name = validate_required(self.entries["client_name"].get(), "Client Name")
-            self.state.project.project_location = validate_required(self.entries["project_location"].get(), "Project Location")
-            self.state.project.engineer_name = validate_required(self.entries["engineer_name"].get(), "Engineer Name")
+            self.state.project.project_location = validate_required(
+                self.entries["project_location"].get(), "Project Location"
+            )
+            self.state.project.engineer_name = validate_required(self.engineer_var.get(), "Engineer Name")
             self.state.project.project_no = self.entries["project_no"].get().strip()
+            self.state.project.plot_mode = PLOT_MODE_LABELS.get(
+                self.plot_mode_var.get(), self.state.project.plot_mode
+            )
+            self.state.project.project_type = PROJECT_TYPE_LABELS.get(
+                self.project_type_var.get(), self.state.project.project_type
+            )
             self.state.project.date = validate_date(self.date_entry.get())
             self.state.project.revision = RevisionInfo(
                 date=self.state.project.date,
-                revision_no=self.entries["revision_no"].get().strip() or "R0",
-                description=self.entries["description"].get().strip() or "ISSUED FOR REFERENCE",
-                prepared_by=self.entries["prepared_by"].get().strip(),
-                checked_by=self.entries["checked_by"].get().strip(),
-                approved_by=self.entries["approved_by"].get().strip(),
+                revision_no=self._field_value("revision_no") or "R0",
+                description=self._field_value("description") or "ISSUED FOR REFERENCE",
+                prepared_by=self._field_value("prepared_by"),
+                checked_by=self._field_value("checked_by"),
+                approved_by=self._field_value("approved_by"),
             )
             self.on_next()
         except ValidationError as exc:
             messagebox.showerror("Validation Error", exc.message)
 
     def refresh(self) -> None:
-        for key, ent in self.entries.items():
-            ent.delete(0, "end")
-            val = getattr(self.state.project, key, "")
-            if key == "revision_no":
-                val = self.state.project.revision.revision_no
-            elif key == "description":
-                val = self.state.project.revision.description
-            elif key in ("prepared_by", "checked_by", "approved_by"):
-                val = getattr(self.state.project.revision, key, "")
-            ent.insert(0, str(val or ""))
+        pass
 
 # ==================== ui/pages/residential_page.py ====================
 
@@ -3282,17 +3559,24 @@ class ResidentialPage(ScrollablePage):
         self.subtotal_labels: dict = {}
         self._build()
 
+    def _plot_values(self) -> list[str]:
+        return plot_choices(self.state.project.plot_mode)
+
     def _build(self) -> None:
         header = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=8)
         header.pack(fill="x", padx=10, pady=(5, 10))
+        plot_text = "Single Plot" if len(self._plot_values()) == 1 else "Plot A & B"
         ctk.CTkLabel(
-            header, text="Residential Details (Plot A & B)", font=("Arial", 20, "bold"), text_color="white"
+            header, text=f"Residential Details ({plot_text})", font=("Arial", 20, "bold"), text_color="white"
         ).pack(pady=12)
 
-        self.table_frame.pack(fill="both", expand=True, padx=15, pady=10)
-        headers = ["Plot", "Wing Name", "Flats", "Pop/Flat", "Population", "Domestic", "Flushing", "Total", ""]
+        self.table_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        headers = [
+            "Plot", "Wing", "Bldg Type", "Ht(m)", "Flats",
+            "1BHK", "2BHK", "3BHK", "PH", "Pop/Flat", "Population", "Kitchen", ""
+        ]
         for i, h in enumerate(headers):
-            ctk.CTkLabel(self.table_frame, text=h, font=("Arial", 11, "bold")).grid(row=0, column=i, padx=3, pady=5)
+            ctk.CTkLabel(self.table_frame, text=h, font=("Arial", 10, "bold")).grid(row=0, column=i, padx=2, pady=4)
 
         if not self.state.residential:
             self._add_default_rows()
@@ -3302,7 +3586,7 @@ class ResidentialPage(ScrollablePage):
 
         sub_frame = ctk.CTkFrame(self, fg_color="transparent")
         sub_frame.pack(fill="x", padx=15, pady=5)
-        for plot in ("Plot-A", "Plot-B"):
+        for plot in self._plot_values():
             lbl = ctk.CTkLabel(sub_frame, text=f"{plot} Population: 0", font=("Arial", 12))
             lbl.pack(side="left", padx=15)
             self.subtotal_labels[plot] = lbl
@@ -3311,7 +3595,6 @@ class ResidentialPage(ScrollablePage):
         btn_frame.pack(pady=10)
         ctk.CTkButton(btn_frame, text="+ Add Wing", command=lambda: self._add_row(), fg_color="#2980B9").grid(row=0, column=0, padx=10)
         ctk.CTkButton(btn_frame, text="+ Add Bungalow", command=self._add_bungalow, fg_color="#2980B9").grid(row=0, column=1, padx=10)
-        ctk.CTkButton(btn_frame, text="Duplicate Wing", command=self._duplicate_last, fg_color="#8E44AD").grid(row=0, column=4, padx=10)
         ctk.CTkButton(btn_frame, text="<- Back", command=self.on_back, fg_color="gray").grid(row=0, column=2, padx=10)
         ctk.CTkButton(
             btn_frame, text="Save & Next -> Commercial", command=self._save_and_next,
@@ -3329,98 +3612,112 @@ class ResidentialPage(ScrollablePage):
             self._add_row(wing)
 
     def _add_bungalow(self) -> None:
-        count = sum(1 for r in self.rows if "BUNGLOW" in r["wing"].get().upper() or "BUNGALOW" in r["wing"].get().upper())
+        count = sum(
+            1 for r in self.rows
+            if "BUNGLOW" in r["wing"].get().upper() or "BUNGALOW" in r["wing"].get().upper()
+        )
         letter = chr(65 + count)
         self._add_row(ResidentialWing(plot="Plot-A", wing=f"BUNGLOW-{letter}", flats=1, pop_per_flat=5))
 
     def _add_row(self, wing: ResidentialWing | None = None) -> None:
         r = len(self.rows) + 1
-        plot_var = ctk.StringVar(value=wing.plot if wing else "Plot-A")
-        plot_cb = ctk.CTkComboBox(self.table_frame, values=["Plot-A", "Plot-B"], variable=plot_var, width=100)
-        w_ent = ctk.CTkEntry(self.table_frame, width=160)
+        plot_var = ctk.StringVar(value=wing.plot if wing else self._plot_values()[0])
+        plot_cb = ctk.CTkComboBox(self.table_frame, values=self._plot_values(), variable=plot_var, width=80)
+        w_ent = ctk.CTkEntry(self.table_frame, width=90)
         w_ent.insert(0, wing.wing if wing else "")
-        f_ent = ctk.CTkEntry(self.table_frame, width=90)
+        btype_var = ctk.StringVar(value=wing.building_type if wing else BUILDING_TYPES[0])
+        btype_cb = ctk.CTkComboBox(self.table_frame, values=list(BUILDING_TYPES), variable=btype_var, width=100)
+        ht_ent = ctk.CTkEntry(self.table_frame, width=55)
+        ht_ent.insert(0, str(wing.building_height_m if wing else ""))
+        f_ent = ctk.CTkEntry(self.table_frame, width=50)
         f_ent.insert(0, str(wing.flats if wing else ""))
-        p_ent = ctk.CTkEntry(self.table_frame, width=70)
+        b1_ent = ctk.CTkEntry(self.table_frame, width=45)
+        b1_ent.insert(0, str(wing.flats_1bhk if wing else ""))
+        b2_ent = ctk.CTkEntry(self.table_frame, width=45)
+        b2_ent.insert(0, str(wing.flats_2bhk if wing else ""))
+        b3_ent = ctk.CTkEntry(self.table_frame, width=45)
+        b3_ent.insert(0, str(wing.flats_3bhk if wing else ""))
+        ph_ent = ctk.CTkEntry(self.table_frame, width=45)
+        ph_ent.insert(0, str(wing.flats_penthouse if wing else ""))
+        p_ent = ctk.CTkEntry(self.table_frame, width=50)
         p_ent.insert(0, str(wing.pop_per_flat if wing else 5))
         pop_lbl = ctk.CTkLabel(self.table_frame, text="0", width=65)
-        dom_lbl = ctk.CTkLabel(self.table_frame, text="0", width=75)
-        flu_lbl = ctk.CTkLabel(self.table_frame, text="0", width=75)
-        tot_lbl = ctk.CTkLabel(self.table_frame, text="0", width=75)
+        kit_lbl = ctk.CTkLabel(self.table_frame, text="0", width=60)
 
         def update(*_):
             try:
-                f = int(f_ent.get() or 0)
-                p = int(p_ent.get() or 0)
-                pop = f * p
-                dom, flu, tot = residential_demand(pop)
+                b1 = int(b1_ent.get() or 0)
+                b2 = int(b2_ent.get() or 0)
+                b3 = int(b3_ent.get() or 0)
+                ph = int(ph_ent.get() or 0)
+                bhk_total = b1 + b2 + b3 + ph
+                if bhk_total > 0:
+                    temp = ResidentialWing(
+                        flats_1bhk=b1, flats_2bhk=b2, flats_3bhk=b3, flats_penthouse=ph
+                    )
+                    pop = temp.population
+                    kitchen = temp.kitchen_water
+                else:
+                    f = int(f_ent.get() or 0)
+                    p = int(p_ent.get() or 0)
+                    pop = f * p
+                    kitchen = 0
                 pop_lbl.configure(text=str(pop))
-                dom_lbl.configure(text=f"{dom:,}")
-                flu_lbl.configure(text=f"{flu:,}")
-                tot_lbl.configure(text=f"{tot:,}")
+                kit_lbl.configure(text=str(kitchen))
             except ValueError:
                 pop_lbl.configure(text="0")
-                dom_lbl.configure(text="0")
-                flu_lbl.configure(text="0")
-                tot_lbl.configure(text="0")
+                kit_lbl.configure(text="0")
             self._update_subtotals()
 
-        f_ent.bind("<KeyRelease>", update)
-        p_ent.bind("<KeyRelease>", update)
+        for ent in (f_ent, p_ent, b1_ent, b2_ent, b3_ent, ph_ent):
+            ent.bind("<KeyRelease>", update)
         plot_var.trace_add("write", update)
 
-        plot_cb.grid(row=r, column=0, padx=3, pady=5)
-        w_ent.grid(row=r, column=1, padx=3, pady=5)
-        f_ent.grid(row=r, column=2, padx=3, pady=5)
-        p_ent.grid(row=r, column=3, padx=3, pady=5)
-        pop_lbl.grid(row=r, column=4, padx=3, pady=5)
-        dom_lbl.grid(row=r, column=5, padx=3, pady=5)
-        flu_lbl.grid(row=r, column=6, padx=3, pady=5)
-        tot_lbl.grid(row=r, column=7, padx=3, pady=5)
+        widgets = [
+            plot_cb, w_ent, btype_cb, ht_ent, f_ent,
+            b1_ent, b2_ent, b3_ent, ph_ent, p_ent, pop_lbl, kit_lbl,
+        ]
+        for j, widget in enumerate(widgets):
+            widget.grid(row=r, column=j, padx=2, pady=4)
 
         def remove_row():
-            for widget in (plot_cb, w_ent, f_ent, p_ent, pop_lbl, dom_lbl, flu_lbl, tot_lbl, rm_btn):
+            for widget in widgets + [rm_btn]:
                 widget.destroy()
             self.rows = [row for row in self.rows if row["row_idx"] != r]
             self._regrid()
             self._update_subtotals()
 
-        rm_btn = ctk.CTkButton(self.table_frame, text="X", width=30, fg_color="#C0392B", command=remove_row)
-        rm_btn.grid(row=r, column=8, padx=3, pady=5)
+        rm_btn = ctk.CTkButton(self.table_frame, text="X", width=28, fg_color="#C0392B", command=remove_row)
+        rm_btn.grid(row=r, column=12, padx=2, pady=4)
 
         self.rows.append({
-            "row_idx": r, "plot": plot_var, "wing": w_ent, "flats": f_ent,
-            "pop": p_ent, "pop_lbl": pop_lbl, "dom_lbl": dom_lbl, "flu_lbl": flu_lbl, "tot_lbl": tot_lbl,
-            "widgets": [plot_cb, w_ent, f_ent, p_ent, pop_lbl, dom_lbl, flu_lbl, tot_lbl, rm_btn],
+            "row_idx": r, "plot": plot_var, "wing": w_ent, "btype": btype_var,
+            "height": ht_ent, "flats": f_ent, "b1": b1_ent, "b2": b2_ent,
+            "b3": b3_ent, "ph": ph_ent, "pop": p_ent, "pop_lbl": pop_lbl,
+            "kit_lbl": kit_lbl, "widgets": widgets + [rm_btn],
         })
         update()
-
-
-    def _duplicate_last(self) -> None:
-        if not self.rows:
-            self._add_row()
-            return
-        last = self.rows[-1]
-        wing = ResidentialWing(
-            plot=last["plot"].get(),
-            wing=last["wing"].get() + " (Copy)",
-            flats=int(last["flats"].get() or 0),
-            pop_per_flat=int(last["pop"].get() or 5),
-        )
-        self._add_row(wing)
 
     def _regrid(self) -> None:
         for i, row in enumerate(self.rows, 1):
             row["row_idx"] = i
             for j, widget in enumerate(row["widgets"]):
-                widget.grid(row=i, column=j, padx=5, pady=5)
+                widget.grid(row=i, column=j, padx=2, pady=4)
 
     def _update_subtotals(self) -> None:
-        totals = {"Plot-A": 0, "Plot-B": 0}
+        totals = {plot: 0 for plot in self._plot_values()}
         for row in self.rows:
             try:
                 plot = row["plot"].get()
-                pop = int(row["flats"].get() or 0) * int(row["pop"].get() or 0)
+                b1 = int(row["b1"].get() or 0)
+                b2 = int(row["b2"].get() or 0)
+                b3 = int(row["b3"].get() or 0)
+                ph = int(row["ph"].get() or 0)
+                if b1 + b2 + b3 + ph > 0:
+                    temp = ResidentialWing(flats_1bhk=b1, flats_2bhk=b2, flats_3bhk=b3, flats_penthouse=ph)
+                    pop = temp.population
+                else:
+                    pop = int(row["flats"].get() or 0) * int(row["pop"].get() or 0)
                 totals[plot] = totals.get(plot, 0) + pop
                 row["pop_lbl"].configure(text=str(pop))
             except ValueError:
@@ -3433,12 +3730,27 @@ class ResidentialPage(ScrollablePage):
         try:
             for idx, row in enumerate(self.rows):
                 wing_name = validate_required(row["wing"].get(), "Wing Name")
-                flats = validate_positive_int(row["flats"].get(), "No. Of Flats")
-                pop_per_flat = validate_positive_int(row["pop"].get(), "Pop/Flat")
+                b1 = int(row["b1"].get() or 0)
+                b2 = int(row["b2"].get() or 0)
+                b3 = int(row["b3"].get() or 0)
+                ph = int(row["ph"].get() or 0)
+                height = float(row["height"].get() or 0)
+                if b1 + b2 + b3 + ph > 0:
+                    flats = 0
+                    pop_per_flat = 5
+                else:
+                    flats = validate_positive_int(row["flats"].get(), "No. Of Flats")
+                    pop_per_flat = validate_positive_int(row["pop"].get(), "Pop/Flat")
                 wings.append(ResidentialWing(
                     plot=row["plot"].get(),
                     wing=wing_name,
+                    building_type=row["btype"].get(),
+                    building_height_m=height,
                     flats=flats,
+                    flats_1bhk=b1,
+                    flats_2bhk=b2,
+                    flats_3bhk=b3,
+                    flats_penthouse=ph,
                     pop_per_flat=pop_per_flat,
                     sort_order=idx,
                 ))
@@ -3475,9 +3787,9 @@ class CommercialPage(ScrollablePage):
         ).pack(pady=12)
 
         self.table_frame.pack(fill="both", expand=True, padx=15, pady=10)
-        headers = ["Plot", "Block", "Type", "Floor", "Area", "Density", "Pop", "Domestic", "Flushing", "Total", ""]
+        headers = ["Plot", "Block", "Type", "Floor", "Area (sq.m)", "Pop (Auto)", ""]
         for i, h in enumerate(headers):
-            ctk.CTkLabel(self.table_frame, text=h, font=("Arial", 10, "bold")).grid(row=0, column=i, padx=2, pady=5)
+            ctk.CTkLabel(self.table_frame, text=h, font=("Arial", 12, "bold")).grid(row=0, column=i, padx=4, pady=5)
 
         if not self.state.commercial:
             self._add_default_row()
@@ -3490,7 +3802,7 @@ class CommercialPage(ScrollablePage):
         ctk.CTkButton(btn_frame, text="+ Add Commercial", command=lambda: self._add_row(), fg_color="#2980B9").grid(row=0, column=0, padx=10)
         ctk.CTkButton(btn_frame, text="<- Back", command=self.on_back, fg_color="gray").grid(row=0, column=1, padx=10)
         ctk.CTkButton(
-            btn_frame, text="Save & Next -> Landscape", command=self._save_and_next,
+            btn_frame, text="Save & Next -> Other", command=self._save_and_next,
             fg_color=BRAND_ORANGE, hover_color="#D06018"
         ).grid(row=0, column=2, padx=10)
 
@@ -3503,66 +3815,39 @@ class CommercialPage(ScrollablePage):
     def _add_row(self, unit: CommercialUnit | None = None) -> None:
         r = len(self.rows) + 1
         type_values = list(COMMERCIAL_TYPES.keys())
-        plot_var = ctk.StringVar(value=unit.plot if unit else "Plot-A")
-        plot_cb = ctk.CTkComboBox(self.table_frame, values=["Plot-A", "Plot-B"], variable=plot_var, width=90)
+        plot_var = ctk.StringVar(value=unit.plot if unit else plot_choices(self.state.project.plot_mode)[0])
+        plot_cb = ctk.CTkComboBox(
+            self.table_frame, values=plot_choices(self.state.project.plot_mode), variable=plot_var, width=90
+        )
         block_ent = ctk.CTkEntry(self.table_frame, width=80)
         block_ent.insert(0, unit.block if unit else "COMM-A")
         type_var = ctk.StringVar(value=unit.comm_type if unit else "Shop - Ground Floor")
         type_cb = ctk.CTkComboBox(self.table_frame, values=type_values, variable=type_var, width=150)
         floor_ent = ctk.CTkEntry(self.table_frame, width=120)
         floor_ent.insert(0, unit.floor_label if unit else "")
-        area_ent = ctk.CTkEntry(self.table_frame, width=70)
+        area_ent = ctk.CTkEntry(self.table_frame, width=90)
         area_ent.insert(0, str(unit.area_sqm if unit else ""))
-        density_ent = ctk.CTkEntry(self.table_frame, width=55)
-        spec_init = COMMERCIAL_TYPES.get(unit.comm_type if unit else "Shop - Ground Floor", COMMERCIAL_TYPES["Shop - Ground Floor"])
-        density_ent.insert(0, str(unit.density_override if unit and unit.density_override > 0 else spec_init.density_divisor))
-        pop_lbl = ctk.CTkLabel(self.table_frame, text="0", width=45)
-        dom_lbl = ctk.CTkLabel(self.table_frame, text="0", width=65)
-        flu_lbl = ctk.CTkLabel(self.table_frame, text="0", width=65)
-        tot_lbl = ctk.CTkLabel(self.table_frame, text="0", width=65)
+        pop_var = ctk.StringVar(value="0")
+        pop_lbl = ctk.CTkLabel(self.table_frame, textvariable=pop_var, width=70)
 
         def update_pop(*_):
             try:
                 area = float(area_ent.get() or 0)
                 spec = COMMERCIAL_TYPES.get(type_var.get(), COMMERCIAL_TYPES["Shop - Ground Floor"])
-                density_val = float(density_ent.get() or spec.density_divisor)
-                if density_val <= 0:
-                    density_val = spec.density_divisor
-                raw = area / density_val
-                pop = int(math.ceil(raw)) if spec.use_ceil else int(round(raw))
-                dom, flu, tot = commercial_demand(pop, spec)
-                pop_lbl.configure(text=str(pop))
-                dom_lbl.configure(text=f"{dom:,}")
-                flu_lbl.configure(text=f"{flu:,}")
-                tot_lbl.configure(text=f"{tot:,}")
+                pop_var.set(str(commercial_population(area, spec)))
             except ValueError:
-                pop_lbl.configure(text="0")
-                dom_lbl.configure(text="0")
-                flu_lbl.configure(text="0")
-                tot_lbl.configure(text="0")
-
-        def on_type_change(*_):
-            spec = COMMERCIAL_TYPES.get(type_var.get(), COMMERCIAL_TYPES["Shop - Ground Floor"])
-            if type_var.get() != "Custom":
-                density_ent.delete(0, "end")
-                density_ent.insert(0, str(spec.density_divisor))
-            update_pop()
+                pop_var.set("0")
 
         area_ent.bind("<KeyRelease>", update_pop)
-        density_ent.bind("<KeyRelease>", update_pop)
-        type_var.trace_add("write", on_type_change)
+        type_var.trace_add("write", update_pop)
         update_pop()
 
-        plot_cb.grid(row=r, column=0, padx=2, pady=5)
-        block_ent.grid(row=r, column=1, padx=2, pady=5)
-        type_cb.grid(row=r, column=2, padx=2, pady=5)
-        floor_ent.grid(row=r, column=3, padx=2, pady=5)
-        area_ent.grid(row=r, column=4, padx=2, pady=5)
-        density_ent.grid(row=r, column=5, padx=2, pady=5)
-        pop_lbl.grid(row=r, column=6, padx=2, pady=5)
-        dom_lbl.grid(row=r, column=7, padx=2, pady=5)
-        flu_lbl.grid(row=r, column=8, padx=2, pady=5)
-        tot_lbl.grid(row=r, column=9, padx=2, pady=5)
+        plot_cb.grid(row=r, column=0, padx=4, pady=5)
+        block_ent.grid(row=r, column=1, padx=4, pady=5)
+        type_cb.grid(row=r, column=2, padx=4, pady=5)
+        floor_ent.grid(row=r, column=3, padx=4, pady=5)
+        area_ent.grid(row=r, column=4, padx=4, pady=5)
+        pop_lbl.grid(row=r, column=5, padx=4, pady=5)
 
         def remove_row():
             for w in row_data["widgets"]:
@@ -3570,14 +3855,13 @@ class CommercialPage(ScrollablePage):
             self.rows = [row for row in self.rows if row["row_idx"] != r]
             self._regrid()
 
-        rm_btn = ctk.CTkButton(self.table_frame, text="X", width=28, fg_color="#C0392B", command=remove_row)
-        rm_btn.grid(row=r, column=10, padx=2, pady=5)
+        rm_btn = ctk.CTkButton(self.table_frame, text="X", width=30, fg_color="#C0392B", command=remove_row)
+        rm_btn.grid(row=r, column=6, padx=4, pady=5)
 
         row_data = {
             "row_idx": r, "plot": plot_var, "block": block_ent, "type": type_var,
-            "floor": floor_ent, "area": area_ent, "density": density_ent,
-            "pop_lbl": pop_lbl, "dom_lbl": dom_lbl, "flu_lbl": flu_lbl, "tot_lbl": tot_lbl,
-            "widgets": [plot_cb, block_ent, type_cb, floor_ent, area_ent, density_ent, pop_lbl, dom_lbl, flu_lbl, tot_lbl, rm_btn],
+            "floor": floor_ent, "area": area_ent, "pop_var": pop_var,
+            "widgets": [plot_cb, block_ent, type_cb, floor_ent, area_ent, pop_lbl, rm_btn],
         }
         self.rows.append(row_data)
 
@@ -3585,7 +3869,7 @@ class CommercialPage(ScrollablePage):
         for i, row in enumerate(self.rows, 1):
             row["row_idx"] = i
             for j, widget in enumerate(row["widgets"]):
-                widget.grid(row=i, column=j, padx=2, pady=5)
+                widget.grid(row=i, column=j, padx=4, pady=5)
 
     def _save_and_next(self) -> None:
         units: list = []
@@ -3593,14 +3877,12 @@ class CommercialPage(ScrollablePage):
             for idx, row in enumerate(self.rows):
                 area = validate_positive_float(row["area"].get(), "Area (sq.m)", allow_zero=False)
                 if area > 0:
-                    density_override = float(row["density"].get() or 0)
                     units.append(CommercialUnit(
                         plot=row["plot"].get(),
                         block=validate_required(row["block"].get(), "Block"),
                         comm_type=row["type"].get(),
                         floor_label=row["floor"].get().strip(),
                         area_sqm=area,
-                        density_override=density_override if row["type"].get() == "Custom" else 0,
                         sort_order=idx,
                     ))
             self.state.commercial = units
@@ -3609,200 +3891,11 @@ class CommercialPage(ScrollablePage):
             messagebox.showerror("Validation Error", exc.message)
 
     def refresh(self) -> None:
-        for row in self.rows:
-            try:
-                area = float(row["area"].get() or 0)
-                spec = COMMERCIAL_TYPES.get(row["type"].get(), COMMERCIAL_TYPES["Shop - Ground Floor"])
-                density_val = float(row["density"].get() or spec.density_divisor)
-                raw = area / density_val if density_val > 0 else 0
-                pop = int(math.ceil(raw)) if spec.use_ceil else int(round(raw))
-                dom, flu, tot = commercial_demand(pop, spec)
-                row["pop_lbl"].configure(text=str(pop))
-                row["dom_lbl"].configure(text=f"{dom:,}")
-                row["flu_lbl"].configure(text=f"{flu:,}")
-                row["tot_lbl"].configure(text=f"{tot:,}")
-            except (ValueError, KeyError):
-                continue
+        pass
 
 # ==================== ui/pages/other_page.py ====================
 
 
-
-
-class OHTPage(ScrollablePage):
-    """Dedicated OHT Details page — overhead tank sizing per wing/block."""
-
-    def __init__(self, master, state: AppState, on_calculate, on_back) -> None:
-        super().__init__(master)
-        self.state = state
-        self.on_calculate = on_calculate
-        self.on_back = on_back
-        self.oht_rows: list = []
-        self.oht_frame = ctk.CTkFrame(self, fg_color="#FFFFFF")
-        self._build()
-
-    def _build(self) -> None:
-        header = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=8)
-        header.pack(fill="x", padx=10, pady=(5, 10))
-        ctk.CTkLabel(
-            header, text="OHT Details (Overhead Tank)", font=("Arial", 20, "bold"), text_color="white"
-        ).pack(pady=12)
-
-        info = ctk.CTkLabel(
-            self,
-            text="Enter overhead tank capacities per wing/block. Use Auto-Fill to populate from residential & commercial data.",
-            font=("Arial", 12),
-            text_color="#555555",
-            wraplength=700,
-        )
-        info.pack(padx=20, pady=(5, 10))
-
-        btn_top = ctk.CTkFrame(self, fg_color="transparent")
-        btn_top.pack(fill="x", padx=15, pady=5)
-        ctk.CTkButton(
-            btn_top, text="Auto-Fill from Wings & Commercial", fg_color="#2980B9",
-            command=self._auto_fill,
-        ).pack(side="left", padx=5)
-        ctk.CTkButton(btn_top, text="+ Add OHT Row", fg_color="#27AE60", command=lambda: self._add_oht_row()).pack(side="left", padx=5)
-
-        self.oht_frame.pack(fill="both", expand=True, padx=15, pady=5)
-        headers = ["Plot", "Wing / Block", "Domestic (KLD)", "Flushing (KLD)", "Fire Break (KLD)", "Fire OHT (KLD)", ""]
-        for i, h in enumerate(headers):
-            ctk.CTkLabel(self.oht_frame, text=h, font=("Arial", 12, "bold")).grid(row=0, column=i, padx=4, pady=6)
-
-        if self.state.other.oht_details:
-            for oht in self.state.other.oht_details:
-                self._add_oht_row(oht)
-        else:
-            self._auto_fill()
-
-        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        btn_frame.pack(pady=15)
-        ctk.CTkButton(btn_frame, text="<- Back", command=self.on_back, fg_color="gray", width=100).grid(row=0, column=0, padx=10)
-        ctk.CTkButton(
-            btn_frame, text="Save & Calculate", command=self._save_and_calculate,
-            fg_color=BRAND_ORANGE, hover_color="#D06018", width=180,
-        ).grid(row=0, column=1, padx=10)
-        ctk.CTkButton(
-            btn_frame, text="Continue to STP ->", command=self._save_and_go_stp,
-            fg_color="#8E44AD", width=160,
-        ).grid(row=0, column=2, padx=10)
-
-    def _clear_rows(self) -> None:
-        for row in self.oht_rows:
-            for w in row.get("widgets", []):
-                w.destroy()
-        self.oht_rows.clear()
-
-    def _auto_fill(self) -> None:
-        self._clear_rows()
-        for wing in self.state.residential:
-            if not wing.wing:
-                continue
-            pop = wing.population
-            dom_kld = round(pop * RES_DOMESTIC_LPCD / 1000.0, 2)
-            flu_kld = round(pop * RES_FLUSHING_LPCD / 1000.0, 2)
-            self._add_oht_row(OHTDetail(
-                plot=wing.plot, wing=wing.wing,
-                domestic_kld=dom_kld, flushing_kld=flu_kld,
-                fire_break_kld=0.0, fire_oht_kld=20.0 if "WING" in wing.wing.upper() else 0.0,
-            ))
-        blocks: Dict[str, Dict[str, Any]] = {}
-        for unit in self.state.commercial:
-            key = f"{unit.plot}|{unit.block}"
-            if key not in blocks:
-                blocks[key] = {"plot": unit.plot, "name": unit.block, "dom": 0.0, "flu": 0.0}
-            spec = unit.type_spec()
-            pop = unit.auto_population
-            blocks[key]["dom"] += pop * spec.domestic_lpcd / 1000.0
-            blocks[key]["flu"] += pop * spec.flushing_lpcd / 1000.0
-        for data in blocks.values():
-            self._add_oht_row(OHTDetail(
-                plot=data["plot"], wing=data["name"],
-                domestic_kld=round(data["dom"], 2), flushing_kld=round(data["flu"], 2),
-                fire_break_kld=0.0, fire_oht_kld=20.0,
-            ))
-        if not self.oht_rows:
-            self._add_oht_row()
-
-    def _add_oht_row(self, oht: OHTDetail | None = None) -> None:
-        r = len(self.oht_rows) + 1
-        plot_var = ctk.StringVar(value=oht.plot if oht else "Plot-A")
-        plot_cb = ctk.CTkComboBox(self.oht_frame, values=["Plot-A", "Plot-B"], variable=plot_var, width=95)
-        wing_ent = ctk.CTkEntry(self.oht_frame, width=130)
-        wing_ent.insert(0, oht.wing if oht else "")
-        dom_ent = ctk.CTkEntry(self.oht_frame, width=100)
-        dom_ent.insert(0, str(oht.domestic_kld if oht else ""))
-        flu_ent = ctk.CTkEntry(self.oht_frame, width=100)
-        flu_ent.insert(0, str(oht.flushing_kld if oht else ""))
-        fb_ent = ctk.CTkEntry(self.oht_frame, width=100)
-        fb_ent.insert(0, str(oht.fire_break_kld if oht else ""))
-        fo_ent = ctk.CTkEntry(self.oht_frame, width=100)
-        fo_ent.insert(0, str(oht.fire_oht_kld if oht else ""))
-
-        plot_cb.grid(row=r, column=0, padx=4, pady=4)
-        wing_ent.grid(row=r, column=1, padx=4, pady=4)
-        dom_ent.grid(row=r, column=2, padx=4, pady=4)
-        flu_ent.grid(row=r, column=3, padx=4, pady=4)
-        fb_ent.grid(row=r, column=4, padx=4, pady=4)
-        fo_ent.grid(row=r, column=5, padx=4, pady=4)
-
-        def remove():
-            for w in widgets:
-                w.destroy()
-            self.oht_rows = [row for row in self.oht_rows if row["idx"] != r]
-            self._regrid_oht()
-
-        rm_btn = ctk.CTkButton(self.oht_frame, text="X", width=32, fg_color="#C0392B", command=remove)
-        rm_btn.grid(row=r, column=6, padx=4, pady=4)
-        widgets = [plot_cb, wing_ent, dom_ent, flu_ent, fb_ent, fo_ent, rm_btn]
-        self.oht_rows.append({
-            "idx": r, "plot": plot_var, "wing": wing_ent,
-            "dom": dom_ent, "flu": flu_ent, "fb": fb_ent, "fo": fo_ent,
-            "widgets": widgets,
-        })
-
-    def _regrid_oht(self) -> None:
-        for i, row in enumerate(self.oht_rows, 1):
-            row["idx"] = i
-            for j, widget in enumerate(row["widgets"]):
-                widget.grid(row=i, column=j, padx=4, pady=4)
-
-    def _collect_oht(self) -> List[OHTDetail]:
-        oht_list: List[OHTDetail] = []
-        for row in self.oht_rows:
-            wing = row["wing"].get().strip()
-            if wing:
-                oht_list.append(OHTDetail(
-                    plot=row["plot"].get(),
-                    wing=wing,
-                    domestic_kld=validate_positive_float(row["dom"].get(), f"OHT Domestic ({wing})"),
-                    flushing_kld=validate_positive_float(row["flu"].get(), f"OHT Flushing ({wing})"),
-                    fire_break_kld=validate_positive_float(row["fb"].get(), f"OHT Fire Break ({wing})"),
-                    fire_oht_kld=validate_positive_float(row["fo"].get(), f"OHT Fire OHT ({wing})"),
-                ))
-        return oht_list
-
-    def _save_and_calculate(self) -> None:
-        try:
-            self.state.other.oht_details = self._collect_oht()
-            self.on_calculate()
-            messagebox.showinfo("Calculated", "OHT details saved and calculations updated.")
-        except ValidationError as exc:
-            messagebox.showerror("Validation Error", exc.message)
-
-    def _save_and_go_stp(self) -> None:
-        try:
-            self.state.other.oht_details = self._collect_oht()
-            self.on_calculate()
-            top = self.winfo_toplevel()
-            if hasattr(top, "show"):
-                top.show("STP")
-        except ValidationError as exc:
-            messagebox.showerror("Validation Error", exc.message)
-
-    def refresh(self) -> None:
-        pass
 
 
 class OtherPage(ScrollablePage):
@@ -3812,9 +3905,24 @@ class OtherPage(ScrollablePage):
         self.on_calculate = on_calculate
         self.on_back = on_back
         self.entries: dict = {}
+        self.pool_na_vars: dict = {}
         self.oht_rows: list = []
         self.oht_frame = ctk.CTkFrame(self)
+        self.fire_labels: dict = {}
         self._build()
+
+    def _plots(self) -> list[str]:
+        return plot_choices(self.state.project.plot_mode)
+
+    def _auto_fire_tank(self, plot: str) -> int:
+        heights = [
+            w.building_height_m
+            for w in self.state.residential
+            if w.plot == plot and w.building_height_m > 0
+        ]
+        if heights:
+            return fire_tank_capacity_liters(max(heights))
+        return int(self.state.other.fire_tank.get(plot, 0))
 
     def _build(self) -> None:
         header = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=8)
@@ -3826,22 +3934,61 @@ class OtherPage(ScrollablePage):
         form = ctk.CTkFrame(self)
         form.pack(fill="x", padx=20, pady=10)
 
-        fields = [
-            ("landscape_a", "Landscape Area Plot-A (sq.m)", str(self.state.other.landscape_area.get("Plot-A", 765))),
-            ("landscape_b", "Landscape Area Plot-B (sq.m)", str(self.state.other.landscape_area.get("Plot-B", 762))),
-            ("pool_a", "Swimming Pool Plot-A (L/day)", str(int(self.state.other.swimming_pool.get("Plot-A", 0)))),
-            ("pool_b", "Swimming Pool Plot-B (L/day)", str(int(self.state.other.swimming_pool.get("Plot-B", 0)))),
-            ("hvac_a", "HVAC Water Plot-A (L/day)", str(int(self.state.other.hvac_water.get("Plot-A", 0)))),
-            ("hvac_b", "HVAC Water Plot-B (L/day)", str(int(self.state.other.hvac_water.get("Plot-B", 0)))),
-            ("fire_a", "Fire Tank Plot-A (litres)", str(int(self.state.other.fire_tank.get("Plot-A", 300000)))),
-            ("fire_b", "Fire Tank Plot-B (litres)", str(int(self.state.other.fire_tank.get("Plot-B", 230000)))),
-        ]
-        for i, (key, label, default) in enumerate(fields):
-            ctk.CTkLabel(form, text=label, font=("Arial", 13)).grid(row=i, column=0, padx=15, pady=8, sticky="w")
+        row = 0
+        for plot in self._plots():
+            ctk.CTkLabel(
+                form, text=f"Landscape Area {plot} (sq.m)", font=("Arial", 13)
+            ).grid(row=row, column=0, padx=15, pady=8, sticky="w")
             ent = ctk.CTkEntry(form, width=200)
-            ent.insert(0, default)
-            ent.grid(row=i, column=1, padx=15, pady=8)
-            self.entries[key] = ent
+            ent.insert(0, str(self.state.other.landscape_area.get(plot, 765 if plot == "Plot-A" else 762)))
+            ent.grid(row=row, column=1, padx=15, pady=8)
+            self.entries[f"landscape_{plot}"] = ent
+            row += 1
+
+        for plot in self._plots():
+            ctk.CTkLabel(
+                form, text=f"Swimming Pool {plot} (L/day)", font=("Arial", 13)
+            ).grid(row=row, column=0, padx=15, pady=8, sticky="w")
+            pool_ent = ctk.CTkEntry(form, width=200)
+            pool_ent.insert(0, str(int(self.state.other.swimming_pool.get(plot, 0))))
+            pool_ent.grid(row=row, column=1, padx=15, pady=8)
+            self.entries[f"pool_{plot}"] = pool_ent
+            na_var = ctk.BooleanVar(value=self.state.other.swimming_pool_na.get(plot, False))
+            ctk.CTkCheckBox(
+                form, text="Not Applicable (NA)", variable=na_var
+            ).grid(row=row, column=2, padx=10, pady=8, sticky="w")
+            self.pool_na_vars[plot] = na_var
+            row += 1
+
+        self.hvac_entries: dict = {}
+        if hvac_applicable(self.state.project.project_type):
+            for plot in self._plots():
+                ctk.CTkLabel(
+                    form, text=f"HVAC Water {plot} (L/day)", font=("Arial", 13)
+                ).grid(row=row, column=0, padx=15, pady=8, sticky="w")
+                ent = ctk.CTkEntry(form, width=200)
+                ent.insert(0, str(int(self.state.other.hvac_water.get(plot, 0))))
+                ent.grid(row=row, column=1, padx=15, pady=8)
+                self.hvac_entries[plot] = ent
+                row += 1
+        else:
+            ctk.CTkLabel(
+                form,
+                text="HVAC: Not applicable for residential-only projects",
+                font=("Arial", 12, "italic"),
+                text_color="#7F8C8D",
+            ).grid(row=row, column=0, columnspan=3, padx=15, pady=8, sticky="w")
+            row += 1
+
+        for plot in self._plots():
+            ctk.CTkLabel(
+                form, text=f"Fire Tank {plot} (litres)", font=("Arial", 13)
+            ).grid(row=row, column=0, padx=15, pady=8, sticky="w")
+            auto_val = self._auto_fire_tank(plot)
+            lbl = ctk.CTkLabel(form, text=f"{auto_val:,} (auto from NBC height table)", font=("Arial", 12))
+            lbl.grid(row=row, column=1, padx=15, pady=8, sticky="w")
+            self.fire_labels[plot] = lbl
+            row += 1
 
         ctk.CTkLabel(self, text="OHT Details (Optional - auto-calculated if empty)", font=("Arial", 14, "bold")).pack(pady=(15, 5))
         self.oht_frame.pack(fill="x", padx=15, pady=5)
@@ -3866,8 +4013,8 @@ class OtherPage(ScrollablePage):
 
     def _add_oht_row(self, oht: OHTDetail | None = None) -> None:
         r = len(self.oht_rows) + 1
-        plot_var = ctk.StringVar(value=oht.plot if oht else "Plot-A")
-        plot_cb = ctk.CTkComboBox(self.oht_frame, values=["Plot-A", "Plot-B"], variable=plot_var, width=90)
+        plot_var = ctk.StringVar(value=oht.plot if oht else self._plots()[0])
+        plot_cb = ctk.CTkComboBox(self.oht_frame, values=self._plots(), variable=plot_var, width=90)
         wing_ent = ctk.CTkEntry(self.oht_frame, width=100)
         wing_ent.insert(0, oht.wing if oht else "")
         dom_ent = ctk.CTkEntry(self.oht_frame, width=80)
@@ -3901,22 +4048,24 @@ class OtherPage(ScrollablePage):
 
     def _calculate(self) -> None:
         try:
-            self.state.other.landscape_area = {
-                "Plot-A": validate_positive_float(self.entries["landscape_a"].get(), "Landscape Plot-A"),
-                "Plot-B": validate_positive_float(self.entries["landscape_b"].get(), "Landscape Plot-B"),
-            }
-            self.state.other.swimming_pool = {
-                "Plot-A": validate_positive_float(self.entries["pool_a"].get(), "Swimming Pool Plot-A"),
-                "Plot-B": validate_positive_float(self.entries["pool_b"].get(), "Swimming Pool Plot-B"),
-            }
-            self.state.other.hvac_water = {
-                "Plot-A": validate_positive_float(self.entries["hvac_a"].get(), "HVAC Plot-A"),
-                "Plot-B": validate_positive_float(self.entries["hvac_b"].get(), "HVAC Plot-B"),
-            }
-            self.state.other.fire_tank = {
-                "Plot-A": validate_positive_float(self.entries["fire_a"].get(), "Fire Tank Plot-A"),
-                "Plot-B": validate_positive_float(self.entries["fire_b"].get(), "Fire Tank Plot-B"),
-            }
+            for plot in self._plots():
+                self.state.other.landscape_area[plot] = validate_positive_float(
+                    self.entries[f"landscape_{plot}"].get(), f"Landscape {plot}"
+                )
+                self.state.other.swimming_pool_na[plot] = self.pool_na_vars[plot].get()
+                if not self.state.other.swimming_pool_na[plot]:
+                    self.state.other.swimming_pool[plot] = validate_positive_float(
+                        self.entries[f"pool_{plot}"].get(), f"Swimming Pool {plot}"
+                    )
+                else:
+                    self.state.other.swimming_pool[plot] = 0.0
+                if hvac_applicable(self.state.project.project_type):
+                    self.state.other.hvac_water[plot] = validate_positive_float(
+                        self.hvac_entries[plot].get(), f"HVAC {plot}"
+                    )
+                else:
+                    self.state.other.hvac_water[plot] = 0.0
+                self.state.other.fire_tank[plot] = float(self._auto_fire_tank(plot))
             oht_list = []
             for row in self.oht_rows:
                 wing = row["wing"].get().strip()
@@ -3935,23 +4084,8 @@ class OtherPage(ScrollablePage):
             messagebox.showerror("Validation Error", exc.message)
 
     def refresh(self) -> None:
-        for plot, ent in getattr(self, "entries", {}).items():
-            if "landscape" in plot:
-                p = "Plot-A" if "a" in plot else "Plot-B"
-                ent.delete(0, "end")
-                ent.insert(0, str(self.state.other.landscape_area.get(p, 0)))
-            elif "pool" in plot:
-                p = "Plot-A" if "a" in plot else "Plot-B"
-                ent.delete(0, "end")
-                ent.insert(0, str(int(self.state.other.swimming_pool.get(p, 0))))
-            elif "hvac" in plot:
-                p = "Plot-A" if "a" in plot else "Plot-B"
-                ent.delete(0, "end")
-                ent.insert(0, str(int(self.state.other.hvac_water.get(p, 0))))
-            elif "fire" in plot:
-                p = "Plot-A" if "a" in plot else "Plot-B"
-                ent.delete(0, "end")
-                ent.insert(0, str(int(self.state.other.fire_tank.get(p, 0))))
+        for plot, lbl in self.fire_labels.items():
+            lbl.configure(text=f"{self._auto_fire_tank(plot):,} (auto from NBC height table)")
 
 # ==================== ui/pages/final_page.py ====================
 
@@ -4022,13 +4156,7 @@ class FinalPage(ScrollablePage):
 
     def _ensure_results(self) -> bool:
         if not self.state.results:
-            try:
-                self.state.run_calculations()
-            except Exception as exc:
-                messagebox.showerror("Calculation Error", str(exc))
-                return False
-        if not self.state.results:
-            messagebox.showwarning("No Data", "Please enter project data and calculate first.")
+            messagebox.showwarning("No Data", "Please calculate first from the Other Details page.")
             return False
         return True
 
@@ -4049,8 +4177,8 @@ class FinalPage(ScrollablePage):
             return
 
         def do_export():
-            logo = LOGO_PATH if os.path.exists(LOGO_PATH) else None
-            export_pdf(file_path, self.state.project, self.state.results, logo)
+            logo = os.path.join(APP_DIR, "assets", "logo.png")
+            export_pdf(file_path, self.state.project, self.state.results, logo if os.path.exists(logo) else None)
 
         if safe_execute(do_export, lambda msg: messagebox.showerror("PDF Error", msg)):
             messagebox.showinfo("Success", "8-Page Professional PDF Exported Successfully!")
@@ -4106,7 +4234,6 @@ class FinalPage(ScrollablePage):
 
         if safe_execute(do_save, lambda msg: messagebox.showerror("Database Error", msg)):
             messagebox.showinfo("Success", "Project saved to database successfully!")
-
 # ==================== _app_sidebar.py ====================
 
 # ============================================================
@@ -4145,6 +4272,19 @@ class WaterDemandApp(ctk.CTk):
         self._pages()
         self.show("Project")
 
+    def _plots(self) -> list[str]:
+        return plot_choices(self.app_state.project.plot_mode)
+
+    def _auto_fire_tank(self, plot: str) -> int:
+        heights = [
+            w.building_height_m
+            for w in self.app_state.residential
+            if w.plot == plot and w.building_height_m > 0
+        ]
+        if heights:
+            return fire_tank_capacity_liters(max(heights))
+        return int(self.app_state.other.fire_tank.get(plot, 0))
+
     def _sidebar(self):
         sb = ctk.CTkFrame(self, width=230, fg_color=BRAND_NAVY, corner_radius=0)
         sb.pack(side="left", fill="y")
@@ -4162,6 +4302,8 @@ class WaterDemandApp(ctk.CTk):
         ctk.CTkLabel(sb, text="  WATER DEMAND", font=("Arial", 9, "bold"), text_color="#7F8C8D", anchor="w").pack(fill="x", padx=8, pady=(4, 2))
         self.nav_btns = {}
         for k, lbl in self.NAV:
+            if k == "HVAC" and not hvac_applicable(self.app_state.project.project_type):
+                continue
             if k == "RWH":
                 ctk.CTkLabel(sb, text="  RAIN WATER HARVESTING", font=("Arial", 9, "bold"), text_color="#7F8C8D", anchor="w").pack(fill="x", padx=8, pady=(10, 2))
             if k == "Settings":
@@ -4204,16 +4346,17 @@ class WaterDemandApp(ctk.CTk):
         self.pages["Swimming"] = self._form_page(w, "Swimming Pool", self._pool_ui)
         self.wrappers["Swimming"] = w
 
-        w = self._page_wrapper()
-        self.pages["HVAC"] = self._form_page(w, "HVAC Water", self._hvac_ui)
-        self.wrappers["HVAC"] = w
+        if hvac_applicable(self.app_state.project.project_type):
+            w = self._page_wrapper()
+            self.pages["HVAC"] = self._form_page(w, "HVAC Water", self._hvac_ui)
+            self.wrappers["HVAC"] = w
 
         w = self._page_wrapper()
         self.pages["UGT"] = self._form_page(w, "UGT / Fire Tank", self._ugt_ui)
         self.wrappers["UGT"] = w
 
         w = self._page_wrapper()
-        self.pages["OHT"] = OHTPage(w, self.app_state, on_calculate=self._calc, on_back=lambda: self.show("UGT"))
+        self.pages["OHT"] = OtherPage(w, self.app_state, on_calculate=self._calc_and_show_stp, on_back=lambda: self.show("UGT"))
         self.pages["OHT"].pack(fill="both", expand=True)
         self.wrappers["OHT"] = w
 
@@ -4262,7 +4405,7 @@ class WaterDemandApp(ctk.CTk):
         self._le = {}
         form = ctk.CTkFrame(p)
         form.pack(padx=20, pady=10)
-        for i, plot in enumerate(["Plot-A", "Plot-B"]):
+        for i, plot in enumerate(self._plots()):
             ctk.CTkLabel(form, text=f"Landscape Area {plot} (sq.m)", font=("Arial", 13)).grid(row=i, column=0, padx=10, pady=8, sticky="w")
             e = ctk.CTkEntry(form, width=180)
             e.insert(0, str(self.app_state.other.landscape_area.get(plot, 765 if plot == "Plot-A" else 762)))
@@ -4281,21 +4424,35 @@ class WaterDemandApp(ctk.CTk):
 
     def _pool_ui(self, p):
         self._pe = {}
+        self._pool_na = {}
         form = ctk.CTkFrame(p)
         form.pack(padx=20, pady=10)
-        for i, plot in enumerate(["Plot-A", "Plot-B"]):
+        for i, plot in enumerate(self._plots()):
             ctk.CTkLabel(form, text=f"Pool Makeup {plot} (L/day)", font=("Arial", 13)).grid(row=i, column=0, padx=10, pady=8, sticky="w")
             e = ctk.CTkEntry(form, width=180)
             e.insert(0, str(int(self.app_state.other.swimming_pool.get(plot, 0))))
             e.grid(row=i, column=1, padx=10, pady=8)
             self._pe[plot] = e
-        ctk.CTkButton(p, text="Save & Next", fg_color=BRAND_ORANGE, command=lambda: (self._save_dict(self._pe, self.app_state.other.swimming_pool), self.show("HVAC"))).pack(pady=12)
+            na_var = ctk.BooleanVar(value=self.app_state.other.swimming_pool_na.get(plot, False))
+            ctk.CTkCheckBox(form, text="Not Applicable (NA)", variable=na_var).grid(row=i, column=2, padx=10, pady=8)
+            self._pool_na[plot] = na_var
+        ctk.CTkButton(p, text="Save & Next", fg_color=BRAND_ORANGE, command=self._save_pool).pack(pady=12)
+
+    def _save_pool(self):
+        for plot in self._plots():
+            self.app_state.other.swimming_pool_na[plot] = self._pool_na[plot].get()
+            if self.app_state.other.swimming_pool_na[plot]:
+                self.app_state.other.swimming_pool[plot] = 0.0
+            else:
+                self.app_state.other.swimming_pool[plot] = float(self._pe[plot].get() or 0)
+        next_page = "HVAC" if hvac_applicable(self.app_state.project.project_type) else "UGT"
+        self.show(next_page)
 
     def _hvac_ui(self, p):
         self._he = {}
         form = ctk.CTkFrame(p)
         form.pack(padx=20, pady=10)
-        for i, plot in enumerate(["Plot-A", "Plot-B"]):
+        for i, plot in enumerate(self._plots()):
             ctk.CTkLabel(form, text=f"HVAC {plot} (L/day)", font=("Arial", 13)).grid(row=i, column=0, padx=10, pady=8, sticky="w")
             e = ctk.CTkEntry(form, width=180)
             e.insert(0, str(int(self.app_state.other.hvac_water.get(plot, 0))))
@@ -4304,18 +4461,17 @@ class WaterDemandApp(ctk.CTk):
         ctk.CTkButton(p, text="Save & Next", fg_color=BRAND_ORANGE, command=lambda: (self._save_dict(self._he, self.app_state.other.hvac_water), self.show("UGT"))).pack(pady=12)
 
     def _ugt_ui(self, p):
-        self._fe = {}
         form = ctk.CTkFrame(p)
         form.pack(padx=20, pady=10)
-        for i, plot in enumerate(["Plot-A", "Plot-B"]):
+        for i, plot in enumerate(self._plots()):
             ctk.CTkLabel(form, text=f"Fire Tank {plot} (litres)", font=("Arial", 13)).grid(row=i, column=0, padx=10, pady=8, sticky="w")
-            d = 300000 if plot == "Plot-A" else 230000
-            e = ctk.CTkEntry(form, width=180)
-            e.insert(0, str(int(self.app_state.other.fire_tank.get(plot, d))))
-            e.grid(row=i, column=1, padx=10, pady=8)
-            self._fe[plot] = e
+            auto_val = self._auto_fire_tank(plot)
+            ctk.CTkLabel(form, text=f"{auto_val:,} (auto from NBC height table)", font=("Arial", 12)).grid(
+                row=i, column=1, padx=10, pady=8, sticky="w"
+            )
+            self.app_state.other.fire_tank[plot] = float(auto_val)
         ctk.CTkLabel(p, text="UGT: Domestic 2-day, Flushing 1-day storage (auto-calculated)", font=("Arial", 11, "italic")).pack(pady=5)
-        ctk.CTkButton(p, text="Save & Go to OHT", fg_color=BRAND_ORANGE, command=lambda: (self._save_dict(self._fe, self.app_state.other.fire_tank), self.show("OHT"))).pack(pady=12)
+        ctk.CTkButton(p, text="Save & Go to OHT", fg_color=BRAND_ORANGE, command=lambda: self.show("OHT")).pack(pady=12)
 
     def _save_dict(self, entries, target):
         for plot, e in entries.items():
@@ -4337,7 +4493,7 @@ class WaterDemandApp(ctk.CTk):
         if not self.app_state.results:
             return
         lines = []
-        for pn in ("Plot-A", "Plot-B"):
+        for pn in self._plots():
             pl = self.app_state.results.plots[pn]
             lines.append(f"=== {pn} ===")
             for s in pl.stp_sections:
@@ -4376,6 +4532,9 @@ class WaterDemandApp(ctk.CTk):
         return parent
 
     def show(self, name: str) -> None:
+        if name == "HVAC" and not hvac_applicable(self.app_state.project.project_type):
+            self.show("UGT")
+            return
         if name not in self.wrappers:
             return
         for key, wrapper in self.wrappers.items():

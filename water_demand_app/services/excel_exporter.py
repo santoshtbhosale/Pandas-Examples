@@ -6,7 +6,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from config.nbc_2026 import BRAND_DARK_GRAY, BRAND_NAVY, BRAND_ORANGE, COMPANY_NAME
+from config.nbc_2026 import BRAND_DARK_GRAY, BRAND_NAVY, BRAND_ORANGE, COMPANY_NAME, active_plots, hvac_applicable
 from models.calculations import CalculationResults
 from models.project import ProjectData
 
@@ -34,12 +34,10 @@ class ExcelExporter:
     def export(self, file_path: str) -> None:
         self._build_cover()
         self._build_consolidated()
-        self._build_plot_demand("Plot-A")
-        self._build_plot_demand("Plot-B")
-        self._build_ugt_oht("Plot-A")
-        self._build_ugt_oht("Plot-B")
-        self._build_stp("Plot-A")
-        self._build_stp("Plot-B")
+        for plot in active_plots(self.project.plot_mode):
+            self._build_plot_demand(plot)
+            self._build_ugt_oht(plot)
+            self._build_stp(plot)
         self._build_summary()
         if "Sheet" in self.wb.sheetnames:
             del self.wb["Sheet"]
@@ -147,10 +145,10 @@ class ExcelExporter:
 
         ws["A3"] = "RESIDENTIAL"
         ws["A3"].font = Font(bold=True)
-        res_headers = ["SR.NO", "WING", "FLATS", "POP/FLAT", "POPULATION", "DOMESTIC", "FLUSHING", "TOTAL"]
+        res_headers = ["SR.NO", "WING", "FLATS", "POP/FLAT", "POPULATION", "DOMESTIC", "FLUSHING", "KITCHEN", "TOTAL"]
         for i, h in enumerate(res_headers, 1):
             ws.cell(row=4, column=i, value=h)
-        self._style_header_row(ws, 4, 8)
+        self._style_header_row(ws, 4, 9)
         row = 5
         for idx, w in enumerate(plot.residential_wings, 1):
             ws.cell(row=row, column=1, value=idx)
@@ -160,14 +158,16 @@ class ExcelExporter:
             ws.cell(row=row, column=5, value=w.population)
             ws.cell(row=row, column=6, value=w.domestic_lpd)
             ws.cell(row=row, column=7, value=w.flushing_lpd)
-            ws.cell(row=row, column=8, value=w.total_lpd)
+            ws.cell(row=row, column=8, value=w.kitchen_water_lpd)
+            ws.cell(row=row, column=9, value=w.total_lpd)
             row += 1
         ws.cell(row=row, column=2, value="SUB-TOTAL")
         ws.cell(row=row, column=5, value=plot.res_population)
         ws.cell(row=row, column=6, value=plot.res_domestic_lpd)
         ws.cell(row=row, column=7, value=plot.res_flushing_lpd)
-        ws.cell(row=row, column=8, value=plot.res_total_lpd)
-        self._style_data_area(ws, 5, row, 8)
+        ws.cell(row=row, column=8, value=plot.kitchen_water_lpd)
+        ws.cell(row=row, column=9, value=plot.res_total_lpd)
+        self._style_data_area(ws, 5, row, 9)
         row += 2
 
         ws.cell(row=row, column=1, value="COMMERCIAL")
@@ -198,12 +198,17 @@ class ExcelExporter:
         ws.cell(row=row, column=1, value="Landscape (NBC-2026)")
         ws.cell(row=row, column=2, value=plot.landscape_dry_lpd)
         ws.cell(row=row + 1, column=1, value="Swimming Pool")
-        ws.cell(row=row + 1, column=2, value=plot.swimming_pool_lpd)
-        ws.cell(row=row + 2, column=1, value="HVAC")
-        ws.cell(row=row + 2, column=2, value=plot.hvac_lpd)
-        ws.cell(row=row + 3, column=1, value="GRAND TOTAL")
-        ws.cell(row=row + 3, column=1).font = Font(bold=True)
-        ws.cell(row=row + 3, column=2, value=plot.dry_total_water_lpd)
+        ws.cell(row=row + 1, column=2, value=plot.swimming_pool_lpd if plot.swimming_pool_lpd else "NA")
+        next_row = row + 2
+        if hvac_applicable(self.project.project_type):
+            ws.cell(row=next_row, column=1, value="HVAC")
+            ws.cell(row=next_row, column=2, value=plot.hvac_lpd)
+            next_row += 1
+        ws.cell(row=next_row, column=1, value="Kitchen Water")
+        ws.cell(row=next_row, column=2, value=plot.kitchen_water_lpd)
+        ws.cell(row=next_row + 1, column=1, value="GRAND TOTAL")
+        ws.cell(row=next_row + 1, column=1).font = Font(bold=True)
+        ws.cell(row=next_row + 1, column=2, value=plot.dry_total_water_lpd)
         self._auto_width(ws)
 
     def _build_ugt_oht(self, plot_name: str) -> None:

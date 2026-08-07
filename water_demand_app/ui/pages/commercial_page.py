@@ -3,7 +3,7 @@ from __future__ import annotations
 import customtkinter as ctk
 from tkinter import messagebox
 
-from config.nbc_2026 import BRAND_NAVY, BRAND_ORANGE, COMMERCIAL_TYPES
+from config.nbc_2026 import BRAND_NAVY, BRAND_ORANGE, COMMERCIAL_TYPES, plot_choices
 from models.commercial import CommercialUnit
 from ui.app_state import AppState
 from ui.components.scrollable_frame import ScrollablePage
@@ -56,8 +56,10 @@ class CommercialPage(ScrollablePage):
     def _add_row(self, unit: CommercialUnit | None = None) -> None:
         r = len(self.rows) + 1
         type_values = list(COMMERCIAL_TYPES.keys())
-        plot_var = ctk.StringVar(value=unit.plot if unit else "Plot-A")
-        plot_cb = ctk.CTkComboBox(self.table_frame, values=["Plot-A", "Plot-B"], variable=plot_var, width=90)
+        plot_var = ctk.StringVar(value=unit.plot if unit else plot_choices(self.state.project.plot_mode)[0])
+        plot_cb = ctk.CTkComboBox(
+            self.table_frame, values=plot_choices(self.state.project.plot_mode), variable=plot_var, width=90
+        )
         block_ent = ctk.CTkEntry(self.table_frame, width=80)
         block_ent.insert(0, unit.block if unit else "COMM-A")
         type_var = ctk.StringVar(value=unit.comm_type if unit else "Shop - Ground Floor")

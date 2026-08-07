@@ -34,6 +34,7 @@ class OHTDetail:
 class OtherDetails:
     landscape_area: Dict[str, float] = field(default_factory=lambda: {"Plot-A": 765.0, "Plot-B": 762.0})
     swimming_pool: Dict[str, float] = field(default_factory=lambda: {"Plot-A": 0.0, "Plot-B": 0.0})
+    swimming_pool_na: Dict[str, bool] = field(default_factory=lambda: {"Plot-A": False, "Plot-B": False})
     hvac_water: Dict[str, float] = field(default_factory=lambda: {"Plot-A": 0.0, "Plot-B": 0.0})
     fire_tank: Dict[str, float] = field(default_factory=lambda: {"Plot-A": 300000.0, "Plot-B": 230000.0})
     fire_tank_commercial: Dict[str, Dict[str, float]] = field(default_factory=dict)
@@ -48,6 +49,7 @@ class OtherDetails:
         return {
             "landscape_area": self.landscape_area,
             "swimming_pool": self.swimming_pool,
+            "swimming_pool_na": self.swimming_pool_na,
             "hvac_water": self.hvac_water,
             "fire_tank": self.fire_tank,
             "fire_tank_commercial": self.fire_tank_commercial,
@@ -63,9 +65,11 @@ class OtherDetails:
                 "Plot-B": float(data.get("Fire Tank Plot-B", 230000) or 230000),
             }
         oht_list = [OHTDetail.from_dict(o) for o in data.get("oht_details", [])]
+        pool_na = data.get("swimming_pool_na", {"Plot-A": False, "Plot-B": False})
         return cls(
             landscape_area=data.get("landscape_area", {"Plot-A": 765.0, "Plot-B": 762.0}),
             swimming_pool=data.get("swimming_pool", {"Plot-A": 0.0, "Plot-B": 0.0}),
+            swimming_pool_na=pool_na,
             hvac_water=data.get("hvac_water", {"Plot-A": 0.0, "Plot-B": 0.0}),
             fire_tank=data.get("fire_tank", legacy_fire or {"Plot-A": 300000.0, "Plot-B": 230000.0}),
             fire_tank_commercial=data.get("fire_tank_commercial", {}),

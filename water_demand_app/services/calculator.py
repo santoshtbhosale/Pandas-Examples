@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-import math
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from config.nbc_2026 import (
+    PLOT_MODE_SINGLE,
     PLOTS,
     UGT_DOMESTIC_DAYS,
     UGT_FLUSHING_DAYS,
     UGT_FIRE_DAYS,
+    active_plots,
     commercial_demand,
+    fire_tank_capacity_liters,
+    hvac_applicable,
     landscape_demand,
     residential_demand,
     round_storage_liters,
@@ -27,6 +30,7 @@ from models.calculations import (
 )
 from models.commercial import CommercialUnit
 from models.other_details import OtherDetails, OHTDetail
+from models.project import ProjectData
 from models.residential import ResidentialWing
 
 
@@ -36,17 +40,36 @@ class WaterDemandCalculator:
         residential: List[ResidentialWing],
         commercial: List[CommercialUnit],
         other: OtherDetails,
+        project: Optional[ProjectData] = None,
     ) -> None:
         self.residential = residential
         self.commercial = commercial
         self.other = other
+        self.project = project or ProjectData()
+        self._plots = active_plots(self.project.plot_mode)
 
     def calculate(self) -> CalculationResults:
+        self._apply_auto_fire_tanks()
         results = CalculationResults()
         for plot in PLOTS:
-            results.plots[plot] = self._calculate_plot(plot)
+            if plot in self._plots:
+                results.plots[plot] = self._calculate_plot(plot)
+            else:
+                results.plots[plot] = PlotResults(plot=plot)
         results.total = self._calculate_totals(results.plots)
         return results
+
+    def _apply_auto_fire_tanks(self) -> None:
+        for plot in self._plots:
+            heights = [
+                w.building_height_m
+                for w in self.residential
+                if w.plot == plot and w.building_height_m > 0
+            ]
+            if heights:
+                self.other.fire_tank[plot] = float(
+                    fire_tank_capacity_liters(max(heights))
+                )
 
     def _calculate_plot(self, plot: str) -> PlotResults:
         plot_res = PlotResults(plot=plot)
@@ -55,13 +78,15 @@ class WaterDemandCalculator:
 
         for wing in sorted(res_wings, key=lambda w: w.sort_order):
             dom, flu, tot = residential_demand(wing.population)
+            kitchen = wing.kitchen_water
             wr = WingResult(
                 wing=wing.wing,
-                flats=wing.flats,
+                flats=wing.effective_flats,
                 pop_per_flat=wing.pop_per_flat,
                 population=wing.population,
                 domestic_lpd=dom,
                 flushing_lpd=flu,
+                kitchen_water_lpd=kitchen,
                 total_lpd=tot,
             )
             plot_res.residential_wings.append(wr)
@@ -69,7 +94,8 @@ class WaterDemandCalculator:
             plot_res.res_domestic_lpd += dom
             plot_res.res_flushing_lpd += flu
             plot_res.res_total_lpd += tot
-            plot_res.total_flats += wing.flats
+            plot_res.kitchen_water_lpd += kitchen
+            plot_res.total_flats += wing.effective_flats
 
         plot_res.num_buildings_res = len(res_wings)
 
@@ -105,11 +131,27 @@ class WaterDemandCalculator:
         landscape_area = self.other.landscape_area.get(plot, 0.0)
         plot_res.landscape_dry_lpd = landscape_demand(landscape_area)
         plot_res.landscape_wet_lpd = wet_landscape_demand(plot_res.landscape_dry_lpd)
-        plot_res.swimming_pool_lpd = int(self.other.swimming_pool.get(plot, 0))
-        plot_res.hvac_lpd = int(self.other.hvac_water.get(plot, 0))
 
-        dry_other = plot_res.landscape_dry_lpd + plot_res.swimming_pool_lpd + plot_res.hvac_lpd
-        wet_other = plot_res.landscape_wet_lpd + plot_res.swimming_pool_lpd + plot_res.hvac_lpd
+        pool_na = self.other.swimming_pool_na.get(plot, False)
+        plot_res.swimming_pool_lpd = 0 if pool_na else int(self.other.swimming_pool.get(plot, 0))
+
+        if hvac_applicable(self.project.project_type):
+            plot_res.hvac_lpd = int(self.other.hvac_water.get(plot, 0))
+        else:
+            plot_res.hvac_lpd = 0
+
+        dry_other = (
+            plot_res.landscape_dry_lpd
+            + plot_res.swimming_pool_lpd
+            + plot_res.hvac_lpd
+            + plot_res.kitchen_water_lpd
+        )
+        wet_other = (
+            plot_res.landscape_wet_lpd
+            + plot_res.swimming_pool_lpd
+            + plot_res.hvac_lpd
+            + plot_res.kitchen_water_lpd
+        )
 
         plot_res.dry_total_water_lpd = (
             plot_res.res_total_lpd + plot_res.com_total_lpd + dry_other
@@ -185,7 +227,6 @@ class WaterDemandCalculator:
         )
 
         for block_name in sorted(blocks.keys()):
-            block_units = blocks[block_name]
             block_dom = sum(u.domestic_lpd for u in plot_res.commercial_units if u.block == block_name)
             block_flu = sum(u.flushing_lpd for u in plot_res.commercial_units if u.block == block_name)
             block_fire = int(self.other.get_fire_tank(plot, block_name) or 0)
@@ -291,7 +332,15 @@ class WaterDemandCalculator:
 
         res_water = plot_res.res_total_lpd
         if res_water > 0:
-            sections.append(self._stp_calc("RESIDENTIAL", res_water, plot_res.res_flushing_lpd, plot_res.landscape_dry_lpd, plot_res.hvac_lpd))
+            sections.append(
+                self._stp_calc(
+                    "RESIDENTIAL",
+                    res_water,
+                    plot_res.res_flushing_lpd,
+                    plot_res.landscape_dry_lpd,
+                    plot_res.hvac_lpd,
+                )
+            )
 
         com_blocks = sorted(blocks.keys())
         if com_blocks:
@@ -373,21 +422,30 @@ class WaterDemandCalculator:
     def _calculate_totals(self, plots: Dict[str, PlotResults]) -> Dict[str, Any]:
         plot_a = plots.get("Plot-A")
         plot_b = plots.get("Plot-B")
-        if not plot_a or not plot_b:
+        if not plot_a:
             return {}
+        active = [p for p in (plot_a, plot_b) if p and (p.total_population > 0 or p.dry_total_water_lpd > 0)]
+        if self.project.plot_mode == PLOT_MODE_SINGLE:
+            active = [plot_a]
+        total_pop = sum(p.total_population for p in active)
+        total_water = sum(p.dry_total_water_lpd for p in active)
+        total_stp = sum(p.stp_capacity_kld for p in active)
+        total_res_pop = sum(p.res_population for p in active)
+        total_com_pop = sum(p.com_population for p in active)
+        total_flats = sum(p.total_flats for p in active)
         return {
-            "Total Population": plot_a.total_population + plot_b.total_population,
-            "Total Water (LPD)": plot_a.dry_total_water_lpd + plot_b.dry_total_water_lpd,
-            "Total STP Capacity (KLD)": plot_a.stp_capacity_kld + plot_b.stp_capacity_kld,
-            "Total Residential Population": plot_a.res_population + plot_b.res_population,
-            "Total Commercial Population": plot_a.com_population + plot_b.com_population,
-            "Total Flats": plot_a.total_flats + plot_b.total_flats,
+            "Total Population": total_pop,
+            "Total Water (LPD)": total_water,
+            "Total STP Capacity (KLD)": total_stp,
+            "Total Residential Population": total_res_pop,
+            "Total Commercial Population": total_com_pop,
+            "Total Flats": total_flats,
             "Plot-A Res Pop": plot_a.res_population,
-            "Plot-B Res Pop": plot_b.res_population,
+            "Plot-B Res Pop": plot_b.res_population if plot_b else 0,
             "Plot-A Total Water (LPD)": plot_a.dry_total_water_lpd,
-            "Plot-B Total Water (LPD)": plot_b.dry_total_water_lpd,
+            "Plot-B Total Water (LPD)": plot_b.dry_total_water_lpd if plot_b else 0,
             "Plot-A STP Capacity (KLD)": plot_a.stp_capacity_kld,
-            "Plot-B STP Capacity (KLD)": plot_b.stp_capacity_kld,
+            "Plot-B STP Capacity (KLD)": plot_b.stp_capacity_kld if plot_b else 0,
         }
 
 
@@ -395,10 +453,12 @@ def perform_calculations(
     residential_data: List[dict],
     commercial_data: List[dict],
     other_data: dict,
-) -> Tuple[CalculationResults, Dict[str, Dict[str, Any]]]:
+    project_data: Optional[dict] = None,
+) -> tuple:
     residential = [ResidentialWing.from_dict(r) for r in residential_data]
     commercial = [CommercialUnit.from_dict(c) for c in commercial_data]
     other = OtherDetails.from_dict(other_data)
-    calc = WaterDemandCalculator(residential, commercial, other)
+    project = ProjectData.from_dict(project_data or {})
+    calc = WaterDemandCalculator(residential, commercial, other, project)
     results = calc.calculate()
     return results, results.legacy_dict()

@@ -36,7 +36,9 @@ class AppState:
         return self.project.legacy_dict()
 
     def run_calculations(self) -> None:
-        calc = WaterDemandCalculator(self.residential, self.commercial, self.other)
+        calc = WaterDemandCalculator(
+            self.residential, self.commercial, self.other, self.project
+        )
         self.results = calc.calculate()
         self.calculated_legacy = self.results.legacy_dict()
 

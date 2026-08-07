@@ -24,11 +24,24 @@ class WaterDemandApp(ctk.CTk):
         self.configure(fg_color="#F0F2F5")
         init_db()
         self._sidebar()
-        self.container = ctk.CTkFrame(self, fg_color="transparent")
+        self.container = ctk.CTkFrame(self, fg_color="#F0F2F5")
         self.container.pack(side="right", fill="both", expand=True, padx=8, pady=8)
         self.pages = {}
         self._pages()
         self.show("Project")
+
+    def _plots(self) -> list[str]:
+        return plot_choices(self.app_state.project.plot_mode)
+
+    def _auto_fire_tank(self, plot: str) -> int:
+        heights = [
+            w.building_height_m
+            for w in self.app_state.residential
+            if w.plot == plot and w.building_height_m > 0
+        ]
+        if heights:
+            return fire_tank_capacity_liters(max(heights))
+        return int(self.app_state.other.fire_tank.get(plot, 0))
 
     def _sidebar(self):
         sb = ctk.CTkFrame(self, width=230, fg_color=BRAND_NAVY, corner_radius=0)
@@ -38,6 +51,8 @@ class WaterDemandApp(ctk.CTk):
         ctk.CTkLabel(sb, text="Water Demand Generator", font=("Arial", 10), text_color="white").pack(pady=(0, 15))
         self.nav_btns = {}
         for k, lbl in self.NAV:
+            if k == "HVAC" and not hvac_applicable(self.app_state.project.project_type):
+                continue
             b = ctk.CTkButton(sb, text=lbl, height=36, anchor="w", fg_color="transparent", hover_color=BRAND_ORANGE,
                               text_color="white", font=("Arial", 12), command=lambda x=k: self.show(x))
             b.pack(fill="x", padx=8, pady=2)
@@ -52,7 +67,8 @@ class WaterDemandApp(ctk.CTk):
         self.pages["Commercial"] = CommercialPage(self.container, self.app_state, on_next=lambda: self.show("Landscape"), on_back=lambda: self.show("Residential"))
         self.pages["Landscape"] = self._form_page("Landscape (NBC-2026)", self._landscape_ui)
         self.pages["Swimming"] = self._form_page("Swimming Pool", self._pool_ui)
-        self.pages["HVAC"] = self._form_page("HVAC Water", self._hvac_ui)
+        if hvac_applicable(self.app_state.project.project_type):
+            self.pages["HVAC"] = self._form_page("HVAC Water", self._hvac_ui)
         self.pages["UGT"] = self._form_page("UGT / Fire Tank", self._ugt_ui)
         self.pages["Report"] = FinalPage(self.container, self.app_state, on_back=lambda: self.show("Preview"))
         self.pages["STP"] = self._stp_page()
@@ -84,7 +100,7 @@ class WaterDemandApp(ctk.CTk):
         self._le = {}
         form = ctk.CTkFrame(p)
         form.pack(padx=20, pady=10)
-        for i, plot in enumerate(["Plot-A", "Plot-B"]):
+        for i, plot in enumerate(self._plots()):
             ctk.CTkLabel(form, text=f"Landscape Area {plot} (sq.m)", font=("Arial", 13)).grid(row=i, column=0, padx=10, pady=8, sticky="w")
             e = ctk.CTkEntry(form, width=180)
             e.insert(0, str(self.app_state.other.landscape_area.get(plot, 765 if plot == "Plot-A" else 762)))
@@ -103,21 +119,35 @@ class WaterDemandApp(ctk.CTk):
 
     def _pool_ui(self, p):
         self._pe = {}
+        self._pool_na = {}
         form = ctk.CTkFrame(p)
         form.pack(padx=20, pady=10)
-        for i, plot in enumerate(["Plot-A", "Plot-B"]):
+        for i, plot in enumerate(self._plots()):
             ctk.CTkLabel(form, text=f"Pool Makeup {plot} (L/day)", font=("Arial", 13)).grid(row=i, column=0, padx=10, pady=8, sticky="w")
             e = ctk.CTkEntry(form, width=180)
             e.insert(0, str(int(self.app_state.other.swimming_pool.get(plot, 0))))
             e.grid(row=i, column=1, padx=10, pady=8)
             self._pe[plot] = e
-        ctk.CTkButton(p, text="Save & Next", fg_color=BRAND_ORANGE, command=lambda: (self._save_dict(self._pe, self.app_state.other.swimming_pool), self.show("HVAC"))).pack(pady=12)
+            na_var = ctk.BooleanVar(value=self.app_state.other.swimming_pool_na.get(plot, False))
+            ctk.CTkCheckBox(form, text="Not Applicable (NA)", variable=na_var).grid(row=i, column=2, padx=10, pady=8)
+            self._pool_na[plot] = na_var
+        ctk.CTkButton(p, text="Save & Next", fg_color=BRAND_ORANGE, command=self._save_pool).pack(pady=12)
+
+    def _save_pool(self):
+        for plot in self._plots():
+            self.app_state.other.swimming_pool_na[plot] = self._pool_na[plot].get()
+            if self.app_state.other.swimming_pool_na[plot]:
+                self.app_state.other.swimming_pool[plot] = 0.0
+            else:
+                self.app_state.other.swimming_pool[plot] = float(self._pe[plot].get() or 0)
+        next_page = "HVAC" if hvac_applicable(self.app_state.project.project_type) else "UGT"
+        self.show(next_page)
 
     def _hvac_ui(self, p):
         self._he = {}
         form = ctk.CTkFrame(p)
         form.pack(padx=20, pady=10)
-        for i, plot in enumerate(["Plot-A", "Plot-B"]):
+        for i, plot in enumerate(self._plots()):
             ctk.CTkLabel(form, text=f"HVAC {plot} (L/day)", font=("Arial", 13)).grid(row=i, column=0, padx=10, pady=8, sticky="w")
             e = ctk.CTkEntry(form, width=180)
             e.insert(0, str(int(self.app_state.other.hvac_water.get(plot, 0))))
@@ -126,18 +156,17 @@ class WaterDemandApp(ctk.CTk):
         ctk.CTkButton(p, text="Save & Next", fg_color=BRAND_ORANGE, command=lambda: (self._save_dict(self._he, self.app_state.other.hvac_water), self.show("UGT"))).pack(pady=12)
 
     def _ugt_ui(self, p):
-        self._fe = {}
         form = ctk.CTkFrame(p)
         form.pack(padx=20, pady=10)
-        for i, plot in enumerate(["Plot-A", "Plot-B"]):
+        for i, plot in enumerate(self._plots()):
             ctk.CTkLabel(form, text=f"Fire Tank {plot} (litres)", font=("Arial", 13)).grid(row=i, column=0, padx=10, pady=8, sticky="w")
-            d = 300000 if plot == "Plot-A" else 230000
-            e = ctk.CTkEntry(form, width=180)
-            e.insert(0, str(int(self.app_state.other.fire_tank.get(plot, d))))
-            e.grid(row=i, column=1, padx=10, pady=8)
-            self._fe[plot] = e
+            auto_val = self._auto_fire_tank(plot)
+            ctk.CTkLabel(form, text=f"{auto_val:,} (auto from NBC height table)", font=("Arial", 12)).grid(
+                row=i, column=1, padx=10, pady=8, sticky="w"
+            )
+            self.app_state.other.fire_tank[plot] = float(auto_val)
         ctk.CTkLabel(p, text="UGT: Domestic 2-day, Flushing 1-day storage (auto-calculated)", font=("Arial", 11, "italic")).pack(pady=5)
-        ctk.CTkButton(p, text="Save & Go to OHT", fg_color=BRAND_ORANGE, command=lambda: (self._save_dict(self._fe, self.app_state.other.fire_tank), self.show("OHT"))).pack(pady=12)
+        ctk.CTkButton(p, text="Save & Go to OHT", fg_color=BRAND_ORANGE, command=lambda: self.show("OHT")).pack(pady=12)
 
     def _save_dict(self, entries, target):
         for plot, e in entries.items():
@@ -158,7 +187,7 @@ class WaterDemandApp(ctk.CTk):
         if not self.app_state.results:
             return
         lines = []
-        for pn in ("Plot-A", "Plot-B"):
+        for pn in self._plots():
             pl = self.app_state.results.plots[pn]
             lines.append(f"=== {pn} ===")
             for s in pl.stp_sections:
@@ -195,6 +224,9 @@ class WaterDemandApp(ctk.CTk):
         return f
 
     def show(self, name):
+        if name == "HVAC" and not hvac_applicable(self.app_state.project.project_type):
+            self.show("UGT")
+            return
         self.pages[name].tkraise()
         if hasattr(self.pages[name], "refresh"):
             self.pages[name].refresh()

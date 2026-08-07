@@ -4,6 +4,8 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from typing import Any, Dict
 
+from config.nbc_2026 import PLOT_MODE_DUAL, PROJECT_TYPE_MIXED
+
 
 @dataclass
 class RevisionInfo:
@@ -31,6 +33,8 @@ class ProjectData:
     engineer_name: str = "AKASH KHADE"
     project_no: str = ""
     date: str = ""
+    plot_mode: str = PLOT_MODE_DUAL
+    project_type: str = PROJECT_TYPE_MIXED
     revision: RevisionInfo = field(default_factory=RevisionInfo)
 
     def __post_init__(self) -> None:
@@ -48,6 +52,8 @@ class ProjectData:
             "engineer_name": self.engineer_name,
             "project_no": self.project_no,
             "date": self.date,
+            "plot_mode": self.plot_mode,
+            "project_type": self.project_type,
             "revision": self.revision.to_dict(),
         }
 
@@ -66,6 +72,8 @@ class ProjectData:
             engineer_name=data.get("engineer_name", data.get("Engineer Name", "AKASH KHADE")),
             project_no=data.get("project_no", data.get("Project No.", "")),
             date=data.get("date", data.get("Date", "")),
+            plot_mode=data.get("plot_mode", PLOT_MODE_DUAL),
+            project_type=data.get("project_type", PROJECT_TYPE_MIXED),
             revision=revision,
         )
 

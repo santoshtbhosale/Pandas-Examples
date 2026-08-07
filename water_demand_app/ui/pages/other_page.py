@@ -3,7 +3,13 @@ from __future__ import annotations
 import customtkinter as ctk
 from tkinter import messagebox
 
-from config.nbc_2026 import BRAND_NAVY, BRAND_ORANGE
+from config.nbc_2026 import (
+    BRAND_NAVY,
+    BRAND_ORANGE,
+    fire_tank_capacity_liters,
+    hvac_applicable,
+    plot_choices,
+)
 from models.other_details import OHTDetail
 from ui.app_state import AppState
 from ui.components.scrollable_frame import ScrollablePage
@@ -17,9 +23,24 @@ class OtherPage(ScrollablePage):
         self.on_calculate = on_calculate
         self.on_back = on_back
         self.entries: dict = {}
+        self.pool_na_vars: dict = {}
         self.oht_rows: list = []
         self.oht_frame = ctk.CTkFrame(self)
+        self.fire_labels: dict = {}
         self._build()
+
+    def _plots(self) -> list[str]:
+        return plot_choices(self.state.project.plot_mode)
+
+    def _auto_fire_tank(self, plot: str) -> int:
+        heights = [
+            w.building_height_m
+            for w in self.state.residential
+            if w.plot == plot and w.building_height_m > 0
+        ]
+        if heights:
+            return fire_tank_capacity_liters(max(heights))
+        return int(self.state.other.fire_tank.get(plot, 0))
 
     def _build(self) -> None:
         header = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=8)
@@ -31,22 +52,61 @@ class OtherPage(ScrollablePage):
         form = ctk.CTkFrame(self)
         form.pack(fill="x", padx=20, pady=10)
 
-        fields = [
-            ("landscape_a", "Landscape Area Plot-A (sq.m)", str(self.state.other.landscape_area.get("Plot-A", 765))),
-            ("landscape_b", "Landscape Area Plot-B (sq.m)", str(self.state.other.landscape_area.get("Plot-B", 762))),
-            ("pool_a", "Swimming Pool Plot-A (L/day)", str(int(self.state.other.swimming_pool.get("Plot-A", 0)))),
-            ("pool_b", "Swimming Pool Plot-B (L/day)", str(int(self.state.other.swimming_pool.get("Plot-B", 0)))),
-            ("hvac_a", "HVAC Water Plot-A (L/day)", str(int(self.state.other.hvac_water.get("Plot-A", 0)))),
-            ("hvac_b", "HVAC Water Plot-B (L/day)", str(int(self.state.other.hvac_water.get("Plot-B", 0)))),
-            ("fire_a", "Fire Tank Plot-A (litres)", str(int(self.state.other.fire_tank.get("Plot-A", 300000)))),
-            ("fire_b", "Fire Tank Plot-B (litres)", str(int(self.state.other.fire_tank.get("Plot-B", 230000)))),
-        ]
-        for i, (key, label, default) in enumerate(fields):
-            ctk.CTkLabel(form, text=label, font=("Arial", 13)).grid(row=i, column=0, padx=15, pady=8, sticky="w")
+        row = 0
+        for plot in self._plots():
+            ctk.CTkLabel(
+                form, text=f"Landscape Area {plot} (sq.m)", font=("Arial", 13)
+            ).grid(row=row, column=0, padx=15, pady=8, sticky="w")
             ent = ctk.CTkEntry(form, width=200)
-            ent.insert(0, default)
-            ent.grid(row=i, column=1, padx=15, pady=8)
-            self.entries[key] = ent
+            ent.insert(0, str(self.state.other.landscape_area.get(plot, 765 if plot == "Plot-A" else 762)))
+            ent.grid(row=row, column=1, padx=15, pady=8)
+            self.entries[f"landscape_{plot}"] = ent
+            row += 1
+
+        for plot in self._plots():
+            ctk.CTkLabel(
+                form, text=f"Swimming Pool {plot} (L/day)", font=("Arial", 13)
+            ).grid(row=row, column=0, padx=15, pady=8, sticky="w")
+            pool_ent = ctk.CTkEntry(form, width=200)
+            pool_ent.insert(0, str(int(self.state.other.swimming_pool.get(plot, 0))))
+            pool_ent.grid(row=row, column=1, padx=15, pady=8)
+            self.entries[f"pool_{plot}"] = pool_ent
+            na_var = ctk.BooleanVar(value=self.state.other.swimming_pool_na.get(plot, False))
+            ctk.CTkCheckBox(
+                form, text="Not Applicable (NA)", variable=na_var
+            ).grid(row=row, column=2, padx=10, pady=8, sticky="w")
+            self.pool_na_vars[plot] = na_var
+            row += 1
+
+        self.hvac_entries: dict = {}
+        if hvac_applicable(self.state.project.project_type):
+            for plot in self._plots():
+                ctk.CTkLabel(
+                    form, text=f"HVAC Water {plot} (L/day)", font=("Arial", 13)
+                ).grid(row=row, column=0, padx=15, pady=8, sticky="w")
+                ent = ctk.CTkEntry(form, width=200)
+                ent.insert(0, str(int(self.state.other.hvac_water.get(plot, 0))))
+                ent.grid(row=row, column=1, padx=15, pady=8)
+                self.hvac_entries[plot] = ent
+                row += 1
+        else:
+            ctk.CTkLabel(
+                form,
+                text="HVAC: Not applicable for residential-only projects",
+                font=("Arial", 12, "italic"),
+                text_color="#7F8C8D",
+            ).grid(row=row, column=0, columnspan=3, padx=15, pady=8, sticky="w")
+            row += 1
+
+        for plot in self._plots():
+            ctk.CTkLabel(
+                form, text=f"Fire Tank {plot} (litres)", font=("Arial", 13)
+            ).grid(row=row, column=0, padx=15, pady=8, sticky="w")
+            auto_val = self._auto_fire_tank(plot)
+            lbl = ctk.CTkLabel(form, text=f"{auto_val:,} (auto from NBC height table)", font=("Arial", 12))
+            lbl.grid(row=row, column=1, padx=15, pady=8, sticky="w")
+            self.fire_labels[plot] = lbl
+            row += 1
 
         ctk.CTkLabel(self, text="OHT Details (Optional - auto-calculated if empty)", font=("Arial", 14, "bold")).pack(pady=(15, 5))
         self.oht_frame.pack(fill="x", padx=15, pady=5)
@@ -71,8 +131,8 @@ class OtherPage(ScrollablePage):
 
     def _add_oht_row(self, oht: OHTDetail | None = None) -> None:
         r = len(self.oht_rows) + 1
-        plot_var = ctk.StringVar(value=oht.plot if oht else "Plot-A")
-        plot_cb = ctk.CTkComboBox(self.oht_frame, values=["Plot-A", "Plot-B"], variable=plot_var, width=90)
+        plot_var = ctk.StringVar(value=oht.plot if oht else self._plots()[0])
+        plot_cb = ctk.CTkComboBox(self.oht_frame, values=self._plots(), variable=plot_var, width=90)
         wing_ent = ctk.CTkEntry(self.oht_frame, width=100)
         wing_ent.insert(0, oht.wing if oht else "")
         dom_ent = ctk.CTkEntry(self.oht_frame, width=80)
@@ -106,22 +166,24 @@ class OtherPage(ScrollablePage):
 
     def _calculate(self) -> None:
         try:
-            self.state.other.landscape_area = {
-                "Plot-A": validate_positive_float(self.entries["landscape_a"].get(), "Landscape Plot-A"),
-                "Plot-B": validate_positive_float(self.entries["landscape_b"].get(), "Landscape Plot-B"),
-            }
-            self.state.other.swimming_pool = {
-                "Plot-A": validate_positive_float(self.entries["pool_a"].get(), "Swimming Pool Plot-A"),
-                "Plot-B": validate_positive_float(self.entries["pool_b"].get(), "Swimming Pool Plot-B"),
-            }
-            self.state.other.hvac_water = {
-                "Plot-A": validate_positive_float(self.entries["hvac_a"].get(), "HVAC Plot-A"),
-                "Plot-B": validate_positive_float(self.entries["hvac_b"].get(), "HVAC Plot-B"),
-            }
-            self.state.other.fire_tank = {
-                "Plot-A": validate_positive_float(self.entries["fire_a"].get(), "Fire Tank Plot-A"),
-                "Plot-B": validate_positive_float(self.entries["fire_b"].get(), "Fire Tank Plot-B"),
-            }
+            for plot in self._plots():
+                self.state.other.landscape_area[plot] = validate_positive_float(
+                    self.entries[f"landscape_{plot}"].get(), f"Landscape {plot}"
+                )
+                self.state.other.swimming_pool_na[plot] = self.pool_na_vars[plot].get()
+                if not self.state.other.swimming_pool_na[plot]:
+                    self.state.other.swimming_pool[plot] = validate_positive_float(
+                        self.entries[f"pool_{plot}"].get(), f"Swimming Pool {plot}"
+                    )
+                else:
+                    self.state.other.swimming_pool[plot] = 0.0
+                if hvac_applicable(self.state.project.project_type):
+                    self.state.other.hvac_water[plot] = validate_positive_float(
+                        self.hvac_entries[plot].get(), f"HVAC {plot}"
+                    )
+                else:
+                    self.state.other.hvac_water[plot] = 0.0
+                self.state.other.fire_tank[plot] = float(self._auto_fire_tank(plot))
             oht_list = []
             for row in self.oht_rows:
                 wing = row["wing"].get().strip()
@@ -140,4 +202,5 @@ class OtherPage(ScrollablePage):
             messagebox.showerror("Validation Error", exc.message)
 
     def refresh(self) -> None:
-        pass
+        for plot, lbl in self.fire_labels.items():
+            lbl.configure(text=f"{self._auto_fire_tank(plot):,} (auto from NBC height table)")

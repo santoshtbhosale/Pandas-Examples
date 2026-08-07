@@ -10,14 +10,19 @@ sys.path.insert(0, APP_DIR)
 
 from config.nbc_2026 import (
     commercial_population,
+    fire_tank_capacity_liters,
+    kitchen_water_lpd,
     landscape_demand,
     residential_demand,
     say_stp_capacity_kld,
     treated_water_lpd,
     COMMERCIAL_TYPES,
+    PLOT_MODE_SINGLE,
+    PROJECT_TYPE_RESIDENTIAL,
 )
 from models.commercial import CommercialUnit
 from models.other_details import OtherDetails
+from models.project import ProjectData
 from models.residential import ResidentialWing
 from services.calculator import WaterDemandCalculator
 
@@ -107,6 +112,48 @@ class TestPunavaleProject(unittest.TestCase):
         self.assertEqual(pb.res_population, 1120)
         self.assertEqual(pb.res_total_lpd, 151200)
 
+
+class TestNewFeatures(unittest.TestCase):
+    def test_kitchen_water_bhk_mix(self):
+        self.assertEqual(kitchen_water_lpd(10, 20, 5, 2), 10 * 25 + 20 * 35 + 5 * 45 + 2 * 55)
+
+    def test_fire_tank_by_height(self):
+        self.assertEqual(fire_tank_capacity_liters(20), 100_000)
+        self.assertEqual(fire_tank_capacity_liters(50), 400_000)
+
+    def test_swimming_pool_na(self):
+        other = OtherDetails(swimming_pool={"Plot-A": 5000}, swimming_pool_na={"Plot-A": True})
+        calc = WaterDemandCalculator(
+            [ResidentialWing(plot="Plot-A", wing="A", flats=10, pop_per_flat=5)],
+            [],
+            other,
+        )
+        results = calc.calculate()
+        self.assertEqual(results.plots["Plot-A"].swimming_pool_lpd, 0)
+
+    def test_hvac_hidden_for_residential(self):
+        other = OtherDetails(hvac_water={"Plot-A": 10000})
+        project = ProjectData(project_type=PROJECT_TYPE_RESIDENTIAL)
+        calc = WaterDemandCalculator(
+            [ResidentialWing(plot="Plot-A", wing="A", flats=10, pop_per_flat=5)],
+            [],
+            other,
+            project,
+        )
+        results = calc.calculate()
+        self.assertEqual(results.plots["Plot-A"].hvac_lpd, 0)
+
+    def test_single_plot_mode(self):
+        project = ProjectData(plot_mode=PLOT_MODE_SINGLE)
+        calc = WaterDemandCalculator(
+            [ResidentialWing(plot="Plot-A", wing="A", flats=10, pop_per_flat=5)],
+            [],
+            OtherDetails(),
+            project,
+        )
+        results = calc.calculate()
+        self.assertEqual(results.plots["Plot-B"].total_population, 0)
+        self.assertEqual(results.total["Total Population"], 50)
 
 if __name__ == "__main__":
     unittest.main()
