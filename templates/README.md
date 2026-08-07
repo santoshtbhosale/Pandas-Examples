@@ -4,7 +4,11 @@ Place the master workbook here:
 
 `WaterDemand_Template.xlsx`
 
-The application loads this file and populates data cells only — all formatting, borders, merged cells, fonts, and layout remain unchanged.
+The application copies this file and populates data cells only. All formatting, merged cells, borders, fonts, formulas, and print settings remain unchanged.
+
+Optional reference document:
+
+`Comments.docx` — engineering comments, UI rules, NBC tables, and screenshot requirements.
 
 If the template is missing, Excel export falls back to the programmatic workbook generator in `water_demand_app/services/excel_exporter.py`.
 
