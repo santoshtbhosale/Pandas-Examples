@@ -34,10 +34,14 @@ class WaterDemandApp(ctk.CTk):
         init_db()
         init_rwh_db()
 
+        self.grid_rowconfigure(2, weight=1)
+        self.grid_columnconfigure(0, weight=1)
         self._build_menu()
         self._build_nav()
-        self.container = ctk.CTkFrame(self, fg_color="transparent")
-        self.container.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self.container = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
+        self.container.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        self.container.grid_rowconfigure(0, weight=1)
+        self.container.grid_columnconfigure(0, weight=1)
 
         self.frames: dict = {}
         self._create_pages()
@@ -45,7 +49,7 @@ class WaterDemandApp(ctk.CTk):
 
     def _build_menu(self) -> None:
         menubar_frame = ctk.CTkFrame(self, height=35, fg_color=BRAND_NAVY, corner_radius=0)
-        menubar_frame.pack(fill="x")
+        menubar_frame.grid(row=0, column=0, sticky="ew")
         ctk.CTkButton(
             menubar_frame, text="New Project", width=100, height=28,
             fg_color="transparent", hover_color=BRAND_ORANGE, command=self._new_project,
@@ -65,7 +69,7 @@ class WaterDemandApp(ctk.CTk):
 
     def _build_nav(self) -> None:
         nav = ctk.CTkFrame(self, height=45, fg_color="#ECF0F1")
-        nav.pack(fill="x", padx=10, pady=(10, 0))
+        nav.grid(row=1, column=0, sticky="ew", padx=10, pady=(10, 0))
         self.nav_buttons: dict = {}
         pages = [
             ("Project", "1. Project"),

@@ -3074,11 +3074,53 @@ class AppState:
 # ==================== ui/components/scrollable_frame.py ====================
 
 
+PAGE_BG = "#F0F2F5"
+
 
 class ScrollablePage(ctk.CTkScrollableFrame):
+    """Full-size scrollable page shell used by every wizard screen."""
+
     def __init__(self, master, **kwargs) -> None:
-        kwargs.setdefault("fg_color", "transparent")
+        kwargs.setdefault("fg_color", PAGE_BG)
+        kwargs.setdefault("corner_radius", 0)
+        kwargs.setdefault("border_width", 0)
+        kwargs.setdefault("label_text", "")
         super().__init__(master, **kwargs)
+        self._resize_after_id: str | None = None
+        self.bind("<Map>", self._schedule_resize, add="+")
+        if master is not None:
+            master.bind("<Configure>", self._on_master_configure, add="+")
+        self.after_idle(self._sync_to_parent)
+
+    def grid(self, **kwargs):
+        kwargs.setdefault("sticky", "nsew")
+        super().grid(**kwargs)
+        self._schedule_resize()
+
+    def pack(self, **kwargs):
+        kwargs.setdefault("fill", "both")
+        kwargs.setdefault("expand", True)
+        super().pack(**kwargs)
+        self._schedule_resize()
+
+    def _schedule_resize(self, _event=None) -> None:
+        if self._resize_after_id is not None:
+            self.after_cancel(self._resize_after_id)
+        self._resize_after_id = self.after_idle(self._sync_to_parent)
+
+    def _on_master_configure(self, event) -> None:
+        if event.widget is self.master:
+            self._schedule_resize()
+
+    def _sync_to_parent(self) -> None:
+        self._resize_after_id = None
+        parent = self.master
+        if parent is None:
+            return
+        width = parent.winfo_width()
+        height = parent.winfo_height()
+        if width > 20 and height > 20:
+            self.configure(width=width, height=height)
 
 # ==================== ui/components/preview_dialog.py ====================
 
@@ -3719,6 +3761,8 @@ class CommercialPage(ScrollablePage):
         ]
         for i, h in enumerate(headers):
             ctk.CTkLabel(self.table_frame, text=h, font=("Arial", 11, "bold")).grid(row=0, column=i, padx=3, pady=5)
+        for col in range(len(headers)):
+            self.table_frame.grid_columnconfigure(col, weight=1 if col in (2, 3) else 0)
 
         if not self.state.commercial:
             self._add_default_row()
@@ -4335,9 +4379,13 @@ class WaterDemandApp(ctk.CTk):
         self.minsize(1100, 700)
         self.configure(fg_color="#F0F2F5")
         init_db()
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
         self._sidebar()
-        self.container = ctk.CTkFrame(self, fg_color="#F0F2F5")
-        self.container.pack(side="right", fill="both", expand=True, padx=8, pady=8)
+        self.container = ctk.CTkFrame(self, fg_color="#F0F2F5", corner_radius=0)
+        self.container.grid(row=0, column=1, sticky="nsew", padx=8, pady=8)
+        self.container.grid_rowconfigure(0, weight=1)
+        self.container.grid_columnconfigure(0, weight=1)
         self.pages = {}
         self._pages()
         self.show("Project")
@@ -4347,8 +4395,8 @@ class WaterDemandApp(ctk.CTk):
 
     def _sidebar(self):
         sb = ctk.CTkFrame(self, width=230, fg_color=BRAND_NAVY, corner_radius=0)
-        sb.pack(side="left", fill="y")
-        sb.pack_propagate(False)
+        sb.grid(row=0, column=0, sticky="ns")
+        sb.grid_propagate(False)
         ctk.CTkLabel(sb, text="AMERICAN EDGE\nENGINEERS", font=("Arial", 14, "bold"), text_color=BRAND_ORANGE, justify="center").pack(pady=(20, 5))
         ctk.CTkLabel(sb, text="Water Demand Generator", font=("Arial", 10), text_color="white").pack(pady=(0, 15))
         self.nav_btns = {}
@@ -4528,12 +4576,21 @@ class WaterDemandApp(ctk.CTk):
         ctk.CTkLabel(h, text="Settings", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
         ctk.CTkLabel(
             f,
-            text=f"Database: {DB_PATH}\nLogo: {LOGO_PATH}\n\nNBC-2026 Standards:\nResidential 105+30 LPCD\nLandscape 6 L/sq.m\nSTP 90% sewage",
+            text=(
+                f"Database:\n{DB_PATH}\n\n"
+                f"Logo:\n{LOGO_PATH}\n\n"
+                "NBC-2026 Standards:\n"
+                "Residential 105+30 LPCD\n"
+                "Landscape 6 L/sq.m\n"
+                "STP 90% sewage"
+            ),
             font=("Arial", 12),
             justify="left",
-        ).pack(anchor="w", padx=20, pady=10)
-        ctk.CTkButton(f, text="Export JSON", command=self._exp_json).pack(pady=8)
-        ctk.CTkButton(f, text="Import JSON", command=self._imp_json).pack(pady=8)
+            anchor="w",
+            wraplength=900,
+        ).pack(fill="x", anchor="w", padx=20, pady=10)
+        ctk.CTkButton(f, text="Export JSON", fg_color="#2980B9", command=self._exp_json).pack(pady=8)
+        ctk.CTkButton(f, text="Import JSON", fg_color="#2980B9", command=self._imp_json).pack(pady=8)
         return f
 
     def _auto_fire_tank(self, plot: str) -> int:

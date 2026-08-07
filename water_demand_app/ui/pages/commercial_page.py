@@ -52,6 +52,8 @@ class CommercialPage(ScrollablePage):
         ]
         for i, h in enumerate(headers):
             ctk.CTkLabel(self.table_frame, text=h, font=("Arial", 11, "bold")).grid(row=0, column=i, padx=3, pady=5)
+        for col in range(len(headers)):
+            self.table_frame.grid_columnconfigure(col, weight=1 if col in (2, 3) else 0)
 
         if not self.state.commercial:
             self._add_default_row()

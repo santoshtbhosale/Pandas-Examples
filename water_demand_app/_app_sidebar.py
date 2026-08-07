@@ -23,9 +23,13 @@ class WaterDemandApp(ctk.CTk):
         self.minsize(1100, 700)
         self.configure(fg_color="#F0F2F5")
         init_db()
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
         self._sidebar()
-        self.container = ctk.CTkFrame(self, fg_color="#F0F2F5")
-        self.container.pack(side="right", fill="both", expand=True, padx=8, pady=8)
+        self.container = ctk.CTkFrame(self, fg_color="#F0F2F5", corner_radius=0)
+        self.container.grid(row=0, column=1, sticky="nsew", padx=8, pady=8)
+        self.container.grid_rowconfigure(0, weight=1)
+        self.container.grid_columnconfigure(0, weight=1)
         self.pages = {}
         self._pages()
         self.show("Project")
@@ -35,8 +39,8 @@ class WaterDemandApp(ctk.CTk):
 
     def _sidebar(self):
         sb = ctk.CTkFrame(self, width=230, fg_color=BRAND_NAVY, corner_radius=0)
-        sb.pack(side="left", fill="y")
-        sb.pack_propagate(False)
+        sb.grid(row=0, column=0, sticky="ns")
+        sb.grid_propagate(False)
         ctk.CTkLabel(sb, text="AMERICAN EDGE\nENGINEERS", font=("Arial", 14, "bold"), text_color=BRAND_ORANGE, justify="center").pack(pady=(20, 5))
         ctk.CTkLabel(sb, text="Water Demand Generator", font=("Arial", 10), text_color="white").pack(pady=(0, 15))
         self.nav_btns = {}
@@ -218,12 +222,21 @@ class WaterDemandApp(ctk.CTk):
         ctk.CTkLabel(h, text="Settings", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
         ctk.CTkLabel(
             f,
-            text=f"Database: {DB_PATH}\nLogo: {LOGO_PATH}\n\nNBC-2026 Standards:\nResidential 105+30 LPCD\nLandscape 6 L/sq.m\nSTP 90% sewage",
+            text=(
+                f"Database:\n{DB_PATH}\n\n"
+                f"Logo:\n{LOGO_PATH}\n\n"
+                "NBC-2026 Standards:\n"
+                "Residential 105+30 LPCD\n"
+                "Landscape 6 L/sq.m\n"
+                "STP 90% sewage"
+            ),
             font=("Arial", 12),
             justify="left",
-        ).pack(anchor="w", padx=20, pady=10)
-        ctk.CTkButton(f, text="Export JSON", command=self._exp_json).pack(pady=8)
-        ctk.CTkButton(f, text="Import JSON", command=self._imp_json).pack(pady=8)
+            anchor="w",
+            wraplength=900,
+        ).pack(fill="x", anchor="w", padx=20, pady=10)
+        ctk.CTkButton(f, text="Export JSON", fg_color="#2980B9", command=self._exp_json).pack(pady=8)
+        ctk.CTkButton(f, text="Import JSON", fg_color="#2980B9", command=self._imp_json).pack(pady=8)
         return f
 
     def _auto_fire_tank(self, plot: str) -> int:
