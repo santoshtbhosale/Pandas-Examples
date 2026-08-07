@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import sqlite3
+import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
