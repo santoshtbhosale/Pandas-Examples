@@ -33,16 +33,6 @@ class WaterDemandApp(ctk.CTk):
     def _plots(self) -> list[str]:
         return plot_choices(self.app_state.project.plot_mode)
 
-    def _auto_fire_tank(self, plot: str) -> int:
-        heights = [
-            w.building_height_m
-            for w in self.app_state.residential
-            if w.plot == plot and w.building_height_m > 0
-        ]
-        if heights:
-            return fire_tank_capacity_liters(max(heights))
-        return int(self.app_state.other.fire_tank.get(plot, 0))
-
     def _sidebar(self):
         sb = ctk.CTkFrame(self, width=230, fg_color=BRAND_NAVY, corner_radius=0)
         sb.pack(side="left", fill="y")
@@ -51,6 +41,10 @@ class WaterDemandApp(ctk.CTk):
         ctk.CTkLabel(sb, text="Water Demand Generator", font=("Arial", 10), text_color="white").pack(pady=(0, 15))
         self.nav_btns = {}
         for k, lbl in self.NAV:
+            if k == "Residential" and not show_residential_section(self.app_state.project.project_type):
+                continue
+            if k == "Commercial" and not show_commercial_section(self.app_state.project.project_type):
+                continue
             if k == "HVAC" and not hvac_applicable(self.app_state.project.project_type):
                 continue
             b = ctk.CTkButton(sb, text=lbl, height=36, anchor="w", fg_color="transparent", hover_color=BRAND_ORANGE,
@@ -62,9 +56,9 @@ class WaterDemandApp(ctk.CTk):
         ctk.CTkButton(sb, text="New Project", fg_color="#27AE60", command=self._new).pack(side="bottom", fill="x", padx=10, pady=(4, 15))
 
     def _pages(self):
-        self.pages["Project"] = ProjectPage(self.container, self.app_state, on_next=lambda: self.show("Residential"))
-        self.pages["Residential"] = ResidentialPage(self.container, self.app_state, on_next=lambda: self.show("Commercial"), on_back=lambda: self.show("Project"))
-        self.pages["Commercial"] = CommercialPage(self.container, self.app_state, on_next=lambda: self.show("Landscape"), on_back=lambda: self.show("Residential"))
+        self.pages["Project"] = ProjectPage(self.container, self.app_state, on_next=self._next_from_project)
+        self.pages["Residential"] = ResidentialPage(self.container, self.app_state, on_next=self._next_from_residential, on_back=lambda: self.show("Project"))
+        self.pages["Commercial"] = CommercialPage(self.container, self.app_state, on_next=lambda: self.show("Landscape"), on_back=self._back_from_commercial)
         self.pages["Landscape"] = self._form_page("Landscape (NBC-2026)", self._landscape_ui)
         self.pages["Swimming"] = self._form_page("Swimming Pool", self._pool_ui)
         if hvac_applicable(self.app_state.project.project_type):
@@ -119,27 +113,36 @@ class WaterDemandApp(ctk.CTk):
 
     def _pool_ui(self, p):
         self._pe = {}
-        self._pool_na = {}
+        self._pool_status = {}
         form = ctk.CTkFrame(p)
         form.pack(padx=20, pady=10)
         for i, plot in enumerate(self._plots()):
-            ctk.CTkLabel(form, text=f"Pool Makeup {plot} (L/day)", font=("Arial", 13)).grid(row=i, column=0, padx=10, pady=8, sticky="w")
+            ctk.CTkLabel(form, text=f"Swimming Pool {plot}", font=("Arial", 13)).grid(row=i, column=0, padx=10, pady=8, sticky="w")
+            status = self.app_state.other.swimming_pool_status.get(plot, POOL_NOT_APPLICABLE)
+            if self.app_state.other.swimming_pool_na.get(plot, False):
+                status = POOL_NOT_APPLICABLE
+            label = next((k for k, v in POOL_STATUS_LABELS.items() if v == status), "Not Applicable")
+            status_var = ctk.StringVar(value=label)
+            ctk.CTkComboBox(form, values=list(POOL_STATUS_LABELS.keys()), variable=status_var, width=160).grid(
+                row=i, column=1, padx=10, pady=8, sticky="w"
+            )
+            self._pool_status[plot] = status_var
             e = ctk.CTkEntry(form, width=180)
             e.insert(0, str(int(self.app_state.other.swimming_pool.get(plot, 0))))
-            e.grid(row=i, column=1, padx=10, pady=8)
+            e.grid(row=i, column=2, padx=10, pady=8)
             self._pe[plot] = e
-            na_var = ctk.BooleanVar(value=self.app_state.other.swimming_pool_na.get(plot, False))
-            ctk.CTkCheckBox(form, text="Not Applicable (NA)", variable=na_var).grid(row=i, column=2, padx=10, pady=8)
-            self._pool_na[plot] = na_var
         ctk.CTkButton(p, text="Save & Next", fg_color=BRAND_ORANGE, command=self._save_pool).pack(pady=12)
 
     def _save_pool(self):
         for plot in self._plots():
-            self.app_state.other.swimming_pool_na[plot] = self._pool_na[plot].get()
-            if self.app_state.other.swimming_pool_na[plot]:
+            status = POOL_STATUS_LABELS.get(self._pool_status[plot].get(), POOL_NOT_APPLICABLE)
+            self.app_state.other.swimming_pool_status[plot] = status
+            self.app_state.other.swimming_pool_na[plot] = status == POOL_NOT_APPLICABLE
+            if status == POOL_NOT_APPLICABLE:
                 self.app_state.other.swimming_pool[plot] = 0.0
             else:
                 self.app_state.other.swimming_pool[plot] = float(self._pe[plot].get() or 0)
+        self.app_state.auto_calculate()
         next_page = "HVAC" if hvac_applicable(self.app_state.project.project_type) else "UGT"
         self.show(next_page)
 
@@ -223,9 +226,48 @@ class WaterDemandApp(ctk.CTk):
         ctk.CTkButton(f, text="Import JSON", command=self._imp_json).pack(pady=8)
         return f
 
+    def _auto_fire_tank(self, plot: str) -> int:
+        heights_types = [
+            (w.building_height_m, w.building_type)
+            for w in self.app_state.residential
+            if w.plot == plot and w.building_height_m > 0
+        ]
+        if heights_types:
+            max_height = max(h for h, _ in heights_types)
+            btype = next((t for h, t in heights_types if h == max_height), "")
+            return fire_tank_capacity_liters(max_height, btype)
+        return int(self.app_state.other.fire_tank.get(plot, 0))
+
+    def _next_from_project(self):
+        ptype = self.app_state.project.project_type
+        if show_residential_section(ptype):
+            self.show("Residential")
+        elif show_commercial_section(ptype):
+            self.show("Commercial")
+        else:
+            self.show("Landscape")
+
+    def _next_from_residential(self):
+        if show_commercial_section(self.app_state.project.project_type):
+            self.show("Commercial")
+        else:
+            self.show("Landscape")
+
+    def _back_from_commercial(self):
+        if show_residential_section(self.app_state.project.project_type):
+            self.show("Residential")
+        else:
+            self.show("Project")
+
     def show(self, name):
         if name == "HVAC" and not hvac_applicable(self.app_state.project.project_type):
             self.show("UGT")
+            return
+        if name == "Residential" and not show_residential_section(self.app_state.project.project_type):
+            self.show("Commercial" if show_commercial_section(self.app_state.project.project_type) else "Landscape")
+            return
+        if name == "Commercial" and not show_commercial_section(self.app_state.project.project_type):
+            self.show("Residential" if show_residential_section(self.app_state.project.project_type) else "Landscape")
             return
         self.pages[name].tkraise()
         if hasattr(self.pages[name], "refresh"):
@@ -235,7 +277,7 @@ class WaterDemandApp(ctk.CTk):
 
     def _calc(self):
         try:
-            self.app_state.run_calculations()
+            self.app_state.auto_calculate()
         except Exception as ex:
             messagebox.showerror("Error", str(ex))
 

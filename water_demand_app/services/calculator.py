@@ -61,14 +61,16 @@ class WaterDemandCalculator:
 
     def _apply_auto_fire_tanks(self) -> None:
         for plot in self._plots:
-            heights = [
-                w.building_height_m
+            heights_types = [
+                (w.building_height_m, w.building_type)
                 for w in self.residential
                 if w.plot == plot and w.building_height_m > 0
             ]
-            if heights:
+            if heights_types:
+                max_height = max(h for h, _ in heights_types)
+                btype = next((t for h, t in heights_types if h == max_height), "")
                 self.other.fire_tank[plot] = float(
-                    fire_tank_capacity_liters(max(heights))
+                    fire_tank_capacity_liters(max_height, btype)
                 )
 
     def _calculate_plot(self, plot: str) -> PlotResults:
@@ -132,7 +134,10 @@ class WaterDemandCalculator:
         plot_res.landscape_dry_lpd = landscape_demand(landscape_area)
         plot_res.landscape_wet_lpd = wet_landscape_demand(plot_res.landscape_dry_lpd)
 
-        pool_na = self.other.swimming_pool_na.get(plot, False)
+        pool_na = (
+            self.other.swimming_pool_status.get(plot, "not_applicable") == "not_applicable"
+            or self.other.swimming_pool_na.get(plot, False)
+        )
         plot_res.swimming_pool_lpd = 0 if pool_na else int(self.other.swimming_pool.get(plot, 0))
 
         if hvac_applicable(self.project.project_type):

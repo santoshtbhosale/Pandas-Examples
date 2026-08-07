@@ -17,6 +17,7 @@ import json
 import math
 import os
 import re
+import shutil
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass, field, asdict
@@ -26,7 +27,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import customtkinter as ctk
 from tkcalendar import DateEntry
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from reportlab.lib import colors
@@ -64,6 +65,10 @@ def patch_source(src: str) -> str:
     src = src.replace(
         'os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "logo.png")',
         "LOGO_PATH",
+    )
+    src = src.replace(
+        'os.path.normpath(\n        os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "templates", "WaterDemand_Template.xlsx")\n    )',
+        'os.path.join(APP_DIR, "templates", "WaterDemand_Template.xlsx")',
     )
     return src
 

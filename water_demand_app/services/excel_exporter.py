@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
+import shutil
 from typing import Any, Dict, Optional
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
@@ -319,5 +321,177 @@ class ExcelExporter:
         self._auto_width(ws)
 
 
+        self._auto_width(ws)
+
+
+TEMPLATE_PATH = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "templates", "WaterDemand_Template.xlsx")
+)
+
+
+class TemplateExcelExporter:
+    """Populate the master Excel template without altering formatting."""
+
+    def __init__(self, project: ProjectData, results: CalculationResults) -> None:
+        self.project = project
+        self.results = results
+
+    def export(self, file_path: str) -> None:
+        shutil.copy2(TEMPLATE_PATH, file_path)
+        wb = load_workbook(file_path)
+        self._populate_cover(wb)
+        self._populate_consolidated(wb)
+        for plot in active_plots(self.project.plot_mode):
+            self._populate_plot_sheets(wb, plot)
+        self._populate_summary(wb)
+        wb.save(file_path)
+
+    def _set(self, ws, cell: str, value: Any) -> None:
+        ws[cell] = value
+
+    def _populate_cover(self, wb) -> None:
+        ws = wb["Cover"] if "Cover" in wb.sheetnames else wb.active
+        rev = self.project.revision
+        mapping = {
+            "B4": self.project.project_name,
+            "B5": self.project.client_name,
+            "B6": self.project.project_location,
+            "B7": self.project.project_no,
+            "B8": self.project.engineer_name,
+            "B9": self.project.date,
+            "A12": rev.date or self.project.date,
+            "B12": rev.revision_no,
+            "C12": rev.description,
+            "D12": rev.prepared_by,
+            "E12": rev.checked_by,
+            "F12": rev.approved_by,
+        }
+        for cell, val in mapping.items():
+            try:
+                self._set(ws, cell, val)
+            except Exception:
+                pass
+
+    def _populate_consolidated(self, wb) -> None:
+        if "Consolidated" not in wb.sheetnames:
+            return
+        ws = wb["Consolidated"]
+        pa = self.results.plots["Plot-A"]
+        pb = self.results.plots["Plot-B"]
+        tot = self.results.total
+        rows = [
+            (4, pa.num_buildings_res, pa.num_buildings_com, pa.num_buildings_res + pa.num_buildings_com,
+             pb.num_buildings_res, pb.num_buildings_com, pb.num_buildings_res + pb.num_buildings_com,
+             pa.num_buildings_res + pa.num_buildings_com + pb.num_buildings_res + pb.num_buildings_com),
+            (5, pa.total_flats, 0, pa.total_flats, pb.total_flats, 0, pb.total_flats, tot.get("Total Flats", 0)),
+            (6, pa.res_population, pa.com_population, pa.total_population,
+             pb.res_population, pb.com_population, pb.total_population, tot.get("Total Population", 0)),
+            (7, pa.res_total_lpd + pa.com_total_lpd, 0, pa.dry_total_water_lpd,
+             pb.res_total_lpd + pb.com_total_lpd, 0, pb.dry_total_water_lpd, tot.get("Total Water (LPD)", 0)),
+            (8, pa.stp_capacity_kld, 0, pa.stp_capacity_kld,
+             pb.stp_capacity_kld, 0, pb.stp_capacity_kld, tot.get("Total STP Capacity (KLD)", 0)),
+        ]
+        for row, c, d, e, f, g, h, i in rows:
+            for col, val in zip("CDEFGHI", (c, d, e, f, g, h, i)):
+                try:
+                    self._set(ws, f"{col}{row}", val)
+                except Exception:
+                    pass
+
+    def _populate_plot_sheets(self, wb, plot_name: str) -> None:
+        plot = self.results.plots[plot_name]
+        demand_name = f"{plot_name} Demand"
+        if demand_name in wb.sheetnames:
+            ws = wb[demand_name]
+            row = 5
+            for idx, w in enumerate(plot.residential_wings, 1):
+                try:
+                    self._set(ws, f"A{row}", idx)
+                    self._set(ws, f"B{row}", w.wing)
+                    self._set(ws, f"C{row}", w.flats)
+                    self._set(ws, f"E{row}", w.population)
+                    self._set(ws, f"F{row}", w.domestic_lpd)
+                    self._set(ws, f"G{row}", w.flushing_lpd)
+                    self._set(ws, f"H{row}", w.kitchen_water_lpd)
+                    self._set(ws, f"I{row}", w.total_lpd)
+                    row += 1
+                except Exception:
+                    pass
+            try:
+                self._set(ws, f"E{row}", plot.res_population)
+                self._set(ws, f"F{row}", plot.res_domestic_lpd)
+                self._set(ws, f"G{row}", plot.res_flushing_lpd)
+                self._set(ws, f"H{row}", plot.kitchen_water_lpd)
+                self._set(ws, f"I{row}", plot.res_total_lpd)
+            except Exception:
+                pass
+
+        ugt_name = f"{plot_name} UGT-OHT"
+        if ugt_name in wb.sheetnames:
+            ws = wb[ugt_name]
+            row = 4
+            for idx, sec in enumerate(plot.ugt_sections, 1):
+                try:
+                    self._set(ws, f"A{row}", idx)
+                    self._set(ws, f"B{row}", sec.description)
+                    self._set(ws, f"C{row}", sec.water_requirement_lpd)
+                    self._set(ws, f"D{row}", sec.storage_days)
+                    self._set(ws, f"E{row}", sec.total_storage_liters)
+                    self._set(ws, f"F{row}", sec.total_storage_kld)
+                    row += 1
+                except Exception:
+                    pass
+            try:
+                self._set(ws, f"B{row + 2}", plot.fire_tank_liters)
+            except Exception:
+                pass
+
+        stp_name = f"{plot_name} STP"
+        if stp_name in wb.sheetnames:
+            ws = wb[stp_name]
+            row = 4
+            for stp in plot.stp_sections:
+                try:
+                    self._set(ws, f"A{row}", 1)
+                    self._set(ws, f"B{row}", "Total Water Requirement")
+                    self._set(ws, f"C{row}", stp.total_water_lpd)
+                    row += 1
+                    self._set(ws, f"A{row}", 2)
+                    self._set(ws, f"B{row}", "Say STP Capacity")
+                    self._set(ws, f"C{row}", stp.say_stp_kld)
+                    row += 3
+                except Exception:
+                    pass
+
+    def _populate_summary(self, wb) -> None:
+        if "Summary" not in wb.sheetnames:
+            return
+        ws = wb["Summary"]
+        tot = self.results.total
+        pa = self.results.plots["Plot-A"]
+        pb = self.results.plots["Plot-B"]
+        mapping = {
+            "B3": self.project.project_name,
+            "B4": self.project.client_name,
+            "B5": self.project.project_location,
+            "B6": self.project.engineer_name,
+            "B7": self.project.date,
+            "B9": pa.stp_capacity_kld,
+            "B10": pb.stp_capacity_kld,
+            "B11": tot.get("Total Water (LPD)", 0),
+            "B12": tot.get("Total STP Capacity (KLD)", 0),
+            "B13": tot.get("Total Population", 0),
+            "B14": tot.get("Total Flats", 0),
+        }
+        for cell, val in mapping.items():
+            try:
+                self._set(ws, cell, val)
+            except Exception:
+                pass
+
+
 def export_excel(file_path: str, project: ProjectData, results: CalculationResults) -> None:
-    ExcelExporter(project, results).export(file_path)
+    if os.path.isfile(TEMPLATE_PATH):
+        TemplateExcelExporter(project, results).export(file_path)
+    else:
+        ExcelExporter(project, results).export(file_path)

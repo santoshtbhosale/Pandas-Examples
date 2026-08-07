@@ -9,6 +9,7 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, APP_DIR)
 
 from config.nbc_2026 import (
+    bhk_population,
     commercial_population,
     fire_tank_capacity_liters,
     kitchen_water_lpd,
@@ -18,6 +19,7 @@ from config.nbc_2026 import (
     treated_water_lpd,
     COMMERCIAL_TYPES,
     PLOT_MODE_SINGLE,
+    PROJECT_TYPE_IT_PARK,
     PROJECT_TYPE_RESIDENTIAL,
 )
 from models.commercial import CommercialUnit
@@ -115,16 +117,27 @@ class TestPunavaleProject(unittest.TestCase):
 
 class TestNewFeatures(unittest.TestCase):
     def test_kitchen_water_bhk_mix(self):
-        self.assertEqual(kitchen_water_lpd(10, 20, 5, 2), 10 * 25 + 20 * 35 + 5 * 45 + 2 * 55)
+        self.assertEqual(kitchen_water_lpd(10, 20, 5, 2, 1), 10 * 25 + 20 * 35 + 5 * 45 + 2 * 50 + 1 * 55)
+
+    def test_bhk_population_4bhk(self):
+        self.assertEqual(bhk_population(0, 0, 0, 10, 0), 60)
 
     def test_fire_tank_by_height(self):
         self.assertEqual(fire_tank_capacity_liters(20), 100_000)
         self.assertEqual(fire_tank_capacity_liters(50), 400_000)
 
+    def test_fire_tank_commercial_building(self):
+        self.assertEqual(fire_tank_capacity_liters(20, "Commercial"), 100_000)
+        self.assertEqual(fire_tank_capacity_liters(50, "Hotel"), 250_000)
+
     def test_swimming_pool_na(self):
-        other = OtherDetails(swimming_pool={"Plot-A": 5000}, swimming_pool_na={"Plot-A": True})
+        other = OtherDetails(
+            swimming_pool={"Plot-A": 5000},
+            swimming_pool_status={"Plot-A": "not_applicable"},
+            swimming_pool_na={"Plot-A": True},
+        )
         calc = WaterDemandCalculator(
-            [ResidentialWing(plot="Plot-A", wing="A", flats=10, pop_per_flat=5)],
+            [ResidentialWing(plot="Plot-A", wing="A", flats_2bhk=5)],
             [],
             other,
         )
@@ -135,7 +148,7 @@ class TestNewFeatures(unittest.TestCase):
         other = OtherDetails(hvac_water={"Plot-A": 10000})
         project = ProjectData(project_type=PROJECT_TYPE_RESIDENTIAL)
         calc = WaterDemandCalculator(
-            [ResidentialWing(plot="Plot-A", wing="A", flats=10, pop_per_flat=5)],
+            [ResidentialWing(plot="Plot-A", wing="A", flats_2bhk=5)],
             [],
             other,
             project,
@@ -143,17 +156,29 @@ class TestNewFeatures(unittest.TestCase):
         results = calc.calculate()
         self.assertEqual(results.plots["Plot-A"].hvac_lpd, 0)
 
+    def test_hvac_applicable_for_it_park(self):
+        other = OtherDetails(hvac_water={"Plot-A": 5000})
+        project = ProjectData(project_type=PROJECT_TYPE_IT_PARK)
+        calc = WaterDemandCalculator(
+            [],
+            [CommercialUnit(plot="Plot-A", block="COMM-A", comm_type="IT Office", area_sqm=1000)],
+            other,
+            project,
+        )
+        results = calc.calculate()
+        self.assertEqual(results.plots["Plot-A"].hvac_lpd, 5000)
+
     def test_single_plot_mode(self):
         project = ProjectData(plot_mode=PLOT_MODE_SINGLE)
         calc = WaterDemandCalculator(
-            [ResidentialWing(plot="Plot-A", wing="A", flats=10, pop_per_flat=5)],
+            [ResidentialWing(plot="Plot-A", wing="A", flats_2bhk=5)],
             [],
             OtherDetails(),
             project,
         )
         results = calc.calculate()
         self.assertEqual(results.plots["Plot-B"].total_population, 0)
-        self.assertEqual(results.total["Total Population"], 50)
+        self.assertEqual(results.total["Total Population"], 20)
 
 if __name__ == "__main__":
     unittest.main()

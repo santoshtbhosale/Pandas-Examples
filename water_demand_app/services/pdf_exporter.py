@@ -294,10 +294,11 @@ class PDFExporter:
         dry_rows = [
             ("Fresh Water Requirement", pa.res_domestic_lpd, pa.com_domestic_lpd, pb.res_domestic_lpd, pb.com_domestic_lpd),
             ("Flushing Water Requirement", pa.res_flushing_lpd, pa.com_flushing_lpd, pb.res_flushing_lpd, pb.com_flushing_lpd),
+            ("Kitchen Water Requirement", pa.kitchen_water_lpd, 0, pb.kitchen_water_lpd, 0),
             ("Landscape Water Requirement", pa.landscape_dry_lpd, 0, pb.landscape_dry_lpd, 0),
             ("Swimming Pool Makeup Water Requirement", pa.swimming_pool_lpd, 0, pb.swimming_pool_lpd, 0),
             ("HVAC Water Requirement", pa.hvac_lpd, 0, pb.hvac_lpd, 0),
-            ("Total Water Requirement", pa.dry_total_water_lpd, pa.com_total_lpd + pa.landscape_dry_lpd + pa.swimming_pool_lpd + pa.hvac_lpd, pb.dry_total_water_lpd, pb.com_total_lpd + pb.landscape_dry_lpd + pb.swimming_pool_lpd + pb.hvac_lpd),
+            ("Total Water Requirement", pa.dry_total_water_lpd, pa.com_total_lpd + pa.landscape_dry_lpd + pa.swimming_pool_lpd + pa.hvac_lpd + pa.kitchen_water_lpd, pb.dry_total_water_lpd, pb.com_total_lpd + pb.landscape_dry_lpd + pb.swimming_pool_lpd + pb.hvac_lpd + pb.kitchen_water_lpd),
             ("Total Treated Water", pa.dry_treated_water_lpd, 0, pb.dry_treated_water_lpd, 0),
             ("Excess Treated Water To Corporation Line", pa.dry_excess_treated_lpd, 0, pb.dry_excess_treated_lpd, 0),
         ]
@@ -307,28 +308,28 @@ class PDFExporter:
                 a_sub = a_res + a_com
             elif idx == 2:
                 a_sub = a_res + a_com
-            elif idx in (3, 4, 5):
+            elif idx in (3, 4, 5, 6):
                 a_sub = a_res
                 b_sub = b_res
-            elif idx == 6:
+            elif idx == 7:
                 a_sub = pa.dry_total_water_lpd
                 b_sub = pb.dry_total_water_lpd
-            elif idx == 7:
+            elif idx == 8:
                 a_sub = pa.dry_treated_water_lpd
                 b_sub = pb.dry_treated_water_lpd
             else:
                 a_sub = pa.dry_excess_treated_lpd
                 b_sub = pb.dry_excess_treated_lpd
-            if idx <= 5:
+            if idx <= 6:
                 b_sub = b_res + (b_com if idx <= 2 else 0) if idx <= 2 else b_res
             rows.append(
                 [
                     self._tc(f"SECTION-7" if idx == 1 else "", 0),
                     self._tc(desc, 0),
-                    self._tc(kld(a_res if idx <= 5 else a_sub)),
+                    self._tc(kld(a_res if idx <= 6 else a_sub)),
                     self._tc(kld(a_com if idx <= 2 else 0)),
                     self._tc(kld(a_sub)),
-                    self._tc(kld(b_res if idx <= 5 else b_sub)),
+                    self._tc(kld(b_res if idx <= 6 else b_sub)),
                     self._tc(kld(b_com if idx <= 2 else 0)),
                     self._tc(kld(b_sub)),
                     self._tc(kld(a_sub + b_sub)),
@@ -339,6 +340,7 @@ class PDFExporter:
         wet_rows = [
             ("FRESH WATER REQUIREMENT", pa.res_domestic_lpd, pa.com_domestic_lpd),
             ("FLUSHING WATER REQUIREMENTS", pa.res_flushing_lpd, pa.com_flushing_lpd),
+            ("KITCHEN WATER REQUIREMENT", pa.kitchen_water_lpd, 0),
             ("LANDSCAPE WATER REQUIRED", pa.landscape_wet_lpd, 0),
             ("SWIMMING POOL MAKEUP WATER REQUIRMENT", pa.swimming_pool_lpd, 0),
             ("HVAC WATER REQUIREMENT", pa.hvac_lpd, 0),
@@ -350,17 +352,18 @@ class PDFExporter:
             b_val = {
                 1: pb.res_domestic_lpd,
                 2: pb.res_flushing_lpd,
-                3: pb.landscape_wet_lpd,
-                4: pb.swimming_pool_lpd,
-                5: pb.hvac_lpd,
-                6: pb.wet_total_water_lpd,
-                7: pb.wet_treated_water_lpd,
-                8: pb.wet_excess_treated_lpd,
+                3: pb.kitchen_water_lpd,
+                4: pb.landscape_wet_lpd,
+                5: pb.swimming_pool_lpd,
+                6: pb.hvac_lpd,
+                7: pb.wet_total_water_lpd,
+                8: pb.wet_treated_water_lpd,
+                9: pb.wet_excess_treated_lpd,
             }[idx]
-            b_com = pb.com_domestic_lpd if idx == 1 else (pb.com_flushing_lpd if idx == 2 else (pb.com_total_lpd if idx == 6 else 0))
+            b_com = pb.com_domestic_lpd if idx == 1 else (pb.com_flushing_lpd if idx == 2 else (pb.com_total_lpd if idx == 7 else 0))
             a_sub = a_val + (a_com if idx <= 2 else 0) if idx <= 2 else a_val
             b_sub = b_val + (b_com if idx <= 2 else 0) if idx <= 2 else b_val
-            if idx == 6:
+            if idx == 7:
                 a_sub = pa.wet_total_water_lpd
                 b_sub = pb.wet_total_water_lpd
             rows.append(
@@ -551,14 +554,21 @@ class PDFExporter:
                 self._tc("LITER/DAY"),
             ],
             [
-                self._tc(2),
+                self._tc(3),
+                self._tc("KITCHEN WATER REQUIREMENT", 0),
+                self._tc("0"),
+                self._tc(plot.kitchen_water_lpd),
+                self._tc("LITER/DAY"),
+            ],
+            [
+                self._tc(4),
                 self._tc("MAKE UP WATER FOR SWIMMING POOL", 0),
                 self._tc("0"),
                 self._tc(plot.swimming_pool_lpd),
                 self._tc("LITER/DAY"),
             ],
             [
-                self._tc(3),
+                self._tc(5),
                 self._tc("WATER REQUIRMENT FOR HVAC", 0),
                 self._tc("0"),
                 self._tc(plot.hvac_lpd),

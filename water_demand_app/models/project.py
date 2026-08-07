@@ -30,7 +30,7 @@ class ProjectData:
     project_name: str = "PROPOSED RESIDENTIAL"
     client_name: str = "MR. ABC"
     project_location: str = "PUNE"
-    engineer_name: str = "AKASH KHADE"
+    engineer_name: str = "Akash"
     project_no: str = ""
     date: str = ""
     plot_mode: str = PLOT_MODE_DUAL
@@ -69,7 +69,7 @@ class ProjectData:
             project_name=data.get("project_name", data.get("Project Name", "PROPOSED RESIDENTIAL")),
             client_name=data.get("client_name", data.get("Client Name", "MR. ABC")),
             project_location=data.get("project_location", data.get("Project Location", "PUNE")),
-            engineer_name=data.get("engineer_name", data.get("Engineer Name", "AKASH KHADE")),
+            engineer_name=data.get("engineer_name", data.get("Engineer Name", "Akash")),
             project_no=data.get("project_no", data.get("Project No.", "")),
             date=data.get("date", data.get("Date", "")),
             plot_mode=data.get("plot_mode", PLOT_MODE_DUAL),

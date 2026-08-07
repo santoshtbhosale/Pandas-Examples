@@ -9,8 +9,8 @@ import json
 import math
 import os
 import re
+import shutil
 import sqlite3
-import sys
 from collections import defaultdict
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
@@ -19,27 +19,14 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import customtkinter as ctk
 from tkcalendar import DateEntry
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter, landscape as pagesize_landscape
+from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
-from reportlab.platypus import (
-    BaseDocTemplate,
-    Frame,
-    Image,
-    KeepTogether,
-    NextPageTemplate,
-    PageBreak,
-    PageTemplate,
-    Paragraph,
-    SimpleDocTemplate,
-    Spacer,
-    Table,
-    TableStyle,
-)
+from reportlab.platypus import Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(APP_DIR, "water_demand.db")
@@ -60,7 +47,6 @@ except Exception:
     RWHPage = None  # type: ignore
 
 
-
 # ==================== config/nbc_2026.py ====================
 """NBC-2026 water demand constants and calculation parameters."""
 
@@ -75,71 +61,99 @@ BRAND_DEMAND_ORANGE = "#E67E22"
 BRAND_UGT_TEAL = "#16A085"
 BRAND_STP_PURPLE = "#8E44AD"
 
-# Residential LPCD (Liters Per Capita Per Day) — NBC 2026
+# Residential LPCD — NBC Part 9
 RES_DOMESTIC_LPCD = 105
 RES_FLUSHING_LPCD = 30
 RES_TOTAL_LPCD = 135
 
-# Kitchen water (litres/day per flat) — NBC fixture-based allowance
+# Kitchen water (L/day per flat)
 KITCHEN_LPD_PER_FLAT: Dict[str, int] = {
     "1BHK": 25,
     "2BHK": 35,
     "3BHK": 45,
+    "4BHK": 50,
     "PH": 55,
 }
 
-# Default population per flat type when BHK mix is used
+# Residential occupancy per flat type (NBC reference screenshots)
 BHK_POPULATION: Dict[str, int] = {
     "1BHK": 2,
     "2BHK": 4,
     "3BHK": 5,
+    "4BHK": 6,
     "PH": 5,
 }
 
+BUILDING_CONFIG_EXAMPLES: Tuple[str, ...] = (
+    "G+7",
+    "G+12",
+    "2B+G+21",
+    "3B+G+30",
+    "G+4",
+    "G+20",
+    "Custom",
+)
+
 BUILDING_TYPES: Tuple[str, ...] = (
+    "Residential Apartment",
     "High Rise Tower",
     "Mid Rise Tower",
     "Low Rise",
     "Bungalow",
     "Row House",
     "Villa",
+    "Hotel",
+    "Hospital",
+    "Commercial",
+    "Industrial",
 )
 
-# Staff dropdowns
-STAFF_ENGINEERS: Tuple[str, ...] = (
-    "AKASH KHADE",
-    "SWAPNIL",
-    "RAHUL PATIL",
-    "PRATHMESH GAIKWAD",
-    "OTHER",
-)
-STAFF_APPROVAL: Tuple[str, ...] = (
-    "AKASH",
-    "SWAPNIL",
-    "PRATHMESH GAIKWAD",
-    "OTHER",
-)
+# Staff dropdowns — per Comments.docx
+STAFF_NAMES: Tuple[str, ...] = ("Akash", "Vaibhav", "Sachin", "Omkar")
+STAFF_ENGINEERS: Tuple[str, ...] = STAFF_NAMES
+STAFF_APPROVAL: Tuple[str, ...] = STAFF_NAMES
 
 # Plot configuration
 PLOT_MODE_DUAL = "dual"
 PLOT_MODE_SINGLE = "single"
 PLOT_MODE_LABELS: Dict[str, str] = {
-    "Dual (Plot-A & Plot-B)": PLOT_MODE_DUAL,
+    "Plot A + B": PLOT_MODE_DUAL,
     "Single Plot": PLOT_MODE_SINGLE,
 }
 PLOTS = ("Plot-A", "Plot-B")
 
-# Project type — controls HVAC visibility
+# Project types
 PROJECT_TYPE_RESIDENTIAL = "residential"
-PROJECT_TYPE_MIXED = "residential_commercial"
 PROJECT_TYPE_COMMERCIAL = "commercial"
+PROJECT_TYPE_MIXED = "mixed_use"
+PROJECT_TYPE_INDUSTRIAL = "industrial"
+PROJECT_TYPE_HOSPITAL = "hospital"
+PROJECT_TYPE_HOTEL = "hotel"
+PROJECT_TYPE_SCHOOL = "school"
+PROJECT_TYPE_MALL = "mall"
+PROJECT_TYPE_IT_PARK = "it_park"
+
 PROJECT_TYPE_LABELS: Dict[str, str] = {
     "Residential": PROJECT_TYPE_RESIDENTIAL,
-    "Residential + Commercial": PROJECT_TYPE_MIXED,
     "Commercial": PROJECT_TYPE_COMMERCIAL,
+    "Mixed Use": PROJECT_TYPE_MIXED,
+    "Industrial": PROJECT_TYPE_INDUSTRIAL,
+    "Hospital": PROJECT_TYPE_HOSPITAL,
+    "Hotel": PROJECT_TYPE_HOTEL,
+    "School": PROJECT_TYPE_SCHOOL,
+    "Mall": PROJECT_TYPE_MALL,
+    "IT Park": PROJECT_TYPE_IT_PARK,
 }
 
-# Landscape NBC-2026
+# Swimming pool
+POOL_APPLICABLE = "applicable"
+POOL_NOT_APPLICABLE = "not_applicable"
+POOL_STATUS_LABELS: Dict[str, str] = {
+    "Applicable": POOL_APPLICABLE,
+    "Not Applicable": POOL_NOT_APPLICABLE,
+}
+
+# Landscape
 LANDSCAPE_L_PER_SQM = 6
 WET_SEASON_LANDSCAPE_FACTOR = 1000 / 4590
 
@@ -153,7 +167,7 @@ UGT_DOMESTIC_DAYS = 2
 UGT_FLUSHING_DAYS = 1
 UGT_FIRE_DAYS = 1
 
-# NBC 2016 Part 4 — residential fire water storage (litres) by building height (m)
+# NBC Part 4 / Table 7 — static fire water storage (litres) by height (m) — residential
 FIRE_TANK_RESIDENTIAL_BY_HEIGHT: Tuple[Tuple[float, int], ...] = (
     (15.0, 50_000),
     (24.0, 100_000),
@@ -162,6 +176,19 @@ FIRE_TANK_RESIDENTIAL_BY_HEIGHT: Tuple[Tuple[float, int], ...] = (
     (60.0, 400_000),
     (9999.0, 500_000),
 )
+
+# Commercial / institutional fire tank by height (NBC Table 7 business buildings)
+FIRE_TANK_COMMERCIAL_BY_HEIGHT: Tuple[Tuple[float, int], ...] = (
+    (10.0, 10_000),
+    (15.0, 50_000),
+    (24.0, 100_000),
+    (30.0, 150_000),
+    (45.0, 200_000),
+    (60.0, 250_000),
+    (9999.0, 300_000),
+)
+
+FLOOR_HEIGHT_M = 3.0
 
 COMPANY_NAME = "AMERICAN EDGE ENGINEERS PVT. LTD."
 COMPANY_FOOTER = (
@@ -184,29 +211,77 @@ def plot_choices(plot_mode: str = PLOT_MODE_DUAL) -> List[str]:
     return list(active_plots(plot_mode))
 
 
+def project_type_key(label: str) -> str:
+    return PROJECT_TYPE_LABELS.get(label, PROJECT_TYPE_MIXED)
+
+
+def show_residential_section(project_type: str) -> bool:
+    return project_type in (
+        PROJECT_TYPE_RESIDENTIAL,
+        PROJECT_TYPE_MIXED,
+    )
+
+
+def show_commercial_section(project_type: str) -> bool:
+    return project_type in (
+        PROJECT_TYPE_COMMERCIAL,
+        PROJECT_TYPE_MIXED,
+        PROJECT_TYPE_INDUSTRIAL,
+        PROJECT_TYPE_HOSPITAL,
+        PROJECT_TYPE_HOTEL,
+        PROJECT_TYPE_SCHOOL,
+        PROJECT_TYPE_MALL,
+        PROJECT_TYPE_IT_PARK,
+    )
+
+
 def hvac_applicable(project_type: str) -> bool:
-    return project_type in (PROJECT_TYPE_MIXED, PROJECT_TYPE_COMMERCIAL)
+    """HVAC only for Commercial and IT Park projects."""
+    return project_type in (PROJECT_TYPE_COMMERCIAL, PROJECT_TYPE_IT_PARK)
 
 
-def fire_tank_capacity_liters(building_height_m: float) -> int:
-    """NBC 2016 Part 4 residential static water storage by height."""
+def parse_building_config(config: str) -> Tuple[int, float]:
+    """Parse G+7 / 2B+G+21 style config -> (floors_above_ground, estimated_height_m)."""
+    text = (config or "").strip().upper().replace(" ", "")
+    if not text or text == "CUSTOM":
+        return 0, 0.0
+    basements = 0
+    above = 0
+    m = re.match(r"^((\d+)B\+)?G\+(\d+)$", text)
+    if m:
+        basements = int(m.group(2) or 0)
+        above = int(m.group(3))
+    elif re.match(r"^G\+(\d+)$", text):
+        above = int(re.match(r"^G\+(\d+)$", text).group(1))
+    total_floors = basements + 1 + above
+    height = total_floors * FLOOR_HEIGHT_M
+    return above, height
+
+
+def fire_tank_capacity_liters(building_height_m: float, building_type: str = "") -> int:
     height = max(0.0, float(building_height_m or 0))
-    for limit, capacity in FIRE_TANK_RESIDENTIAL_BY_HEIGHT:
+    btype = (building_type or "").lower()
+    table = FIRE_TANK_RESIDENTIAL_BY_HEIGHT
+    if any(k in btype for k in ("commercial", "office", "mall", "hotel", "hospital", "industrial", "it")):
+        table = FIRE_TANK_COMMERCIAL_BY_HEIGHT
+    for limit, capacity in table:
         if height <= limit:
             return capacity
-    return FIRE_TANK_RESIDENTIAL_BY_HEIGHT[-1][1]
+    return table[-1][1]
 
 
 def kitchen_water_lpd(
     flats_1bhk: int = 0,
     flats_2bhk: int = 0,
     flats_3bhk: int = 0,
+    flats_4bhk: int = 0,
     flats_penthouse: int = 0,
 ) -> int:
     return (
         flats_1bhk * KITCHEN_LPD_PER_FLAT["1BHK"]
         + flats_2bhk * KITCHEN_LPD_PER_FLAT["2BHK"]
         + flats_3bhk * KITCHEN_LPD_PER_FLAT["3BHK"]
+        + flats_4bhk * KITCHEN_LPD_PER_FLAT["4BHK"]
         + flats_penthouse * KITCHEN_LPD_PER_FLAT["PH"]
     )
 
@@ -215,12 +290,14 @@ def bhk_population(
     flats_1bhk: int = 0,
     flats_2bhk: int = 0,
     flats_3bhk: int = 0,
+    flats_4bhk: int = 0,
     flats_penthouse: int = 0,
 ) -> int:
     return (
         flats_1bhk * BHK_POPULATION["1BHK"]
         + flats_2bhk * BHK_POPULATION["2BHK"]
         + flats_3bhk * BHK_POPULATION["3BHK"]
+        + flats_4bhk * BHK_POPULATION["4BHK"]
         + flats_penthouse * BHK_POPULATION["PH"]
     )
 
@@ -229,15 +306,16 @@ def bhk_flat_count(
     flats_1bhk: int = 0,
     flats_2bhk: int = 0,
     flats_3bhk: int = 0,
+    flats_4bhk: int = 0,
     flats_penthouse: int = 0,
 ) -> int:
-    return flats_1bhk + flats_2bhk + flats_3bhk + flats_penthouse
+    return flats_1bhk + flats_2bhk + flats_3bhk + flats_4bhk + flats_penthouse
 
 
 @dataclass(frozen=True)
 class CommercialTypeSpec:
     label: str
-    density_divisor: float  # sq.m per person (NBC occupant load)
+    density_divisor: float
     domestic_lpcd: int
     flushing_lpcd: int
     use_ceil: bool = False
@@ -248,36 +326,49 @@ class CommercialTypeSpec:
         return self.domestic_lpcd + self.flushing_lpcd
 
 
-# NBC 2016 / 2026 Part 9 Table 7 — Occupant Load (sq.m per person)
+# Commercial Occupancy Types — NBC Part 9 Table 7 occupant load
+COMMERCIAL_OCCUPANCY_TYPES: Tuple[str, ...] = (
+    "Office",
+    "Retail Shop",
+    "Restaurant",
+    "Hospital",
+    "School",
+    "College",
+    "Cinema",
+    "Mall",
+    "Hotel",
+    "Warehouse",
+    "IT Office",
+    "Showroom",
+)
+
 COMMERCIAL_TYPES: Dict[str, CommercialTypeSpec] = {
-    "Shop - Ground Floor": CommercialTypeSpec(
-        "Shop - Ground Floor", 3.0, 25, 20, nbc_reference="Mercantile — ground floor"
-    ),
-    "Shop - Upper Floor": CommercialTypeSpec(
-        "Shop - Upper Floor", 6.0, 25, 20, nbc_reference="Mercantile — upper floors"
-    ),
-    "Shop": CommercialTypeSpec("Shop - Ground Floor", 3.0, 25, 20),
     "Office": CommercialTypeSpec("Office", 10.0, 25, 20, nbc_reference="Business"),
-    "Restaurant": CommercialTypeSpec(
-        "Restaurant", 1.4, 55, 15, use_ceil=True, nbc_reference="Assembly — dining"
-    ),
-    "Food Court": CommercialTypeSpec("Food Court", 1.4, 55, 15, use_ceil=True, nbc_reference="Assembly"),
-    "Banquet Hall": CommercialTypeSpec("Banquet Hall", 1.4, 55, 15, use_ceil=True, nbc_reference="Assembly"),
-    "Cinema / Auditorium": CommercialTypeSpec(
-        "Cinema / Auditorium", 1.0, 25, 10, use_ceil=True, nbc_reference="Assembly"
-    ),
-    "Clubhouse": CommercialTypeSpec("Clubhouse", 10.0, 25, 20, nbc_reference="Assembly"),
+    "IT Office": CommercialTypeSpec("IT Office", 10.0, 25, 20, nbc_reference="Business / IT"),
+    "Retail Shop": CommercialTypeSpec("Retail Shop", 3.0, 25, 20, nbc_reference="Mercantile GF"),
+    "Showroom": CommercialTypeSpec("Showroom", 5.0, 25, 20, nbc_reference="Mercantile"),
+    "Restaurant": CommercialTypeSpec("Restaurant", 1.4, 55, 15, use_ceil=True, nbc_reference="Assembly"),
     "Hospital": CommercialTypeSpec("Hospital", 15.0, 340, 110, nbc_reference="Institutional"),
-    "School / Classroom": CommercialTypeSpec("School / Classroom", 4.0, 25, 20, nbc_reference="Educational"),
-    "School": CommercialTypeSpec("School / Classroom", 4.0, 25, 20),
+    "School": CommercialTypeSpec("School", 4.0, 25, 20, nbc_reference="Educational"),
+    "College": CommercialTypeSpec("College", 4.0, 25, 20, nbc_reference="Educational"),
+    "Cinema": CommercialTypeSpec("Cinema", 1.0, 25, 10, use_ceil=True, nbc_reference="Assembly"),
     "Mall": CommercialTypeSpec("Mall", 5.0, 25, 20, nbc_reference="Mercantile"),
-    "Bank": CommercialTypeSpec("Bank", 10.0, 25, 20, nbc_reference="Business"),
-    "Library": CommercialTypeSpec("Library", 4.6, 25, 20, nbc_reference="Assembly"),
-    "Gymnasium": CommercialTypeSpec("Gymnasium", 1.8, 25, 20, use_ceil=True, nbc_reference="Assembly"),
-    "Warehouse / Storage": CommercialTypeSpec(
-        "Warehouse / Storage", 30.0, 25, 10, nbc_reference="Storage"
-    ),
-    "Parking": CommercialTypeSpec("Parking", 50.0, 25, 10, nbc_reference="Parking"),
+    "Hotel": CommercialTypeSpec("Hotel", 10.0, 55, 20, nbc_reference="Residential-transient"),
+    "Warehouse": CommercialTypeSpec("Warehouse", 30.0, 25, 10, nbc_reference="Storage"),
+    # Legacy aliases for backward compatibility
+    "Shop - Ground Floor": CommercialTypeSpec("Shop - Ground Floor", 3.0, 25, 20),
+    "Shop - Upper Floor": CommercialTypeSpec("Shop - Upper Floor", 6.0, 25, 20),
+    "Shop": CommercialTypeSpec("Retail Shop", 3.0, 25, 20),
+    "Food Court": CommercialTypeSpec("Food Court", 1.4, 55, 15, use_ceil=True),
+    "Banquet Hall": CommercialTypeSpec("Banquet Hall", 1.4, 55, 15, use_ceil=True),
+    "Cinema / Auditorium": CommercialTypeSpec("Cinema", 1.0, 25, 10, use_ceil=True),
+    "Clubhouse": CommercialTypeSpec("Clubhouse", 10.0, 25, 20),
+    "School / Classroom": CommercialTypeSpec("School", 4.0, 25, 20),
+    "Bank": CommercialTypeSpec("Bank", 10.0, 25, 20),
+    "Library": CommercialTypeSpec("Library", 4.6, 25, 20),
+    "Gymnasium": CommercialTypeSpec("Gymnasium", 1.8, 25, 20, use_ceil=True),
+    "Warehouse / Storage": CommercialTypeSpec("Warehouse", 30.0, 25, 10),
+    "Parking": CommercialTypeSpec("Parking", 50.0, 25, 10),
     "Custom": CommercialTypeSpec("Custom", 10.0, 25, 20),
 }
 
@@ -359,7 +450,7 @@ class ProjectData:
     project_name: str = "PROPOSED RESIDENTIAL"
     client_name: str = "MR. ABC"
     project_location: str = "PUNE"
-    engineer_name: str = "AKASH KHADE"
+    engineer_name: str = "Akash"
     project_no: str = ""
     date: str = ""
     plot_mode: str = PLOT_MODE_DUAL
@@ -398,7 +489,7 @@ class ProjectData:
             project_name=data.get("project_name", data.get("Project Name", "PROPOSED RESIDENTIAL")),
             client_name=data.get("client_name", data.get("Client Name", "MR. ABC")),
             project_location=data.get("project_location", data.get("Project Location", "PUNE")),
-            engineer_name=data.get("engineer_name", data.get("Engineer Name", "AKASH KHADE")),
+            engineer_name=data.get("engineer_name", data.get("Engineer Name", "Akash")),
             project_no=data.get("project_no", data.get("Project No.", "")),
             date=data.get("date", data.get("Date", "")),
             plot_mode=data.get("plot_mode", PLOT_MODE_DUAL),
@@ -425,26 +516,43 @@ class ProjectData:
 class ResidentialWing:
     plot: str = "Plot-A"
     wing: str = ""
-    building_type: str = "High Rise Tower"
+    building_config: str = "G+7"
+    building_type: str = "Residential Apartment"
     building_height_m: float = 0.0
+    num_wings: int = 1
     flats: int = 0
     flats_1bhk: int = 0
     flats_2bhk: int = 0
     flats_3bhk: int = 0
+    flats_4bhk: int = 0
     flats_penthouse: int = 0
     pop_per_flat: int = 5
     sort_order: int = 0
 
+    def __post_init__(self) -> None:
+        if self.building_height_m <= 0 and self.building_config:
+            _, est_height = parse_building_config(self.building_config)
+            if est_height > 0:
+                self.building_height_m = est_height
+
     @property
     def has_bhk_mix(self) -> bool:
         return bhk_flat_count(
-            self.flats_1bhk, self.flats_2bhk, self.flats_3bhk, self.flats_penthouse
+            self.flats_1bhk,
+            self.flats_2bhk,
+            self.flats_3bhk,
+            self.flats_4bhk,
+            self.flats_penthouse,
         ) > 0
 
     @property
     def effective_flats(self) -> int:
         bhk_total = bhk_flat_count(
-            self.flats_1bhk, self.flats_2bhk, self.flats_3bhk, self.flats_penthouse
+            self.flats_1bhk,
+            self.flats_2bhk,
+            self.flats_3bhk,
+            self.flats_4bhk,
+            self.flats_penthouse,
         )
         return bhk_total if bhk_total > 0 else self.flats
 
@@ -452,7 +560,11 @@ class ResidentialWing:
     def population(self) -> int:
         if self.has_bhk_mix:
             return bhk_population(
-                self.flats_1bhk, self.flats_2bhk, self.flats_3bhk, self.flats_penthouse
+                self.flats_1bhk,
+                self.flats_2bhk,
+                self.flats_3bhk,
+                self.flats_4bhk,
+                self.flats_penthouse,
             )
         return self.flats * self.pop_per_flat
 
@@ -461,7 +573,11 @@ class ResidentialWing:
         if not self.has_bhk_mix:
             return 0
         return kitchen_water_lpd(
-            self.flats_1bhk, self.flats_2bhk, self.flats_3bhk, self.flats_penthouse
+            self.flats_1bhk,
+            self.flats_2bhk,
+            self.flats_3bhk,
+            self.flats_4bhk,
+            self.flats_penthouse,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -472,12 +588,15 @@ class ResidentialWing:
         return cls(
             plot=data.get("plot", data.get("Plot", "Plot-A")),
             wing=data.get("wing", data.get("Wing", "")),
-            building_type=data.get("building_type", "High Rise Tower"),
+            building_config=data.get("building_config", data.get("Building Config", "G+7")),
+            building_type=data.get("building_type", "Residential Apartment"),
             building_height_m=float(data.get("building_height_m", 0) or 0),
+            num_wings=int(data.get("num_wings", data.get("No. Of Wings", 1)) or 1),
             flats=int(data.get("flats", data.get("No. Of Flats", 0)) or 0),
             flats_1bhk=int(data.get("flats_1bhk", 0) or 0),
             flats_2bhk=int(data.get("flats_2bhk", 0) or 0),
             flats_3bhk=int(data.get("flats_3bhk", 0) or 0),
+            flats_4bhk=int(data.get("flats_4bhk", 0) or 0),
             flats_penthouse=int(data.get("flats_penthouse", data.get("flats_ph", 0)) or 0),
             pop_per_flat=int(data.get("pop_per_flat", data.get("Pop/Flat", 5)) or 5),
             sort_order=int(data.get("sort_order", 0)),
@@ -487,6 +606,7 @@ class ResidentialWing:
         return {
             "Plot": self.plot,
             "Wing": self.wing,
+            "Building Config": self.building_config,
             "No. Of Flats": self.effective_flats,
             "Population": self.population,
         }
@@ -576,7 +696,10 @@ class OHTDetail:
 class OtherDetails:
     landscape_area: Dict[str, float] = field(default_factory=lambda: {"Plot-A": 765.0, "Plot-B": 762.0})
     swimming_pool: Dict[str, float] = field(default_factory=lambda: {"Plot-A": 0.0, "Plot-B": 0.0})
-    swimming_pool_na: Dict[str, bool] = field(default_factory=lambda: {"Plot-A": False, "Plot-B": False})
+    swimming_pool_status: Dict[str, str] = field(
+        default_factory=lambda: {"Plot-A": "not_applicable", "Plot-B": "not_applicable"}
+    )
+    swimming_pool_na: Dict[str, bool] = field(default_factory=lambda: {"Plot-A": True, "Plot-B": True})
     hvac_water: Dict[str, float] = field(default_factory=lambda: {"Plot-A": 0.0, "Plot-B": 0.0})
     fire_tank: Dict[str, float] = field(default_factory=lambda: {"Plot-A": 300000.0, "Plot-B": 230000.0})
     fire_tank_commercial: Dict[str, Dict[str, float]] = field(default_factory=dict)
@@ -591,6 +714,7 @@ class OtherDetails:
         return {
             "landscape_area": self.landscape_area,
             "swimming_pool": self.swimming_pool,
+            "swimming_pool_status": self.swimming_pool_status,
             "swimming_pool_na": self.swimming_pool_na,
             "hvac_water": self.hvac_water,
             "fire_tank": self.fire_tank,
@@ -607,10 +731,17 @@ class OtherDetails:
                 "Plot-B": float(data.get("Fire Tank Plot-B", 230000) or 230000),
             }
         oht_list = [OHTDetail.from_dict(o) for o in data.get("oht_details", [])]
-        pool_na = data.get("swimming_pool_na", {"Plot-A": False, "Plot-B": False})
+        pool_na = data.get("swimming_pool_na", {"Plot-A": True, "Plot-B": True})
+        pool_status = data.get("swimming_pool_status", {})
+        if not pool_status:
+            pool_status = {
+                plot: "not_applicable" if pool_na.get(plot, True) else "applicable"
+                for plot in ("Plot-A", "Plot-B")
+            }
         return cls(
             landscape_area=data.get("landscape_area", {"Plot-A": 765.0, "Plot-B": 762.0}),
             swimming_pool=data.get("swimming_pool", {"Plot-A": 0.0, "Plot-B": 0.0}),
+            swimming_pool_status=pool_status,
             swimming_pool_na=pool_na,
             hvac_water=data.get("hvac_water", {"Plot-A": 0.0, "Plot-B": 0.0}),
             fire_tank=data.get("fire_tank", legacy_fire or {"Plot-A": 300000.0, "Plot-B": 230000.0}),
@@ -791,14 +922,16 @@ class WaterDemandCalculator:
 
     def _apply_auto_fire_tanks(self) -> None:
         for plot in self._plots:
-            heights = [
-                w.building_height_m
+            heights_types = [
+                (w.building_height_m, w.building_type)
                 for w in self.residential
                 if w.plot == plot and w.building_height_m > 0
             ]
-            if heights:
+            if heights_types:
+                max_height = max(h for h, _ in heights_types)
+                btype = next((t for h, t in heights_types if h == max_height), "")
                 self.other.fire_tank[plot] = float(
-                    fire_tank_capacity_liters(max(heights))
+                    fire_tank_capacity_liters(max_height, btype)
                 )
 
     def _calculate_plot(self, plot: str) -> PlotResults:
@@ -862,7 +995,10 @@ class WaterDemandCalculator:
         plot_res.landscape_dry_lpd = landscape_demand(landscape_area)
         plot_res.landscape_wet_lpd = wet_landscape_demand(plot_res.landscape_dry_lpd)
 
-        pool_na = self.other.swimming_pool_na.get(plot, False)
+        pool_na = (
+            self.other.swimming_pool_status.get(plot, "not_applicable") == "not_applicable"
+            or self.other.swimming_pool_na.get(plot, False)
+        )
         plot_res.swimming_pool_lpd = 0 if pool_na else int(self.other.swimming_pool.get(plot, 0))
 
         if hvac_applicable(self.project.project_type):
@@ -1402,21 +1538,11 @@ def parse_project_snapshot(data: Dict[str, Any]) -> tuple:
     other = OtherDetails.from_dict(data.get("other", {}))
     calculated = data.get("calculated", {})
     return project, residential, commercial, other, calculated
+
 # ==================== services/pdf_exporter.py ====================
-"""ReportLab PDF exporter — landscape pages 1-4, portrait pages 5-8, matching reference layout."""
 
 
-# PDF layout colors (matched to reference Excel export)
-PDF_BLUE_BANNER = colors.Color(0.773, 0.851, 0.945)  # cover / consolidated title
-PDF_BLUE_HEADER = colors.Color(0.863, 0.902, 0.945)  # table headers / section bars
-PDF_BLUE_SUBTOTAL = colors.Color(0.553, 0.706, 0.886)
-PDF_PEACH_TITLE = colors.Color(0.902, 0.722, 0.718)
-PDF_ORANGE_PLOT = colors.Color(0.969, 0.588, 0.275)
-PDF_GRAY_ROW = colors.Color(0.949, 0.949, 0.949)
-PDF_NOTE_RED = colors.Color(1.0, 0.0, 0.0)
 
-PAGE_LANDSCAPE = pagesize_landscape(letter)  # 792 x 612
-PAGE_PORTRAIT = letter  # 612 x 792
 
 
 class PDFExporter:
@@ -1429,73 +1555,34 @@ class PDFExporter:
         self.project = project
         self.results = results
         self.logo_path = logo_path or self._default_logo_path()
-        self.footer_banner_path = self._default_footer_path()
         self.styles = getSampleStyleSheet()
-        self._page_mode = "cover"
+        self.page_width = letter[0] - 40
 
     def _default_logo_path(self) -> Optional[str]:
+        base = APP_DIR
         for name in ("logo.png", "logo.jpg"):
-            path = os.path.join(APP_DIR, name)
+            path = os.path.join(base, name)
             if os.path.exists(path):
                 return path
         return None
 
-    def _default_footer_path(self) -> Optional[str]:
-        path = os.path.join(APP_DIR, "footer_banner.png")
-        return path if os.path.exists(path) else None
-
     def export(self, file_path: str) -> None:
-        doc = BaseDocTemplate(
+        doc = SimpleDocTemplate(
             file_path,
-            pagesize=PAGE_LANDSCAPE,
-            leftMargin=0,
-            rightMargin=0,
-            topMargin=0,
-            bottomMargin=0,
+            pagesize=letter,
+            rightMargin=20,
+            leftMargin=20,
+            topMargin=20,
+            bottomMargin=30,
         )
-
-        # Landscape frames (pages 1-4)
-        lw, lh = PAGE_LANDSCAPE
-        cover_frame = Frame(36, 70, lw - 72, lh - 100, id="cover", showBoundary=0)
-        land_frame = Frame(28, 44, lw - 56, lh - 92, id="land", showBoundary=0)
-
-        # Portrait frames (pages 5-8)
-        pw, ph = PAGE_PORTRAIT
-        port_frame = Frame(42, 48, pw - 84, ph - 108, id="port", showBoundary=0)
-
-        doc.addPageTemplates(
-            [
-                PageTemplate(
-                    id="cover",
-                    frames=[cover_frame],
-                    pagesize=PAGE_LANDSCAPE,
-                    onPage=self._on_cover,
-                ),
-                PageTemplate(
-                    id="landscape",
-                    frames=[land_frame],
-                    pagesize=PAGE_LANDSCAPE,
-                    onPage=self._on_landscape,
-                ),
-                PageTemplate(
-                    id="portrait",
-                    frames=[port_frame],
-                    pagesize=PAGE_PORTRAIT,
-                    onPage=self._on_portrait,
-                ),
-            ]
-        )
-
         story: List[Any] = []
         story.extend(self._build_cover())
-        story.append(NextPageTemplate("landscape"))
         story.append(PageBreak())
         story.extend(self._build_consolidated())
         story.append(PageBreak())
         story.extend(self._build_plot_demand("Plot-A"))
         story.append(PageBreak())
         story.extend(self._build_plot_demand("Plot-B"))
-        story.append(NextPageTemplate("portrait"))
         story.append(PageBreak())
         story.extend(self._build_ugt_oht("Plot-A"))
         story.append(PageBreak())
@@ -1504,1274 +1591,663 @@ class PDFExporter:
         story.extend(self._build_stp("Plot-A"))
         story.append(PageBreak())
         story.extend(self._build_stp("Plot-B"))
-        doc.build(story)
+        doc.build(story, onFirstPage=self._footer, onLaterPages=self._footer)
 
-    # ── page decorators ──────────────────────────────────────────────
-
-    def _draw_logo(self, canvas, page_w: float, page_h: float, logo_w: float, logo_h: float, right: float = 8, top: float = 8) -> None:
-        if not self.logo_path or not os.path.exists(self.logo_path):
-            return
-        try:
-            canvas.drawImage(
-                self.logo_path,
-                page_w - logo_w - right,
-                page_h - logo_h - top,
-                width=logo_w,
-                height=logo_h,
-                preserveAspectRatio=True,
-                mask="auto",
-            )
-        except Exception:
-            pass
-
-    def _draw_footer(self, canvas, page_w: float) -> None:
-        if self.footer_banner_path and os.path.exists(self.footer_banner_path):
-            try:
-                banner_w = min(page_w - 80, 520)
-                banner_h = banner_w * (79 / 1133)
-                canvas.drawImage(
-                    self.footer_banner_path,
-                    (page_w - banner_w) / 2,
-                    10,
-                    width=banner_w,
-                    height=banner_h,
-                    preserveAspectRatio=True,
-                    mask="auto",
-                )
-                return
-            except Exception:
-                pass
+    def _footer(self, canvas, doc) -> None:
+        canvas.saveState()
         canvas.setFont("Helvetica", 6)
-        canvas.setFillColor(colors.black)
-        canvas.drawCentredString(page_w / 2, 22, COMPANY_ADDRESS)
-        canvas.drawCentredString(page_w / 2, 12, COMPANY_CONTACT)
-
-    def _on_cover(self, canvas, doc) -> None:
-        canvas.saveState()
-        w, h = PAGE_LANDSCAPE
-        # Outer frame matching reference — no separate footer strip on cover
-        canvas.setStrokeColor(colors.black)
-        canvas.setLineWidth(1.2)
-        canvas.rect(30, 85, w - 60, h - 170, stroke=1, fill=0)
+        canvas.drawCentredString(letter[0] / 2, 15, COMPANY_FOOTER)
         canvas.restoreState()
 
-    def _on_landscape(self, canvas, doc) -> None:
-        canvas.saveState()
-        w, h = PAGE_LANDSCAPE
-        self._draw_logo(canvas, w, h, logo_w=110, logo_h=52, right=0, top=6)
-        canvas.setStrokeColor(colors.black)
-        canvas.setLineWidth(0.6)
-        canvas.line(36, 42, w - 36, 42)
-        self._draw_footer(canvas, w)
-        canvas.restoreState()
+    def _p(self, text: str, style_name: str = "Normal", **kwargs) -> Paragraph:
+        style = ParagraphStyle(style_name, parent=self.styles["Normal"], **kwargs)
+        return Paragraph(text, style)
 
-    def _on_portrait(self, canvas, doc) -> None:
-        canvas.saveState()
-        w, h = PAGE_PORTRAIT
-        self._draw_logo(canvas, w, h, logo_w=100, logo_h=48, right=12, top=10)
-        # Outer content border
-        canvas.setStrokeColor(colors.black)
-        canvas.setLineWidth(1.2)
-        canvas.rect(36, 46, w - 72, h - 100, stroke=1, fill=0)
-        self._draw_footer(canvas, w)
-        canvas.restoreState()
+    def _th(self, text: str) -> Paragraph:
+        return self._p(
+            f"<b>{text}</b>",
+            "TH",
+            fontSize=6.5,
+            textColor=colors.whitesmoke,
+            alignment=1,
+            fontName="Helvetica-Bold",
+        )
 
-    # ── text helpers ─────────────────────────────────────────────────
+    def _tc(self, text: str, align: int = 1) -> Paragraph:
+        return self._p(str(text), "TC", fontSize=6, textColor=colors.HexColor("#111111"), alignment=align)
 
-    def _p(self, text: str, size: float = 8, bold: bool = False, align: int = 0, color=colors.black, leading: Optional[float] = None) -> Paragraph:
-        style = ParagraphStyle(
-            f"P_{size}_{bold}_{align}",
+    def _section_bar(self, title: str, color: str) -> Table:
+        sec_style = ParagraphStyle(
+            "Sec",
             parent=self.styles["Normal"],
-            fontName="Helvetica-Bold" if bold else "Helvetica",
-            fontSize=size,
-            leading=leading or (size + 2),
-            alignment=align,
-            textColor=color,
+            fontSize=8,
+            textColor=colors.whitesmoke,
+            alignment=1,
+            fontName="Helvetica-Bold",
         )
-        return Paragraph(str(text), style)
-
-    def _th(self, text: str, size: float = 7) -> Paragraph:
-        return self._p(f"<b>{text.replace(chr(10), '<br/>')}</b>", size=size, bold=True, align=1)
-
-    def _tc(self, text: Any, size: float = 7, align: int = 1, bold: bool = False) -> Paragraph:
-        return self._p(str(text), size=size, bold=bold, align=align)
-
-    def _eng_block(self, size: float = 8) -> List[Any]:
-        name = self.project.engineer_name.upper()
-        date = self.project.date
-        return [
-            self._p(f"<b>DESIGN ENGINEER NAME :- MR.{name}</b>", size=size, bold=True),
-            self._p(f"<b>DATE :- {date}</b>", size=size, bold=True),
-            Spacer(1, 4),
-        ]
-
-    def _title_bar(self, text: str, width: float, bg, size: float = 14, height: float = 18) -> Table:
-        t = Table([[self._p(f"<b>{text}</b>", size=size, bold=True, align=1)]], colWidths=[width], rowHeights=[height])
-        t.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, -1), bg),
-                    ("BOX", (0, 0), (-1, -1), 0.7, colors.black),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 2),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 2),
-                    ("TOPPADDING", (0, 0), (-1, -1), 2),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-                ]
-            )
+        return Table(
+            [[Paragraph(f"<b>{title}</b>", sec_style)]],
+            colWidths=[self.page_width],
+            style=[("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(color))],
         )
-        return t
 
-    def _base_grid(self, header_rows: int = 1, font_pad: float = 2) -> List[Any]:
-        cmds: List[Any] = [
+    def _eng_header(self) -> Paragraph:
+        return self._p(
+            f"<b>DESIGN ENGINEER NAME :- MR.{self.project.engineer_name.upper()} &nbsp;&nbsp;&nbsp;&nbsp; DATE :- {self.project.date}</b>",
+            "Eng",
+            fontSize=7,
+            fontName="Helvetica-Bold",
+        )
+
+    def _grid_style(self, header: bool = True) -> TableStyle:
+        cmds = [
             ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("LEFTPADDING", (0, 0), (-1, -1), font_pad),
-            ("RIGHTPADDING", (0, 0), (-1, -1), font_pad),
-            ("TOPPADDING", (0, 0), (-1, -1), font_pad),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), font_pad),
+            ("PADDING", (0, 0), (-1, -1), 4),
         ]
-        if header_rows > 0:
-            cmds.append(("BACKGROUND", (0, 0), (-1, header_rows - 1), PDF_BLUE_HEADER))
-        return cmds
-
-    @staticmethod
-    def _kld(v: float) -> str:
-        return f"{v / 1000.0:.2f}"
-
-    @staticmethod
-    def _fmt_int(v: Any) -> str:
-        if isinstance(v, float):
-            if abs(v - round(v)) < 1e-9:
-                return str(int(round(v)))
-            return f"{v:.2f}"
-        return str(v)
-
-    # ── COVER ────────────────────────────────────────────────────────
+        if header:
+            cmds.append(("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BRAND_HEADER_GRAY)))
+        return TableStyle(cmds)
 
     def _build_cover(self) -> List[Any]:
         story: List[Any] = []
-        usable = PAGE_LANDSCAPE[0] - 72  # ~720
-
-        # Top logo band (light blue)
-        logo_cell: Any = ""
         if self.logo_path and os.path.exists(self.logo_path):
             try:
-                logo_cell = Image(self.logo_path, width=178, height=68)
+                img = Image(self.logo_path, width=2.5 * inch, height=1.2 * inch)
+                img.hAlign = "CENTER"
+                story.append(Spacer(1, 40))
+                story.append(img)
             except Exception:
-                logo_cell = self._p(COMPANY_NAME, size=12, bold=True, align=1)
+                story.append(Spacer(1, 80))
         else:
-            logo_cell = self._p(COMPANY_NAME, size=12, bold=True, align=1)
+            story.append(Spacer(1, 80))
 
-        addr = self._p(
-            f"{COMPANY_ADDRESS} Mail Address- {COMPANY_CONTACT}",
-            size=7.5,
-            bold=True,
-            align=1,
-            leading=10,
-        )
-        top_inner = Table(
-            [[logo_cell], [addr]],
-            colWidths=[usable - 106],
-        )
-        top_inner.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, -1), PDF_BLUE_BANNER),
-                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("TOPPADDING", (0, 0), (-1, 0), 10),
-                    ("BOTTOMPADDING", (0, -1), (-1, -1), 6),
-                ]
+        story.append(
+            self._p(
+                f"<b>{COMPANY_NAME}</b>",
+                "H1",
+                fontSize=16,
+                alignment=1,
+                fontName="Helvetica-Bold",
             )
         )
-        # Side gutters like reference (white side columns)
-        top = Table([["", top_inner, ""]], colWidths=[53, usable - 106, 53])
-        top.setStyle(
-            TableStyle(
-                [
-                    ("BOX", (0, 0), (-1, -1), 1, colors.black),
-                    ("INNERGRID", (0, 0), (-1, -1), 1, colors.black),
-                    ("BACKGROUND", (1, 0), (1, 0), PDF_BLUE_BANNER),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ]
-            )
+        story.append(Spacer(1, 30))
+        tc_left = ParagraphStyle(
+            "TCL", parent=self.styles["Normal"], fontSize=8, alignment=0
         )
-        story.append(Spacer(1, 8))
-        story.append(top)
-        story.append(Spacer(1, 10))
-
-        # Meta fields
-        left_style = ParagraphStyle("CoverL", parent=self.styles["Normal"], fontName="Helvetica-Bold", fontSize=9, leading=12)
-        meta_rows = [
-            [Paragraph("&nbsp;&nbsp;TITLE", left_style), Paragraph(f": WATER DEMAND", left_style)],
-            [Paragraph("&nbsp;&nbsp;PROJECT NAME", left_style), Paragraph(f": {self.project.project_name.upper()}", left_style)],
-            [Paragraph("&nbsp;&nbsp;CLIENT NAME", left_style), Paragraph(f": {self.project.client_name.upper()}", left_style)],
-            [Paragraph("&nbsp;&nbsp;PROJECT LOCATION", left_style), Paragraph(f": {self.project.project_location.upper()}", left_style)],
-            [Paragraph("&nbsp;&nbsp;PROJECT NO.", left_style), Paragraph(f":  {self.project.project_no}", left_style)],
+        cover_meta = [
+            [Paragraph("<b>TITLE</b>", tc_left), Paragraph(": WATER DEMAND", tc_left)],
+            [
+                Paragraph("<b>PROJECT NAME</b>", tc_left),
+                Paragraph(f": {self.project.project_name.upper()}", tc_left),
+            ],
+            [
+                Paragraph("<b>CLIENT NAME</b>", tc_left),
+                Paragraph(f": {self.project.client_name.upper()}", tc_left),
+            ],
+            [
+                Paragraph("<b>PROJECT LOCATION</b>", tc_left),
+                Paragraph(f": {self.project.project_location.upper()}", tc_left),
+            ],
+            [
+                Paragraph("<b>PROJECT NO.</b>", tc_left),
+                Paragraph(f": {self.project.project_no}", tc_left),
+            ],
         ]
-        meta = Table(meta_rows, colWidths=[130, usable - 236], rowHeights=[24] * 5)
-        meta.setStyle(
+        t_cover = Table(cover_meta, colWidths=[130, 400])
+        t_cover.setStyle(
             TableStyle(
                 [
-                    ("BOX", (0, 0), (-1, -1), 1, colors.black),
-                    ("INNERGRID", (0, 0), (-1, -1), 0.7, colors.black),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("GRID", (0, 0), (-1, -1), 1, colors.black),
+                    ("PADDING", (0, 0), (-1, -1), 8),
                 ]
             )
         )
-        meta_wrap = Table([["", meta, ""]], colWidths=[53, usable - 106, 53])
-        meta_wrap.setStyle(
-            TableStyle(
-                [
-                    ("BOX", (0, 0), (-1, -1), 1, colors.black),
-                    ("INNERGRID", (0, 0), (-1, -1), 1, colors.black),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ]
-            )
-        )
-        story.append(meta_wrap)
-        story.append(Spacer(1, 10))
+        story.append(t_cover)
+        story.append(Spacer(1, 20))
 
-        # Revision table with empty rows
         rev = self.project.revision
-        hdr = [
-            self._th("DATE", 8),
-            self._th("REV. NO.", 8),
-            self._th("DESCRIPTION", 8),
-            self._th("PRPD. BY", 8),
-            self._th("CHKD. BY", 8),
-            self._th("APPRD. BY", 8),
+        rev_data = [
+            [
+                self._th("DATE"),
+                self._th("REV. NO."),
+                self._th("DESCRIPTION"),
+                self._th("PRPD. BY"),
+                self._th("CHKD. BY"),
+                self._th("APPRD. BY"),
+            ],
+            [
+                self._tc(rev.date or self.project.date),
+                self._tc(rev.revision_no),
+                self._tc(rev.description),
+                self._tc(rev.prepared_by),
+                self._tc(rev.checked_by),
+                self._tc(rev.approved_by),
+            ],
         ]
-        data_row = [
-            self._tc(rev.date or self.project.date, 8),
-            self._tc(rev.revision_no, 8),
-            self._tc(rev.description, 8),
-            self._tc(rev.prepared_by, 8),
-            self._tc(rev.checked_by, 8),
-            self._tc(rev.approved_by, 8),
-        ]
-        empty = [self._tc("", 8) for _ in range(6)]
-        rev_rows = [hdr, data_row] + [empty[:] for _ in range(5)]
-        col_w = [90, 70, 200, 90, 90, usable - 106 - 540]
-        # normalize last col
-        col_w[5] = max(90, usable - 106 - sum(col_w[:5]))
-        t_rev = Table(rev_rows, colWidths=col_w, rowHeights=[16] + [14] * 6)
-        t_rev.setStyle(
-            TableStyle(
-                [
-                    ("GRID", (0, 0), (-1, -1), 0.7, colors.black),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                    ("TOPPADDING", (0, 0), (-1, -1), 2),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-                ]
-            )
+        t_rev = Table(rev_data, colWidths=[80, 60, 180, 70, 70, 70])
+        t_rev.setStyle(self._grid_style())
+        story.append(t_rev)
+        story.append(Spacer(1, 20))
+        story.append(
+            self._p(COMPANY_ADDRESS, "Addr", fontSize=6, alignment=1)
         )
-        rev_wrap = Table([["", t_rev, ""]], colWidths=[53, usable - 106, 53])
-        rev_wrap.setStyle(
-            TableStyle(
-                [
-                    ("BOX", (0, 0), (-1, -1), 1, colors.black),
-                    ("INNERGRID", (0, 0), (-1, -1), 1, colors.black),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("TOPPADDING", (0, 0), (-1, -1), 6),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-                ]
-            )
-        )
-        story.append(rev_wrap)
+        story.append(self._p(COMPANY_CONTACT, "Contact", fontSize=6, alignment=1))
         return story
 
-    # ── CONSOLIDATED ─────────────────────────────────────────────────
-
-    def _stp_column_split(self, plot: PlotResults) -> Dict[str, float]:
-        """Split STP totals into residential vs commercial columns for consolidated page."""
-        out = {
-            "treated_res": 0.0,
-            "treated_com": 0.0,
-            "excess_res": 0.0,
-            "excess_com": 0.0,
-            "sewage_res": 0.0,
-            "sewage_com": 0.0,
-            "stp_res": 0.0,
-            "stp_com": 0.0,
-        }
-        for s in plot.stp_sections:
-            scope = s.scope.upper()
-            is_com = "COMMERCIAL" in scope and "RESIDENTIAL & COMMERCIAL" not in scope and scope != "TOTAL"
-            key = "com" if is_com else "res"
-            out[f"treated_{key}"] += s.treated_water_lpd
-            out[f"excess_{key}"] += s.excess_treated_lpd
-            out[f"sewage_{key}"] += s.sewage_lpd
-            out[f"stp_{key}"] += s.say_stp_kld * 1000.0
-        return out
-
-    def _ugt_kld_split(self, plot: PlotResults) -> Dict[str, float]:
-        groups = self._group_ugt_sections(plot)
-        res_dom = res_flu = res_fire = 0.0
-        com_dom = com_flu = com_fire = 0.0
-        for name, secs in groups.items():
-            bucket_dom = bucket_flu = bucket_fire = 0.0
-            for sec in secs:
-                d = sec.description.upper()
-                if "DOMESTIC" in d:
-                    bucket_dom += sec.total_storage_kld
-                elif "FLUSHING" in d:
-                    bucket_flu += sec.total_storage_kld
-                elif "FIRE" in d:
-                    bucket_fire += sec.total_storage_kld
-            if name.startswith("FOR RESIDENTIAL"):
-                res_dom += bucket_dom
-                res_flu += bucket_flu
-                res_fire += bucket_fire
-            else:
-                com_dom += bucket_dom
-                com_flu += bucket_flu
-                com_fire += bucket_fire
-        return {
-            "dom_res": res_dom,
-            "dom_com": com_dom,
-            "flu_res": res_flu,
-            "flu_com": com_flu,
-            "fire_res": res_fire,
-            "fire_com": com_fire,
-        }
-
     def _build_consolidated(self) -> List[Any]:
-        story: List[Any] = []
-        story.extend(self._eng_block(size=8))
-        usable = PAGE_LANDSCAPE[0] - 72
-
-        story.append(self._title_bar("CONSOLIDATED STATEMENT", usable, PDF_BLUE_BANNER, size=14, height=20))
-        story.append(Spacer(1, 2))
+        story: List[Any] = [self._eng_header(), Spacer(1, 5)]
+        story.append(self._section_bar("CONSOLIDATED STATEMENT", BRAND_DARK_GRAY))
+        story.append(Spacer(1, 5))
 
         pa = self.results.plots["Plot-A"]
         pb = self.results.plots["Plot-B"]
         tot = self.results.total
-        pa_stp = self._stp_column_split(pa)
-        pb_stp = self._stp_column_split(pb)
-        pa_ugt = self._ugt_kld_split(pa)
-        pb_ugt = self._ugt_kld_split(pb)
 
-        # Column widths matching reference proportions
-        # SR | DESC | A-RES | A-COM | A-SUB | B-RES | B-COM | B-SUB | TOTAL | UNITS
-        cw = [28, 175, 52, 48, 55, 52, 48, 55, 52, 40]
-        # scale to usable
-        scale = usable / sum(cw)
-        cw = [c * scale for c in cw]
+        def kld(v: float) -> str:
+            return f"{v / 1000:.2f}"
 
-        def cell(v: Any, bold: bool = False, align: int = 1) -> Paragraph:
-            return self._tc(v, size=7, align=align, bold=bold)
-
-        def desc(v: str, bold: bool = False) -> Paragraph:
-            return self._tc(v, size=7, align=0, bold=bold)
-
-        # Multi-row header
-        header1 = [
-            cell("SR.NO", True),
-            cell("DISCRIPTION", True),
-            cell("PLOT - A", True),
-            "",
-            "",
-            cell("PLOT - B", True),
-            "",
-            "",
-            cell("TOTAL", True),
-            cell("UNITS", True),
-        ]
-        header2 = [
-            "",
-            "",
-            cell("RESIDENTIAL", True),
-            cell("COMM", True),
-            cell("SUB-TOTAL", True),
-            cell("RESIDENTIAL", True),
-            cell("COMM", True),
-            cell("SUB-TOTAL", True),
-            "",
-            "",
+        header = [
+            self._th("SR.NO"),
+            self._th("DESCRIPTION"),
+            self._th("PLOT-A RES"),
+            self._th("PLOT-A COMM"),
+            self._th("PLOT-A SUB"),
+            self._th("PLOT-B RES"),
+            self._th("PLOT-B COMM"),
+            self._th("PLOT-B SUB"),
+            self._th("TOTAL"),
+            self._th("UNITS"),
         ]
 
-        rows: List[List[Any]] = [header1, header2]
-
-        def section_row(label: str) -> List[Any]:
-            return [cell(label, True), "", "", "", "", "", "", "", "", ""]
-
-        def season_row(label: str) -> List[Any]:
-            return [desc(label, True), "", "", "", "", "", "", "", "", ""]
-
-        def data_row(
-            sr: str,
-            description: str,
-            a_res: Any,
-            a_com: Any,
-            a_sub: Any,
-            b_res: Any,
-            b_com: Any,
-            b_sub: Any,
-            total: Any,
-            units: str,
-            bold: bool = False,
-        ) -> List[Any]:
-            return [
-                cell(sr, bold),
-                desc(description, bold),
-                cell(a_res, bold),
-                cell(a_com, bold),
-                cell(a_sub, bold),
-                cell(b_res, bold),
-                cell(b_com, bold),
-                cell(b_sub, bold),
-                cell(total, bold),
-                cell(units, bold),
-            ]
-
-        # SECTION-7 population
-        rows.append(section_row("SECTION-7"))
-        a_bldg_sub = pa.num_buildings_res + pa.num_buildings_com
-        b_bldg_sub = pb.num_buildings_res + pb.num_buildings_com
+        rows = [header]
         rows.append(
-            data_row(
-                "1",
-                "Number Of Building",
-                pa.num_buildings_res,
-                pa.num_buildings_com,
-                a_bldg_sub,
-                pb.num_buildings_res,
-                pb.num_buildings_com,
-                b_bldg_sub,
-                a_bldg_sub + b_bldg_sub,
-                "NO.S",
-            )
-        )
-        rows.append(
-            data_row(
-                "2",
-                "Total Number Of Flats",
-                pa.total_flats,
-                "-",
-                pa.total_flats,
-                pb.total_flats,
-                "-",
-                pb.total_flats,
-                tot.get("Total Flats", pa.total_flats + pb.total_flats),
-                "NO.S",
-            )
-        )
-        rows.append(
-            data_row(
-                "3",
-                "Total Number Of Residential Building Population",
-                pa.res_population,
-                pa.com_population,
-                pa.total_population,
-                pb.res_population,
-                pb.com_population,
-                pb.total_population,
-                tot.get("Total Population", pa.total_population + pb.total_population),
-                "NO.S",
-            )
-        )
-
-        # SECTION-8 / DRY SEASON
-        rows.append(section_row("SECTION-8"))
-        rows.append(season_row("DRY SEASON"))
-
-        dry_items = [
-            ("1", "Fresh Water Requirement", pa.res_domestic_lpd, pa.com_domestic_lpd, pb.res_domestic_lpd, pb.com_domestic_lpd),
-            ("2", "Flushing Water Requirement", pa.res_flushing_lpd, pa.com_flushing_lpd, pb.res_flushing_lpd, pb.com_flushing_lpd),
-            ("3", "Landscape Water Requirement", pa.landscape_dry_lpd, 0, pb.landscape_dry_lpd, 0),
-            ("4", "Swimming Pool Makeup Water Requirement", pa.swimming_pool_lpd, 0, pb.swimming_pool_lpd, 0),
-            ("5", "HVAC Water Requirement", pa.hvac_lpd, 0, pb.hvac_lpd, 0),
-        ]
-        for sr, label, ar, ac, br, bc in dry_items:
-            a_sub = ar + ac
-            b_sub = br + bc
-            rows.append(data_row(sr, label, self._kld(ar), self._kld(ac), self._kld(a_sub), self._kld(br), self._kld(bc), self._kld(b_sub), self._kld(a_sub + b_sub), "KLD"))
-
-        # Total water dry — res = res total, com = com + landscape + swim + hvac for that plot's commercial share style from reference
-        # Reference: Plot-A RES 203.04 (= res_total 198450 + landscape 4590), COMM 51.21 (= com_total), SUB 254.25
-        pa_dry_res = pa.res_total_lpd + pa.landscape_dry_lpd + pa.swimming_pool_lpd + pa.hvac_lpd
-        pa_dry_com = pa.com_total_lpd
-        pb_dry_res = pb.res_total_lpd + pb.landscape_dry_lpd + pb.swimming_pool_lpd + pb.hvac_lpd
-        pb_dry_com = pb.com_total_lpd
-        rows.append(
-            data_row(
-                "6",
-                "Total Water Requirement",
-                self._kld(pa_dry_res),
-                self._kld(pa_dry_com),
-                self._kld(pa.dry_total_water_lpd),
-                self._kld(pb_dry_res),
-                self._kld(pb_dry_com),
-                self._kld(pb.dry_total_water_lpd),
-                self._kld(pa.dry_total_water_lpd + pb.dry_total_water_lpd),
-                "KLD",
-                bold=True,
-            )
-        )
-        rows.append(
-            data_row(
-                "7",
-                "Total Treated Water",
-                self._kld(pa_stp["treated_res"]),
-                self._kld(pa_stp["treated_com"]),
-                self._kld(pa.dry_treated_water_lpd),
-                self._kld(pb_stp["treated_res"]),
-                self._kld(pb_stp["treated_com"]),
-                self._kld(pb.dry_treated_water_lpd),
-                self._kld(pa.dry_treated_water_lpd + pb.dry_treated_water_lpd),
-                "KLD",
-            )
-        )
-        rows.append(
-            data_row(
-                "8",
-                "Excess Treated Water To Corporation Line",
-                self._kld(pa_stp["excess_res"]),
-                self._kld(pa_stp["excess_com"]),
-                self._kld(pa.dry_excess_treated_lpd),
-                self._kld(pb_stp["excess_res"]),
-                self._kld(pb_stp["excess_com"]),
-                self._kld(pb.dry_excess_treated_lpd),
-                self._kld(pa.dry_excess_treated_lpd + pb.dry_excess_treated_lpd),
-                "KLD",
-            )
-        )
-
-        # WET SEASON
-        rows.append(season_row("WET SEASON"))
-        wet_items = [
-            ("1", "FRESH WATER REQUIREMENT", pa.res_domestic_lpd, pa.com_domestic_lpd, pb.res_domestic_lpd, pb.com_domestic_lpd),
-            ("2", "FLUSHING WATER REQUIREMENTS", pa.res_flushing_lpd, pa.com_flushing_lpd, pb.res_flushing_lpd, pb.com_flushing_lpd),
-            ("3", "LANDSCAPE WATER REQUIRED", pa.landscape_wet_lpd, 0, pb.landscape_wet_lpd, 0),
-            ("4", "SWIMMING POOL MAKEUP WATER REQUIRMENT", pa.swimming_pool_lpd, 0, pb.swimming_pool_lpd, 0),
-            ("5", "HVAC WATER REQUIREMENT", pa.hvac_lpd, 0, pb.hvac_lpd, 0),
-        ]
-        for sr, label, ar, ac, br, bc in wet_items:
-            a_sub = ar + ac
-            b_sub = br + bc
-            rows.append(data_row(sr, label, self._kld(ar), self._kld(ac), self._kld(a_sub), self._kld(br), self._kld(bc), self._kld(b_sub), self._kld(a_sub + b_sub), "KLD"))
-
-        pa_wet_res = pa.res_total_lpd + pa.landscape_wet_lpd + pa.swimming_pool_lpd + pa.hvac_lpd
-        pb_wet_res = pb.res_total_lpd + pb.landscape_wet_lpd + pb.swimming_pool_lpd + pb.hvac_lpd
-        # Reference puts wet com as com_total (+ any wet landscape assigned to com in their sheet); keep com_total
-        rows.append(
-            data_row(
-                "6",
-                "TOTAL WATER REQUIREMENT",
-                self._kld(pa_wet_res),
-                self._kld(pa.com_total_lpd),
-                self._kld(pa.wet_total_water_lpd),
-                self._kld(pb_wet_res),
-                self._kld(pb.com_total_lpd),
-                self._kld(pb.wet_total_water_lpd),
-                self._kld(pa.wet_total_water_lpd + pb.wet_total_water_lpd),
-                "KLD",
-                bold=True,
-            )
-        )
-        rows.append(
-            data_row(
-                "7",
-                "TOTAL TREATED WATER",
-                self._kld(pa_stp["treated_res"]),
-                self._kld(pa_stp["treated_com"]),
-                self._kld(pa.wet_treated_water_lpd),
-                self._kld(pb_stp["treated_res"]),
-                self._kld(pb_stp["treated_com"]),
-                self._kld(pb.wet_treated_water_lpd),
-                self._kld(pa.wet_treated_water_lpd + pb.wet_treated_water_lpd),
-                "KLD",
-            )
-        )
-        rows.append(
-            data_row(
-                "8",
-                "EXCESS TREATED WATER WATER TO COPORATION LINE",
-                self._kld(pa_stp["excess_res"]),
-                self._kld(pa_stp["excess_com"]),
-                self._kld(pa.wet_excess_treated_lpd),
-                self._kld(pb_stp["excess_res"]),
-                self._kld(pb_stp["excess_com"]),
-                self._kld(pb.wet_excess_treated_lpd),
-                self._kld(pa.wet_excess_treated_lpd + pb.wet_excess_treated_lpd),
-                "KLD",
-            )
-        )
-
-        # SECTION-9 UGT
-        rows.append(section_row("SECTION-9"))
-        rows.append(season_row("UGT DETAILS"))
-
-        def ugt_row(sr: str, label: str, ar: float, ac: float, br: float, bc: float) -> List[Any]:
-            a_sub, b_sub = ar + ac, br + bc
-            return data_row(
-                sr,
-                label,
-                f"{ar:.0f}",
-                f"{ac:.0f}",
-                f"{a_sub:.0f}",
-                f"{br:.0f}",
-                f"{bc:.0f}",
-                f"{b_sub:.0f}",
-                f"{a_sub + b_sub:.0f}",
-                "LIT/DAY",
-            )
-
-        rows.append(ugt_row("1", "DOMESTIC UGT CAPACITY", pa_ugt["dom_res"], pa_ugt["dom_com"], pb_ugt["dom_res"], pb_ugt["dom_com"]))
-        rows.append(ugt_row("2", "FLUSHING UGT CAPACITY", pa_ugt["flu_res"], pa_ugt["flu_com"], pb_ugt["flu_res"], pb_ugt["flu_com"]))
-        rows.append(ugt_row("3", "FIRE UGT CAPACITY", pa_ugt["fire_res"], pa_ugt["fire_com"], pb_ugt["fire_res"], pb_ugt["fire_com"]))
-
-        # SECTION-10 STP
-        rows.append(section_row("SECTION-10"))
-        rows.append(season_row("STP DETAILS"))
-        rows.append(
-            data_row(
-                "1",
-                "SEWAGE GENERATION",
-                self._kld(pa_stp["sewage_res"]),
-                self._kld(pa_stp["sewage_com"]),
-                self._kld(pa.sewage_lpd),
-                self._kld(pb_stp["sewage_res"]),
-                self._kld(pb_stp["sewage_com"]),
-                self._kld(pb.sewage_lpd),
-                self._kld(pa.sewage_lpd + pb.sewage_lpd),
-                "LIT/DAY",
-            )
-        )
-        rows.append(
-            data_row(
-                "2",
-                "STP Capacity",
-                f"{pa_stp['stp_res'] / 1000:.2f}",
-                f"{pa_stp['stp_com'] / 1000:.2f}",
-                f"{pa.stp_capacity_kld:.2f}",
-                f"{pb_stp['stp_res'] / 1000:.2f}",
-                f"{pb_stp['stp_com'] / 1000:.2f}",
-                f"{pb.stp_capacity_kld:.2f}",
-                f"{pa.stp_capacity_kld + pb.stp_capacity_kld:.0f}",
-                "LIT/DAY",
-            )
-        )
-
-        t = Table(rows, colWidths=cw, repeatRows=2)
-        style_cmds = self._base_grid(header_rows=2, font_pad=1.5)
-        style_cmds.extend(
             [
-                ("SPAN", (2, 0), (4, 0)),  # PLOT-A
-                ("SPAN", (5, 0), (7, 0)),  # PLOT-B
-                ("SPAN", (0, 0), (0, 1)),  # SR.NO
-                ("SPAN", (1, 0), (1, 1)),  # DISCRIPTION
-                ("SPAN", (8, 0), (8, 1)),  # TOTAL
-                ("SPAN", (9, 0), (9, 1)),  # UNITS
-                ("BACKGROUND", (0, 0), (-1, 1), PDF_BLUE_HEADER),
-                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                self._tc("SECTION-8", 0),
+                self._tc("Number Of Building", 0),
+                self._tc(pa.num_buildings_res),
+                self._tc(pa.num_buildings_com),
+                self._tc(pa.num_buildings_res + pa.num_buildings_com),
+                self._tc(pb.num_buildings_res),
+                self._tc(pb.num_buildings_com),
+                self._tc(pb.num_buildings_res + pb.num_buildings_com),
+                self._tc(pa.num_buildings_res + pa.num_buildings_com + pb.num_buildings_res + pb.num_buildings_com),
+                self._tc("NO.S"),
             ]
         )
-        # Style section / season rows
-        for i, row in enumerate(rows):
-            first = row[0]
-            text = ""
-            if isinstance(first, Paragraph):
-                text = first.text.replace("<b>", "").replace("</b>", "").strip().upper()
-            if text.startswith("SECTION-"):
-                style_cmds.append(("SPAN", (0, i), (-1, i)))
-                style_cmds.append(("BACKGROUND", (0, i), (-1, i), PDF_GRAY_ROW))
-            elif text in ("DRY SEASON", "WET SEASON", "UGT DETAILS", "STP DETAILS"):
-                style_cmds.append(("SPAN", (0, i), (-1, i)))
-                style_cmds.append(("BACKGROUND", (0, i), (-1, i), PDF_GRAY_ROW))
-                style_cmds.append(("ALIGN", (0, i), (0, i), "LEFT"))
+        rows.append(
+            [
+                self._tc("", 0),
+                self._tc("Total Number Of Flats", 0),
+                self._tc(pa.total_flats),
+                self._tc(0),
+                self._tc(pa.total_flats),
+                self._tc(pb.total_flats),
+                self._tc(0),
+                self._tc(pb.total_flats),
+                self._tc(tot.get("Total Flats", 0)),
+                self._tc("NO.S"),
+            ]
+        )
+        rows.append(
+            [
+                self._tc("", 0),
+                self._tc("Total Residential Building Population", 0),
+                self._tc(pa.res_population),
+                self._tc(pa.com_population),
+                self._tc(pa.total_population),
+                self._tc(pb.res_population),
+                self._tc(pb.com_population),
+                self._tc(pb.total_population),
+                self._tc(tot.get("Total Population", 0)),
+                self._tc("NO.S"),
+            ]
+        )
 
-        t.setStyle(TableStyle(style_cmds))
+        dry_rows = [
+            ("Fresh Water Requirement", pa.res_domestic_lpd, pa.com_domestic_lpd, pb.res_domestic_lpd, pb.com_domestic_lpd),
+            ("Flushing Water Requirement", pa.res_flushing_lpd, pa.com_flushing_lpd, pb.res_flushing_lpd, pb.com_flushing_lpd),
+            ("Kitchen Water Requirement", pa.kitchen_water_lpd, 0, pb.kitchen_water_lpd, 0),
+            ("Landscape Water Requirement", pa.landscape_dry_lpd, 0, pb.landscape_dry_lpd, 0),
+            ("Swimming Pool Makeup Water Requirement", pa.swimming_pool_lpd, 0, pb.swimming_pool_lpd, 0),
+            ("HVAC Water Requirement", pa.hvac_lpd, 0, pb.hvac_lpd, 0),
+            ("Total Water Requirement", pa.dry_total_water_lpd, pa.com_total_lpd + pa.landscape_dry_lpd + pa.swimming_pool_lpd + pa.hvac_lpd + pa.kitchen_water_lpd, pb.dry_total_water_lpd, pb.com_total_lpd + pb.landscape_dry_lpd + pb.swimming_pool_lpd + pb.hvac_lpd + pb.kitchen_water_lpd),
+            ("Total Treated Water", pa.dry_treated_water_lpd, 0, pb.dry_treated_water_lpd, 0),
+            ("Excess Treated Water To Corporation Line", pa.dry_excess_treated_lpd, 0, pb.dry_excess_treated_lpd, 0),
+        ]
+        for idx, (desc, a_res, a_com, b_res, b_com) in enumerate(dry_rows, 1):
+            a_sub = (a_res if idx <= 2 else 0) + (a_com if idx <= 2 else a_res)
+            if idx == 1:
+                a_sub = a_res + a_com
+            elif idx == 2:
+                a_sub = a_res + a_com
+            elif idx in (3, 4, 5, 6):
+                a_sub = a_res
+                b_sub = b_res
+            elif idx == 7:
+                a_sub = pa.dry_total_water_lpd
+                b_sub = pb.dry_total_water_lpd
+            elif idx == 8:
+                a_sub = pa.dry_treated_water_lpd
+                b_sub = pb.dry_treated_water_lpd
+            else:
+                a_sub = pa.dry_excess_treated_lpd
+                b_sub = pb.dry_excess_treated_lpd
+            if idx <= 6:
+                b_sub = b_res + (b_com if idx <= 2 else 0) if idx <= 2 else b_res
+            rows.append(
+                [
+                    self._tc(f"SECTION-7" if idx == 1 else "", 0),
+                    self._tc(desc, 0),
+                    self._tc(kld(a_res if idx <= 6 else a_sub)),
+                    self._tc(kld(a_com if idx <= 2 else 0)),
+                    self._tc(kld(a_sub)),
+                    self._tc(kld(b_res if idx <= 6 else b_sub)),
+                    self._tc(kld(b_com if idx <= 2 else 0)),
+                    self._tc(kld(b_sub)),
+                    self._tc(kld(a_sub + b_sub)),
+                    self._tc("KLD"),
+                ]
+            )
+
+        wet_rows = [
+            ("FRESH WATER REQUIREMENT", pa.res_domestic_lpd, pa.com_domestic_lpd),
+            ("FLUSHING WATER REQUIREMENTS", pa.res_flushing_lpd, pa.com_flushing_lpd),
+            ("KITCHEN WATER REQUIREMENT", pa.kitchen_water_lpd, 0),
+            ("LANDSCAPE WATER REQUIRED", pa.landscape_wet_lpd, 0),
+            ("SWIMMING POOL MAKEUP WATER REQUIRMENT", pa.swimming_pool_lpd, 0),
+            ("HVAC WATER REQUIREMENT", pa.hvac_lpd, 0),
+            ("TOTAL WATER REQUIREMENT", pa.wet_total_water_lpd, pa.com_total_lpd),
+            ("TOTAL TREATED WATER", pa.wet_treated_water_lpd, 0),
+            ("EXCESS TREATED WATER WATER TO COPORATION LINE", pa.wet_excess_treated_lpd, 0),
+        ]
+        for idx, (desc, a_val, a_com) in enumerate(wet_rows, 1):
+            b_val = {
+                1: pb.res_domestic_lpd,
+                2: pb.res_flushing_lpd,
+                3: pb.kitchen_water_lpd,
+                4: pb.landscape_wet_lpd,
+                5: pb.swimming_pool_lpd,
+                6: pb.hvac_lpd,
+                7: pb.wet_total_water_lpd,
+                8: pb.wet_treated_water_lpd,
+                9: pb.wet_excess_treated_lpd,
+            }[idx]
+            b_com = pb.com_domestic_lpd if idx == 1 else (pb.com_flushing_lpd if idx == 2 else (pb.com_total_lpd if idx == 7 else 0))
+            a_sub = a_val + (a_com if idx <= 2 else 0) if idx <= 2 else a_val
+            b_sub = b_val + (b_com if idx <= 2 else 0) if idx <= 2 else b_val
+            if idx == 7:
+                a_sub = pa.wet_total_water_lpd
+                b_sub = pb.wet_total_water_lpd
+            rows.append(
+                [
+                    self._tc(f"SECTION-9" if idx == 1 else "", 0),
+                    self._tc(desc, 0),
+                    self._tc(kld(a_val if idx <= 5 else a_sub)),
+                    self._tc(kld(a_com if idx <= 2 else 0)),
+                    self._tc(kld(a_sub)),
+                    self._tc(kld(b_val if idx <= 5 else b_sub)),
+                    self._tc(kld(b_com if idx <= 2 else 0)),
+                    self._tc(kld(b_sub)),
+                    self._tc(kld(a_sub + b_sub)),
+                    self._tc("KLD"),
+                ]
+            )
+
+        ugt_rows = [
+            ("DOMESTIC UGT CAPACITY", pa.ugt_domestic_liters, pb.ugt_domestic_liters),
+            ("FLUSHING UGT CAPACITY", pa.ugt_flushing_liters, pb.ugt_flushing_liters),
+            ("FIRE UGT CAPACITY", pa.fire_tank_liters, pb.fire_tank_liters),
+        ]
+        for idx, (desc, a_v, b_v) in enumerate(ugt_rows, 1):
+            rows.append(
+                [
+                    self._tc(f"SECTION-10" if idx == 1 else "UGT DETAILS", 0),
+                    self._tc(desc, 0),
+                    self._tc(f"{a_v / 1000:.2f}"),
+                    self._tc("0.00"),
+                    self._tc(f"{a_v / 1000:.2f}"),
+                    self._tc(f"{b_v / 1000:.2f}"),
+                    self._tc("0.00"),
+                    self._tc(f"{b_v / 1000:.2f}"),
+                    self._tc(f"{(a_v + b_v) / 1000:.2f}"),
+                    self._tc("LIT/DAY"),
+                ]
+            )
+
+        stp_rows = [
+            ("SEWAGE GENERATION", pa.sewage_lpd, pb.sewage_lpd),
+            ("STP Capacity", pa.stp_capacity_kld * 1000, pb.stp_capacity_kld * 1000),
+        ]
+        for idx, (desc, a_v, b_v) in enumerate(stp_rows, 1):
+            rows.append(
+                [
+                    self._tc("STP DETAILS" if idx == 1 else "", 0),
+                    self._tc(desc, 0),
+                    self._tc(f"{a_v / 1000:.2f}"),
+                    self._tc("0.00"),
+                    self._tc(f"{a_v / 1000:.2f}"),
+                    self._tc(f"{b_v / 1000:.2f}"),
+                    self._tc("0.00"),
+                    self._tc(f"{b_v / 1000:.2f}"),
+                    self._tc(f"{(a_v + b_v) / 1000:.2f}"),
+                    self._tc("LIT/DAY"),
+                ]
+            )
+
+        col_widths = [35, 130, 55, 55, 55, 55, 55, 55, 55, 45]
+        t = Table(rows, colWidths=col_widths, repeatRows=1)
+        t.setStyle(self._grid_style())
         story.append(t)
         return story
 
-    # ── PLOT DEMAND ──────────────────────────────────────────────────
-
     def _build_plot_demand(self, plot_name: str) -> List[Any]:
         plot = self.results.plots[plot_name]
-        story: List[Any] = []
-        story.extend(self._eng_block(size=7))
-        usable = PAGE_LANDSCAPE[0] - 160  # tighter centered table like reference
-        left_pad = 40
+        story: List[Any] = [self._eng_header(), Spacer(1, 5)]
+        story.append(self._section_bar(f"WATER DEMAND - {plot_name}", BRAND_DEMAND_ORANGE))
+        story.append(Spacer(1, 5))
 
-        # Centered content wrapper via spacer + fixed width tables
-        story.append(Spacer(1, 2))
-        outer: List[Any] = []
-        outer.append(self._title_bar("WATER DEMAND", usable, PDF_PEACH_TITLE, size=12, height=16))
-        outer.append(Spacer(1, 1))
-        outer.append(self._title_bar(plot_name.upper().replace("PLOT-", "PLOT - "), usable, PDF_ORANGE_PLOT, size=10, height=14))
-        outer.append(Spacer(1, 2))
+        section_num = 1 if plot_name == "Plot-A" else 4
+        story.append(self._p(f"<b>SECTION-{section_num} RESIDENTIAL</b>", "SecH", fontSize=7, fontName="Helvetica-Bold"))
 
-        section_base = 1 if plot_name == "Plot-A" else 4
+        res_header = [
+            self._th("SR.NO"),
+            self._th("BLDG/WING"),
+            self._th("NO. OF FLAT"),
+            self._th("POPULATION PER FLAT"),
+            self._th("POPULATION"),
+            self._th("DOMESTIC WATER DEMAND (LIT/DAY)"),
+            self._th("FLUSHING WATER DEMAND (LIT/DAY)"),
+            self._th("TOTAL WATER DEMAND (LIT/DAY)"),
+        ]
+        res_rows = [res_header]
+        for idx, w in enumerate(plot.residential_wings, 1):
+            res_rows.append(
+                [
+                    self._tc(idx),
+                    self._tc(w.wing),
+                    self._tc(w.flats),
+                    self._tc(w.pop_per_flat),
+                    self._tc(w.population),
+                    self._tc(w.domestic_lpd),
+                    self._tc(w.flushing_lpd),
+                    self._tc(w.total_lpd),
+                ]
+            )
+        res_rows.append(
+            [
+                self._tc(""),
+                self._tc("SUB-TOTAL", 0),
+                self._tc(plot.total_flats),
+                self._tc(""),
+                self._tc(plot.res_population),
+                self._tc(plot.res_domestic_lpd),
+                self._tc(plot.res_flushing_lpd),
+                self._tc(plot.res_total_lpd),
+            ]
+        )
+        t_res = Table(res_rows, colWidths=[30, 80, 55, 65, 60, 90, 90, 90])
+        t_res.setStyle(self._grid_style())
+        story.append(t_res)
+        story.append(Spacer(1, 8))
 
-        # SECTION residential
-        outer.append(self._section_label_bar(f"SECTION-{section_base}", "RESIDENTIAL", usable))
-        outer.append(self._residential_table(plot, usable))
-        outer.append(Spacer(1, 4))
-
-        # SECTION other measures
-        other_sec = section_base + 1
-        outer.append(self._section_label_bar(f"SECTION-{other_sec}", "WATER REQUIRMENTS FOR OTHER MEASURES", usable))
-        outer.append(self._other_measures_table(plot, plot_name, usable))
-        outer.append(Spacer(1, 4))
-
-        # SECTION commercial
-        comm_sec = section_base + 2
-        outer.append(self._section_label_bar(f"SECTION-{comm_sec}", "COMMERCIAL", usable))
-
-        blocks: Dict[str, List[CommercialResult]] = {}
+        blocks: Dict[str, list] = {}
         for cu in plot.commercial_units:
             blocks.setdefault(cu.block, []).append(cu)
-        for block_name in sorted(blocks.keys()):
-            outer.append(self._block_label_bar(block_name, usable))
-            outer.append(self._commercial_table(blocks[block_name], usable))
-            outer.append(Spacer(1, 3))
 
-        # Grand total
-        grand = plot.res_total_lpd + plot.com_total_lpd
-        outer.append(
-            self._p(
-                f"<b>GRAND TOTAL RESIDETIAL + COMMERCIAL &nbsp;&nbsp; {grand}</b>",
-                size=8,
-                bold=True,
-                align=1,
-            )
-        )
-        if plot_name == "Plot-B":
-            outer.append(Spacer(1, 4))
-            outer.append(
+        comm_section = 2 if plot_name == "Plot-A" else 6
+        for block_name, units in sorted(blocks.items()):
+            story.append(
                 self._p(
-                    "<b>NOTE :- WATER DEMAND CALCULATION AS PER THE NBCS-2026</b>",
-                    size=7,
-                    bold=True,
-                    align=0,
+                    f"<b>SECTION-{comm_section} COMMERCIAL - {block_name}</b>",
+                    "SecH",
+                    fontSize=7,
+                    fontName="Helvetica-Bold",
                 )
             )
-
-        # Left-indent content to approximate reference centering
-        for item in outer:
-            if isinstance(item, Spacer):
-                story.append(item)
-            else:
-                wrap = Table([[Spacer(left_pad, 1), item]], colWidths=[left_pad, usable + 4])
-                wrap.setStyle(
-                    TableStyle(
-                        [
-                            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                            ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-                            ("TOPPADDING", (0, 0), (-1, -1), 0),
-                            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-                        ]
-                    )
+            comm_header = [
+                self._th("SR.NO"),
+                self._th("BLDG/WING"),
+                self._th("AREA (SQ.M)"),
+                self._th("POPULATION PER/SQ.M"),
+                self._th("POPULATION"),
+                self._th("DOMESTIC WATER DEMAND (LIT/DAY)"),
+                self._th("FLUSHING WATER DEMAND (LIT/DAY)"),
+                self._th("TOTAL WATER DEMAND (LIT/DAY)"),
+            ]
+            comm_rows = [comm_header]
+            for idx, u in enumerate(units, 1):
+                label = u.floor_label or u.comm_type
+                comm_rows.append(
+                    [
+                        self._tc(idx),
+                        self._tc(label),
+                        self._tc(f"{u.area_sqm:.0f}"),
+                        self._tc(f"{u.density:.1f}"),
+                        self._tc(u.population),
+                        self._tc(u.domestic_lpd),
+                        self._tc(u.flushing_lpd),
+                        self._tc(u.total_lpd),
+                    ]
                 )
-                story.append(wrap)
+            comm_rows.append(
+                [
+                    self._tc(""),
+                    self._tc("SUB-TOTAL", 0),
+                    self._tc(""),
+                    self._tc(""),
+                    self._tc(sum(u.population for u in units)),
+                    self._tc(sum(u.domestic_lpd for u in units)),
+                    self._tc(sum(u.flushing_lpd for u in units)),
+                    self._tc(sum(u.total_lpd for u in units)),
+                ]
+            )
+            t_com = Table(comm_rows, colWidths=[30, 90, 55, 65, 55, 85, 85, 85])
+            t_com.setStyle(self._grid_style())
+            story.append(t_com)
+            story.append(Spacer(1, 8))
+            comm_section += 1
+
+        other_section = 3 if plot_name == "Plot-A" else 5
+        story.append(
+            self._p(
+                f"<b>SECTION-{other_section} WATER REQUIRMENTS FOR OTHER MEASURES</b>",
+                "SecH",
+                fontSize=7,
+                fontName="Helvetica-Bold",
+            )
+        )
+        other_rows = [
+            [self._th("SR.NO"), self._th("DESCRIPTION"), self._th("AREA (SQ.M) / VALUE"), self._th("WATER REQUIREMENT"), self._th("UNITS")],
+            [
+                self._tc(1),
+                self._tc(f"WATER REQUIRMENT FOR LANDSCAPE-{plot_name} (AS PER NBC-2026)", 0),
+                self._tc(f"{self.results.plots[plot_name].landscape_dry_lpd / 6:.0f}" if plot.landscape_dry_lpd else "0"),
+                self._tc(plot.landscape_dry_lpd),
+                self._tc("LITER/DAY"),
+            ],
+            [
+                self._tc(3),
+                self._tc("KITCHEN WATER REQUIREMENT", 0),
+                self._tc("0"),
+                self._tc(plot.kitchen_water_lpd),
+                self._tc("LITER/DAY"),
+            ],
+            [
+                self._tc(4),
+                self._tc("MAKE UP WATER FOR SWIMMING POOL", 0),
+                self._tc("0"),
+                self._tc(plot.swimming_pool_lpd),
+                self._tc("LITER/DAY"),
+            ],
+            [
+                self._tc(5),
+                self._tc("WATER REQUIRMENT FOR HVAC", 0),
+                self._tc("0"),
+                self._tc(plot.hvac_lpd),
+                self._tc("LITER/DAY"),
+            ],
+        ]
+        t_other = Table(other_rows, colWidths=[30, 220, 80, 90, 70])
+        t_other.setStyle(self._grid_style())
+        story.append(t_other)
+        story.append(Spacer(1, 8))
+        story.append(
+            self._p(
+                f"<b>GRAND TOTAL RESIDENTIAL + COMMERCIAL: {plot.dry_total_water_lpd} LIT/DAY</b>",
+                "Grand",
+                fontSize=7,
+                fontName="Helvetica-Bold",
+            )
+        )
+        story.append(
+            self._p(
+                "<b>NOTE :- WATER DEMAND CALCULATION AS PER THE NBC-2026</b>",
+                "Note",
+                fontSize=6,
+                fontName="Helvetica-Oblique",
+            )
+        )
         return story
-
-    def _section_label_bar(self, section: str, title: str, width: float) -> Table:
-        t = Table(
-            [[self._p(f"<b>{section}</b>", size=7, bold=True, align=0), self._p(f"<b>{title}</b>", size=7, bold=True, align=1)]],
-            colWidths=[90, width - 90],
-            rowHeights=[14],
-        )
-        t.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, -1), PDF_BLUE_HEADER),
-                    ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
-                ]
-            )
-        )
-        return t
-
-    def _block_label_bar(self, block: str, width: float) -> Table:
-        t = Table([[self._p(f"<b>{block}</b>", size=7, bold=True, align=1)]], colWidths=[width], rowHeights=[12])
-        t.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, -1), PDF_BLUE_HEADER),
-                    ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ]
-            )
-        )
-        return t
-
-    def _residential_table(self, plot: PlotResults, width: float) -> Table:
-        # SR | WING | FLATS | POP/FLAT | POP | DOM lpcd | DOM | FLU lpcd | FLU | TOT lpcd | TOT
-        cw = [28, 70, 42, 55, 50, 32, 58, 32, 58, 32, 58]
-        scale = width / sum(cw)
-        cw = [c * scale for c in cw]
-
-        hdr = [
-            [
-                self._th("SR.NO", 6),
-                self._th("BLDG/<br/>WING", 6),
-                self._th("NO. OF<br/>FLAT", 6),
-                self._th("POPULATION<br/>PER FLAT", 6),
-                self._th("POPULATION", 6),
-                self._th("DOMESTIC WATER<br/>DEMAND (LIT/DAY)", 6),
-                "",
-                self._th("FLUSHING WATER<br/>DEMAND (LIT/DAY)", 6),
-                "",
-                self._th("TOTAL WATER<br/>DEMAND (LIT/DAY)", 6),
-                "",
-            ]
-        ]
-        rows: List[List[Any]] = hdr[:]
-        for idx, w in enumerate(plot.residential_wings, 1):
-            rows.append(
-                [
-                    self._tc(idx, 6),
-                    self._tc(w.wing, 6, align=0),
-                    self._tc(w.flats, 6),
-                    self._tc(w.pop_per_flat, 6),
-                    self._tc(w.population, 6),
-                    self._tc(RES_DOMESTIC_LPCD, 6),
-                    self._tc(w.domestic_lpd, 6),
-                    self._tc(RES_FLUSHING_LPCD, 6),
-                    self._tc(w.flushing_lpd, 6),
-                    self._tc(RES_TOTAL_LPCD, 6),
-                    self._tc(w.total_lpd, 6),
-                ]
-            )
-        sub_idx = len(rows)
-        rows.append(
-            [
-                self._tc("", 6),
-                self._tc("SUB-TOTAL", 6, bold=True, align=0),
-                self._tc(plot.total_flats, 6, bold=True),
-                self._tc("", 6),
-                self._tc(plot.res_population, 6, bold=True),
-                self._tc("", 6),
-                self._tc(plot.res_domestic_lpd, 6, bold=True),
-                self._tc("", 6),
-                self._tc(plot.res_flushing_lpd, 6, bold=True),
-                self._tc("", 6),
-                self._tc(plot.res_total_lpd, 6, bold=True),
-            ]
-        )
-        t = Table(rows, colWidths=cw)
-        cmds = self._base_grid(header_rows=1, font_pad=1.5)
-        cmds.extend(
-            [
-                ("SPAN", (5, 0), (6, 0)),
-                ("SPAN", (7, 0), (8, 0)),
-                ("SPAN", (9, 0), (10, 0)),
-                ("BACKGROUND", (0, sub_idx), (-1, sub_idx), PDF_BLUE_SUBTOTAL),
-                ("FONTSIZE", (0, 0), (-1, -1), 6),
-            ]
-        )
-        t.setStyle(TableStyle(cmds))
-        return t
-
-    def _commercial_table(self, units: List[CommercialResult], width: float) -> Table:
-        cw = [28, 90, 48, 55, 48, 28, 55, 28, 55, 28, 55]
-        scale = width / sum(cw)
-        cw = [c * scale for c in cw]
-        rows: List[List[Any]] = [
-            [
-                self._th("SR.NO", 6),
-                self._th("BLDG/\nWING", 6),
-                self._th("AREA\n(SQ.M)", 6),
-                self._th("POPULATION\nPER/SQ.M", 6),
-                self._th("POPULATION", 6),
-                self._th("DOMESTIC WATER\nDEMAND (LIT/DAY)", 6),
-                "",
-                self._th("FLUSHING WATER\nDEMAND (LIT/DAY)", 6),
-                "",
-                self._th("TOTAL WATER\nDEMAND (LIT/DAY)", 6),
-                "",
-            ]
-        ]
-        tot_pop = tot_dom = tot_flu = tot_all = 0
-        for idx, u in enumerate(units, 1):
-            dom_lpcd = int(round(u.domestic_lpd / u.population)) if u.population else 0
-            flu_lpcd = int(round(u.flushing_lpd / u.population)) if u.population else 0
-            tot_lpcd = dom_lpcd + flu_lpcd
-            label = u.floor_label or u.comm_type
-            rows.append(
-                [
-                    self._tc(idx, 6),
-                    self._tc(label, 6, align=0),
-                    self._tc(f"{u.area_sqm:.0f}", 6),
-                    self._tc(f"{u.density:.1f}".rstrip("0").rstrip(".") if isinstance(u.density, float) else u.density, 6),
-                    self._tc(u.population, 6),
-                    self._tc(dom_lpcd, 6),
-                    self._tc(u.domestic_lpd, 6),
-                    self._tc(flu_lpcd, 6),
-                    self._tc(u.flushing_lpd, 6),
-                    self._tc(tot_lpcd, 6),
-                    self._tc(u.total_lpd, 6),
-                ]
-            )
-            tot_pop += u.population
-            tot_dom += u.domestic_lpd
-            tot_flu += u.flushing_lpd
-            tot_all += u.total_lpd
-        sub_idx = len(rows)
-        rows.append(
-            [
-                self._tc("", 6),
-                self._tc("SUB-TOTAL", 6, bold=True, align=0),
-                self._tc("", 6),
-                self._tc("", 6),
-                self._tc(tot_pop, 6, bold=True),
-                self._tc("", 6),
-                self._tc(tot_dom, 6, bold=True),
-                self._tc("", 6),
-                self._tc(tot_flu, 6, bold=True),
-                self._tc("", 6),
-                self._tc(tot_all, 6, bold=True),
-            ]
-        )
-        t = Table(rows, colWidths=cw)
-        cmds = self._base_grid(header_rows=1, font_pad=1.5)
-        cmds.extend(
-            [
-                ("SPAN", (5, 0), (6, 0)),
-                ("SPAN", (7, 0), (8, 0)),
-                ("SPAN", (9, 0), (10, 0)),
-                ("BACKGROUND", (0, sub_idx), (-1, sub_idx), PDF_BLUE_SUBTOTAL),
-            ]
-        )
-        t.setStyle(TableStyle(cmds))
-        return t
-
-    def _other_measures_table(self, plot: PlotResults, plot_name: str, width: float) -> Table:
-        area = plot.landscape_dry_lpd / LANDSCAPE_L_PER_SQM if plot.landscape_dry_lpd else 0
-        if plot_name == "Plot-A":
-            label = f"WATER REQUIRMENT FOR LANDSCAPE-{plot_name.upper()}<br/>(AS PER NBC-2026)"
-        else:
-            label = "WATER REQUIRMENT FOR LANDSCAPE<br/>(AS PER NBC-2026)"
-        rows = [
-            [
-                self._th("SR.NO", 6),
-                self._p(label, size=6, bold=True, align=0),
-                self._th("AREA (SQ.M)", 6),
-                self._th("WATER<br/>REQUIREMENT", 6),
-                self._th("UNITS", 6),
-            ],
-            [
-                self._tc("1", 6),
-                self._tc("", 6),
-                self._tc(f"{area:.0f}", 6),
-                self._tc(plot.landscape_dry_lpd, 6),
-                self._tc("LITER/DAY", 6),
-            ],
-            [
-                self._tc("2", 6),
-                self._tc("MAKE UP WATER FOR SWIMMING POOL", 6, align=0),
-                self._tc("0", 6),
-                self._tc(plot.swimming_pool_lpd, 6),
-                self._tc("LITER/DAY", 6),
-            ],
-            [
-                self._tc("3", 6),
-                self._tc("WATER REQUIRMENT FOR HVAC", 6, align=0),
-                self._tc("", 6),
-                self._tc(plot.hvac_lpd, 6),
-                self._tc("LITER/DAY", 6),
-            ],
-        ]
-        cw = [36, width - 280, 70, 100, 74]
-        t = Table(rows, colWidths=cw)
-        cmds = self._base_grid(header_rows=0, font_pad=2)
-        cmds.extend(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), PDF_BLUE_HEADER),
-                ("SPAN", (1, 0), (1, 1)),
-                ("VALIGN", (1, 0), (1, 1), "MIDDLE"),
-            ]
-        )
-        t.setStyle(TableStyle(cmds))
-        return t
-
-    # ── UGT & OHT ────────────────────────────────────────────────────
-
-    def _group_ugt_sections(self, plot: PlotResults) -> Dict[str, List[UGTResult]]:
-        groups: Dict[str, List[UGTResult]] = {}
-        current = "FOR RESIDENTIAL"
-        groups[current] = []
-        for sec in plot.ugt_sections:
-            desc = sec.description.upper()
-            if "COMM-A" in desc or "(A&B)" in desc:
-                current = "FOR COMMERCIAL-A"
-            elif "COMM-B" in desc:
-                current = "FOR COMMERCIAL-B"
-            elif "COMM-C" in desc:
-                current = "FOR COMMERCIAL-C"
-            elif re.search(r"COMM-[A-Z]", desc):
-                m = re.search(r"COMM-([A-Z])", desc)
-                current = f"FOR COMMERCIAL-{m.group(1)}" if m else "FOR COMMERCIAL"
-            elif desc in ("DOMESTIC WATER TANK", "FLUSHING WATER TANK NEAR STP", "FIRE WATER TANK"):
-                current = "FOR RESIDENTIAL"
-            elif "FLUSHING WATER TANK" in desc and "COMM" not in desc and "(A&B)" not in desc:
-                # keep current group
-                pass
-            groups.setdefault(current, []).append(sec)
-        return groups
 
     def _build_ugt_oht(self, plot_name: str) -> List[Any]:
         plot = self.results.plots[plot_name]
-        story: List[Any] = []
-        usable = PAGE_PORTRAIT[0] - 90
+        story: List[Any] = [self._eng_header(), Spacer(1, 5)]
+        story.append(self._section_bar(f"UGT & OHT DETAILS - {plot_name}", BRAND_UGT_TEAL))
+        story.append(Spacer(1, 5))
 
-        if plot_name == "Plot-A":
-            story.append(self._title_bar("SECTION-7", usable, PDF_BLUE_HEADER, size=10, height=16))
-            story.append(Spacer(1, 2))
-            story.append(self._title_bar("*UGT & OHT DETAILS", usable, PDF_BLUE_HEADER, size=11, height=18))
-            story.append(Spacer(1, 2))
-        story.append(self._title_bar(plot_name.upper().replace("PLOT-", "PLOT -"), usable, PDF_ORANGE_PLOT, size=10, height=14))
-        story.append(Spacer(1, 4))
-
-        groups = self._group_ugt_sections(plot)
-        for gidx, (group_name, sections) in enumerate(groups.items(), 1):
-            # Group title
-            gt = Table(
-                [[self._p(f"<b>{gidx} &nbsp; {group_name}</b>", size=8, bold=True, align=1)]],
-                colWidths=[usable],
-                rowHeights=[14],
-            )
-            gt.setStyle(
-                TableStyle(
-                    [
-                        ("BACKGROUND", (0, 0), (-1, -1), PDF_BLUE_HEADER),
-                        ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
-                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ]
-                )
-            )
-            story.append(gt)
-
-            hdr = [
-                self._th("SR.NO.", 7),
-                self._th("DISCRIPTION", 7),
-                self._th("WATER REQUIREMENT\n(LIT/DAY)", 7),
-                self._th("STORAGE OF\nWATER (DAYS)", 7),
-                self._th("TOTAL WATER\nSTORAGE\n(LIT/DAY)", 7),
-                self._th("TOTAL WATER\nSTORAGE (KLD)", 7),
+        ugt_groups = self._group_ugt_sections(plot)
+        for gidx, (group_name, sections) in enumerate(ugt_groups.items(), 1):
+            story.append(self._p(f"<b>{group_name}</b>", "UGTH", fontSize=7, fontName="Helvetica-Bold"))
+            ugt_header = [
+                self._th("SR.NO."),
+                self._th("DISCRIPTION"),
+                self._th("WATER REQUIREMENT (LIT/DAY)"),
+                self._th("STORAGE OF WATER (DAYS)"),
+                self._th("TOTAL WATER STORAGE (LIT/DAY)"),
+                self._th("TOTAL WATER STORAGE (KLD)"),
             ]
-            rows: List[List[Any]] = [hdr]
+            ugt_rows = [ugt_header]
             total_kld = 0.0
             for idx, sec in enumerate(sections, 1):
-                # Strip block suffix from description for display like reference
-                desc = sec.description
-                for suffix in (" (COMM-A)", " (COMM-B)", " (COMM-C)", " (A&B)"):
-                    if suffix in desc:
-                        if "FLUSHING" in desc.upper() and "A&B" in desc:
-                            desc = "FLUSHING WATER TANK (A&B)"
-                        elif "FLUSHING" in desc.upper():
-                            desc = "FLUSHING WATER TANK"
-                        elif "DOMESTIC" in desc.upper():
-                            desc = "DOMESTIC WATER TANK"
-                        elif "FIRE" in desc.upper():
-                            desc = "FIRE WATER TANK"
-                        break
-                rows.append(
+                ugt_rows.append(
                     [
-                        self._tc(idx, 7),
-                        self._tc(desc, 7, align=0),
-                        self._tc(sec.water_requirement_lpd, 7),
-                        self._tc(sec.storage_days, 7),
-                        self._tc(sec.total_storage_liters, 7),
-                        self._tc(f"{sec.total_storage_kld:.2f}", 7),
+                        self._tc(idx),
+                        self._tc(sec.description, 0),
+                        self._tc(sec.water_requirement_lpd),
+                        self._tc(sec.storage_days),
+                        self._tc(sec.total_storage_liters),
+                        self._tc(f"{sec.total_storage_kld:.2f}"),
                     ]
                 )
                 total_kld += sec.total_storage_kld
-            tot_idx = len(rows)
-            rows.append(
-                [
-                    self._tc("", 7),
-                    self._tc("TOTAL STORAGE CAPACITY", 7, bold=True, align=0),
-                    self._tc("", 7),
-                    self._tc("", 7),
-                    self._tc("", 7),
-                    self._tc(f"{total_kld:.2f}", 7, bold=True),
-                ]
-            )
-            cw = [40, 160, 95, 80, 85, 85]
-            scale = usable / sum(cw)
-            cw = [c * scale for c in cw]
-            t = Table(rows, colWidths=cw)
-            cmds = self._base_grid(header_rows=1, font_pad=2)
-            cmds.append(("BACKGROUND", (0, tot_idx), (-1, tot_idx), PDF_BLUE_HEADER))
-            cmds.append(("SPAN", (1, tot_idx), (4, tot_idx)))
-            t.setStyle(TableStyle(cmds))
-            story.append(t)
-
-            if gidx == 1:
-                story.append(Spacer(1, 3))
-                story.append(
-                    self._p(
-                        "<b>NOTE:- FIRE WATER TANK CAPACITY TAKEN AS PER NBCS-2026, "
-                        "SO KINDLY CONFIRM WITH FIRE LIOSANING VENDOR & NOC</b>",
-                        size=7,
-                        bold=True,
-                        align=1,
-                        color=PDF_NOTE_RED,
-                    )
+            t_ugt = Table(ugt_rows, colWidths=[35, 160, 100, 80, 100, 80])
+            t_ugt.setStyle(self._grid_style())
+            story.append(t_ugt)
+            story.append(
+                self._p(
+                    f"<b>TOTAL STORAGE CAPACITY: {total_kld:.2f} KLD</b>",
+                    "Tot",
+                    fontSize=7,
+                    fontName="Helvetica-Bold",
                 )
+            )
             story.append(Spacer(1, 6))
 
-        # OHT
-        ot = Table(
-            [[self._p("<b>*OHT DETAILS</b>", size=8, bold=True, align=1)]],
-            colWidths=[usable],
-            rowHeights=[14],
-        )
-        ot.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, -1), PDF_BLUE_HEADER),
-                    ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ]
-            )
-        )
-        story.append(ot)
-        story.append(
-            Table(
-                [[self._p("<b>RESIDENTIAL & COMMERCIAL</b>", size=7, bold=True, align=1)]],
-                colWidths=[usable],
-                rowHeights=[12],
-                style=[("BACKGROUND", (0, 0), (-1, -1), PDF_BLUE_HEADER), ("BOX", (0, 0), (-1, -1), 0.5, colors.black)],
-            )
-        )
-
-        oht_hdr = [
-            self._th("SR.NO", 7),
-            self._th("BLDG/\nWING", 7),
-            self._th("DOMESTIC\n(KLD)", 7),
-            self._th("FLUSHING\n(KLD)", 7),
-            self._th("FIRE BREAK TANK\n(KLD)", 7),
-            self._th("FIRE OHT TANK\n(KLD)", 7),
+        story.append(self._p("<b>*OHT DETAILS</b>", "OHT", fontSize=7, fontName="Helvetica-Bold"))
+        oht_header = [
+            self._th("SR.NO"),
+            self._th("BLDG/WING"),
+            self._th("DOMESTIC (KLD)"),
+            self._th("FLUSHING (KLD)"),
+            self._th("FIRE BREAK TANK (KLD)"),
+            self._th("FIRE OHT TANK (KLD)"),
         ]
-        oht_rows: List[List[Any]] = [oht_hdr]
-        td = tf = tb = to = 0.0
+        oht_rows = [oht_header]
+        total_dom = total_flu = total_fb = total_fo = 0.0
         for idx, row in enumerate(plot.oht_rows, 1):
             oht_rows.append(
                 [
-                    self._tc(idx, 7),
-                    self._tc(row["wing"], 7, align=0),
-                    self._tc(f"{row['domestic_kld']:.2f}", 7),
-                    self._tc(f"{row['flushing_kld']:.2f}", 7),
-                    self._tc(f"{row['fire_break_kld']:.2f}", 7),
-                    self._tc(f"{row['fire_oht_kld']:.2f}", 7),
+                    self._tc(idx),
+                    self._tc(row["wing"]),
+                    self._tc(f"{row['domestic_kld']:.2f}"),
+                    self._tc(f"{row['flushing_kld']:.2f}"),
+                    self._tc(f"{row['fire_break_kld']:.2f}"),
+                    self._tc(f"{row['fire_oht_kld']:.2f}"),
                 ]
             )
-            td += row["domestic_kld"]
-            tf += row["flushing_kld"]
-            tb += row["fire_break_kld"]
-            to += row["fire_oht_kld"]
-        tot_i = len(oht_rows)
+            total_dom += row["domestic_kld"]
+            total_flu += row["flushing_kld"]
+            total_fb += row["fire_break_kld"]
+            total_fo += row["fire_oht_kld"]
         oht_rows.append(
             [
-                self._tc("", 7),
-                self._tc("TOTAL OHT CAPACITY", 7, bold=True, align=0),
-                self._tc(f"{td:.2f}", 7, bold=True),
-                self._tc(f"{tf:.2f}", 7, bold=True),
-                self._tc(f"{tb:.2f}", 7, bold=True),
-                self._tc(f"{to:.2f}", 7, bold=True),
+                self._tc(""),
+                self._tc("TOTAL OHT CAPACITY", 0),
+                self._tc(f"{total_dom:.2f}"),
+                self._tc(f"{total_flu:.2f}"),
+                self._tc(f"{total_fb:.2f}"),
+                self._tc(f"{total_fo:.2f}"),
             ]
         )
-        cw = [40, 120, 80, 80, 100, 100]
-        scale = usable / sum(cw)
-        cw = [c * scale for c in cw]
-        t_oht = Table(oht_rows, colWidths=cw)
-        cmds = self._base_grid(header_rows=1, font_pad=2)
-        cmds.append(("BACKGROUND", (0, tot_i), (-1, tot_i), PDF_BLUE_HEADER))
-        t_oht.setStyle(TableStyle(cmds))
+        t_oht = Table(oht_rows, colWidths=[35, 120, 90, 90, 100, 100])
+        t_oht.setStyle(self._grid_style())
         story.append(t_oht)
         story.append(Spacer(1, 6))
         story.append(
             self._p(
                 "<b>NOTE:- FIRE WATER TANK CAPACITY TAKEN AS PER NBC-2026, "
                 "SO KINDLY CONFIRM WITH FIRE LIOSANING VENDOR & NOC</b>",
-                size=7,
-                bold=True,
-                align=1,
-                color=PDF_NOTE_RED,
+                "Note",
+                fontSize=6,
+                fontName="Helvetica-Oblique",
             )
         )
-        if plot_name == "Plot-A":
-            story.append(Spacer(1, 8))
-            story.append(self._title_bar("SECTION-8", usable, PDF_BLUE_HEADER, size=10, height=14))
         return story
 
-    # ── STP ──────────────────────────────────────────────────────────
+    def _group_ugt_sections(self, plot: PlotResults) -> Dict[str, list]:
+        groups: Dict[str, list] = {"FOR RESIDENTIAL": []}
+        current_group = "FOR RESIDENTIAL"
+        for sec in plot.ugt_sections:
+            if "COMM" in sec.description.upper():
+                if "COMM-A" in sec.description.upper():
+                    current_group = "FOR COMMERCIAL-A"
+                elif "COMM-B" in sec.description.upper() or "A&B" in sec.description.upper():
+                    current_group = "FOR COMMERCIAL-B"
+                else:
+                    current_group = "FOR COMMERCIAL"
+                groups.setdefault(current_group, [])
+            groups.setdefault(current_group, []).append(sec)
+        return groups
 
     def _build_stp(self, plot_name: str) -> List[Any]:
         plot = self.results.plots[plot_name]
-        story: List[Any] = []
-        usable = PAGE_PORTRAIT[0] - 120
-        left = 30
+        story: List[Any] = [self._eng_header(), Spacer(1, 5)]
+        story.append(self._section_bar(f"STP DETAILS - {plot_name}", BRAND_STP_PURPLE))
+        story.append(Spacer(1, 5))
 
-        blocks: List[Any] = []
-        if plot_name == "Plot-A":
-            blocks.append(self._title_bar("SECTION-9", usable, PDF_BLUE_HEADER, size=10, height=16))
-            blocks.append(Spacer(1, 2))
-            blocks.append(self._title_bar("STP DETAILS PLOT-A", usable, PDF_BLUE_HEADER, size=12, height=18))
-        else:
-            blocks.append(self._title_bar("STP DETAILS PLOT-B", usable, PDF_BLUE_HEADER, size=12, height=18))
-        blocks.append(Spacer(1, 6))
-
-        for stp in plot.stp_sections:
+        for sidx, stp in enumerate(plot.stp_sections, 1):
             scope_label = f"STP FOR {stp.scope}"
-            blocks.append(self._title_bar(scope_label, usable, PDF_BLUE_HEADER, size=9, height=14))
-
-            hdr = [self._th("SR.NO.", 9), self._th("DISCRIPTION", 9), self._th("CAPACITY", 9), self._th("UNITS", 9)]
-            rows: List[List[Any]] = [hdr]
+            story.append(self._p(f"<b>{scope_label}</b>", "STPH", fontSize=7, fontName="Helvetica-Bold"))
+            stp_header = [self._th("SR.NO."), self._th("DISCRIPTION"), self._th("CAPACITY"), self._th("UNITS")]
+            stp_rows = [stp_header]
             stp_data = [
-                ("TOTAL WATER REQUIREMENT FOR\nRESIDENTIAL TENAMENTS", stp.total_water_lpd, "LITERS/DAY"),
-                ("TOTAL SEWAGE GENERATION @90%\nREQUREMENT (10% INFLITRATION LOSS)", stp.sewage_lpd, "LITERS/DAY"),
+                ("TOTAL WATER REQUIREMENT FOR RESIDENTIAL TENAMENTS", stp.total_water_lpd, "LITERS/DAY"),
+                ("TOTAL SEWAGE GENERATION @90% REQUREMENT (10% INFLITRATION LOSS)", stp.sewage_lpd, "LITERS/DAY"),
                 ("CAPACITY OF SEWAGE GENERATION", f"{stp.sewage_kld:.2f}", "KLD"),
                 ("SAY STP CAPACITY", f"{stp.say_stp_kld:.2f}", "KLD"),
-                ("TREATED WATER AFTER FILTRATION STP\nPROCESS", stp.treated_water_lpd, "LITERS/DAY"),
+                ("TREATED WATER AFTER FILTRATION STP PROCESS", stp.treated_water_lpd, "LITERS/DAY"),
                 ("REUSE WATER FOR FLUSHING", stp.reuse_flushing_lpd, "LITERS/DAY"),
                 ("REUSE WATER FOR LANDSCAPE", stp.reuse_landscape_lpd, "LITERS/DAY"),
                 ("REUSE WATER FOR HVAC", stp.reuse_hvac_lpd, "LITERS/DAY"),
-                ("EXCESS TREATED WATER TO EXTERNAL\nMUNCIPAL DRAIN", stp.excess_treated_lpd, "LITERS/DAY"),
+                ("EXCESS TREATED WATER TO EXTERNAL MUNCIPAL DRAIN", stp.excess_treated_lpd, "LITERS/DAY"),
             ]
             for idx, (desc, cap, unit) in enumerate(stp_data, 1):
-                rows.append(
-                    [
-                        self._tc(idx, 9),
-                        self._p(desc.replace("\n", "<br/>"), size=9, align=0),
-                        self._tc(cap, 9),
-                        self._tc(unit, 9),
-                    ]
-                )
-            cw = [50, usable - 220, 90, 80]
-            t = Table(rows, colWidths=cw, rowHeights=[16] + [28] * 2 + [18] * 2 + [28] + [18] * 3 + [28])
-            cmds = self._base_grid(header_rows=1, font_pad=3)
-            t.setStyle(TableStyle(cmds))
-            blocks.append(t)
-            blocks.append(Spacer(1, 14))
-
-        for item in blocks:
-            if isinstance(item, Spacer):
-                story.append(item)
-            else:
-                wrap = Table([[Spacer(left, 1), item]], colWidths=[left, usable + 4])
-                wrap.setStyle(
-                    TableStyle(
-                        [
-                            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                            ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-                            ("TOPPADDING", (0, 0), (-1, -1), 0),
-                            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-                        ]
-                    )
-                )
-                story.append(wrap)
+                stp_rows.append([self._tc(idx), self._tc(desc, 0), self._tc(cap), self._tc(unit)])
+            t_stp = Table(stp_rows, colWidths=[40, 280, 100, 80])
+            t_stp.setStyle(self._grid_style())
+            story.append(t_stp)
+            story.append(Spacer(1, 10))
         return story
 
 
@@ -2783,7 +2259,6 @@ def export_pdf(
 ) -> None:
     exporter = PDFExporter(project, results, logo_path)
     exporter.export(file_path)
-
 
 # ==================== services/excel_exporter.py ====================
 
@@ -3099,8 +2574,180 @@ class ExcelExporter:
         self._auto_width(ws)
 
 
+        self._auto_width(ws)
+
+
+TEMPLATE_PATH = os.path.normpath(
+    os.path.join(APP_DIR, "..", "templates", "WaterDemand_Template.xlsx")
+)
+
+
+class TemplateExcelExporter:
+    """Populate the master Excel template without altering formatting."""
+
+    def __init__(self, project: ProjectData, results: CalculationResults) -> None:
+        self.project = project
+        self.results = results
+
+    def export(self, file_path: str) -> None:
+        shutil.copy2(TEMPLATE_PATH, file_path)
+        wb = load_workbook(file_path)
+        self._populate_cover(wb)
+        self._populate_consolidated(wb)
+        for plot in active_plots(self.project.plot_mode):
+            self._populate_plot_sheets(wb, plot)
+        self._populate_summary(wb)
+        wb.save(file_path)
+
+    def _set(self, ws, cell: str, value: Any) -> None:
+        ws[cell] = value
+
+    def _populate_cover(self, wb) -> None:
+        ws = wb["Cover"] if "Cover" in wb.sheetnames else wb.active
+        rev = self.project.revision
+        mapping = {
+            "B4": self.project.project_name,
+            "B5": self.project.client_name,
+            "B6": self.project.project_location,
+            "B7": self.project.project_no,
+            "B8": self.project.engineer_name,
+            "B9": self.project.date,
+            "A12": rev.date or self.project.date,
+            "B12": rev.revision_no,
+            "C12": rev.description,
+            "D12": rev.prepared_by,
+            "E12": rev.checked_by,
+            "F12": rev.approved_by,
+        }
+        for cell, val in mapping.items():
+            try:
+                self._set(ws, cell, val)
+            except Exception:
+                pass
+
+    def _populate_consolidated(self, wb) -> None:
+        if "Consolidated" not in wb.sheetnames:
+            return
+        ws = wb["Consolidated"]
+        pa = self.results.plots["Plot-A"]
+        pb = self.results.plots["Plot-B"]
+        tot = self.results.total
+        rows = [
+            (4, pa.num_buildings_res, pa.num_buildings_com, pa.num_buildings_res + pa.num_buildings_com,
+             pb.num_buildings_res, pb.num_buildings_com, pb.num_buildings_res + pb.num_buildings_com,
+             pa.num_buildings_res + pa.num_buildings_com + pb.num_buildings_res + pb.num_buildings_com),
+            (5, pa.total_flats, 0, pa.total_flats, pb.total_flats, 0, pb.total_flats, tot.get("Total Flats", 0)),
+            (6, pa.res_population, pa.com_population, pa.total_population,
+             pb.res_population, pb.com_population, pb.total_population, tot.get("Total Population", 0)),
+            (7, pa.res_total_lpd + pa.com_total_lpd, 0, pa.dry_total_water_lpd,
+             pb.res_total_lpd + pb.com_total_lpd, 0, pb.dry_total_water_lpd, tot.get("Total Water (LPD)", 0)),
+            (8, pa.stp_capacity_kld, 0, pa.stp_capacity_kld,
+             pb.stp_capacity_kld, 0, pb.stp_capacity_kld, tot.get("Total STP Capacity (KLD)", 0)),
+        ]
+        for row, c, d, e, f, g, h, i in rows:
+            for col, val in zip("CDEFGHI", (c, d, e, f, g, h, i)):
+                try:
+                    self._set(ws, f"{col}{row}", val)
+                except Exception:
+                    pass
+
+    def _populate_plot_sheets(self, wb, plot_name: str) -> None:
+        plot = self.results.plots[plot_name]
+        demand_name = f"{plot_name} Demand"
+        if demand_name in wb.sheetnames:
+            ws = wb[demand_name]
+            row = 5
+            for idx, w in enumerate(plot.residential_wings, 1):
+                try:
+                    self._set(ws, f"A{row}", idx)
+                    self._set(ws, f"B{row}", w.wing)
+                    self._set(ws, f"C{row}", w.flats)
+                    self._set(ws, f"E{row}", w.population)
+                    self._set(ws, f"F{row}", w.domestic_lpd)
+                    self._set(ws, f"G{row}", w.flushing_lpd)
+                    self._set(ws, f"H{row}", w.kitchen_water_lpd)
+                    self._set(ws, f"I{row}", w.total_lpd)
+                    row += 1
+                except Exception:
+                    pass
+            try:
+                self._set(ws, f"E{row}", plot.res_population)
+                self._set(ws, f"F{row}", plot.res_domestic_lpd)
+                self._set(ws, f"G{row}", plot.res_flushing_lpd)
+                self._set(ws, f"H{row}", plot.kitchen_water_lpd)
+                self._set(ws, f"I{row}", plot.res_total_lpd)
+            except Exception:
+                pass
+
+        ugt_name = f"{plot_name} UGT-OHT"
+        if ugt_name in wb.sheetnames:
+            ws = wb[ugt_name]
+            row = 4
+            for idx, sec in enumerate(plot.ugt_sections, 1):
+                try:
+                    self._set(ws, f"A{row}", idx)
+                    self._set(ws, f"B{row}", sec.description)
+                    self._set(ws, f"C{row}", sec.water_requirement_lpd)
+                    self._set(ws, f"D{row}", sec.storage_days)
+                    self._set(ws, f"E{row}", sec.total_storage_liters)
+                    self._set(ws, f"F{row}", sec.total_storage_kld)
+                    row += 1
+                except Exception:
+                    pass
+            try:
+                self._set(ws, f"B{row + 2}", plot.fire_tank_liters)
+            except Exception:
+                pass
+
+        stp_name = f"{plot_name} STP"
+        if stp_name in wb.sheetnames:
+            ws = wb[stp_name]
+            row = 4
+            for stp in plot.stp_sections:
+                try:
+                    self._set(ws, f"A{row}", 1)
+                    self._set(ws, f"B{row}", "Total Water Requirement")
+                    self._set(ws, f"C{row}", stp.total_water_lpd)
+                    row += 1
+                    self._set(ws, f"A{row}", 2)
+                    self._set(ws, f"B{row}", "Say STP Capacity")
+                    self._set(ws, f"C{row}", stp.say_stp_kld)
+                    row += 3
+                except Exception:
+                    pass
+
+    def _populate_summary(self, wb) -> None:
+        if "Summary" not in wb.sheetnames:
+            return
+        ws = wb["Summary"]
+        tot = self.results.total
+        pa = self.results.plots["Plot-A"]
+        pb = self.results.plots["Plot-B"]
+        mapping = {
+            "B3": self.project.project_name,
+            "B4": self.project.client_name,
+            "B5": self.project.project_location,
+            "B6": self.project.engineer_name,
+            "B7": self.project.date,
+            "B9": pa.stp_capacity_kld,
+            "B10": pb.stp_capacity_kld,
+            "B11": tot.get("Total Water (LPD)", 0),
+            "B12": tot.get("Total STP Capacity (KLD)", 0),
+            "B13": tot.get("Total Population", 0),
+            "B14": tot.get("Total Flats", 0),
+        }
+        for cell, val in mapping.items():
+            try:
+                self._set(ws, cell, val)
+            except Exception:
+                pass
+
+
 def export_excel(file_path: str, project: ProjectData, results: CalculationResults) -> None:
-    ExcelExporter(project, results).export(file_path)
+    if os.path.isfile(TEMPLATE_PATH):
+        TemplateExcelExporter(project, results).export(file_path)
+    else:
+        ExcelExporter(project, results).export(file_path)
 
 # ==================== ui/components/validation.py ====================
 
@@ -3205,6 +2852,13 @@ class AppState:
         )
         self.results = calc.calculate()
         self.calculated_legacy = self.results.legacy_dict()
+
+    def auto_calculate(self) -> None:
+        """Recalculate whenever inputs change (no manual Calculate button)."""
+        try:
+            self.run_calculations()
+        except Exception:
+            self.results = None
 
     def load_defaults(self) -> None:
         if not self.residential:
@@ -3400,7 +3054,6 @@ STP DETAILS
 
 
 
-
 class ProjectPage(ScrollablePage):
     def __init__(self, master, state: AppState, on_next) -> None:
         super().__init__(master)
@@ -3413,16 +3066,10 @@ class ProjectPage(ScrollablePage):
         header = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=8)
         header.pack(fill="x", padx=10, pady=(5, 10))
         ctk.CTkLabel(
-            header,
-            text="WATER DEMAND REPORT GENERATOR",
-            font=("Arial", 22, "bold"),
-            text_color="white",
+            header, text="WATER DEMAND REPORT GENERATOR", font=("Arial", 22, "bold"), text_color="white"
         ).pack(pady=12)
         ctk.CTkLabel(
-            header,
-            text="American Edge Engineers Pvt. Ltd.",
-            font=("Arial", 12),
-            text_color=BRAND_ORANGE,
+            header, text="American Edge Engineers Pvt. Ltd.", font=("Arial", 12), text_color=BRAND_ORANGE
         ).pack(pady=(0, 10))
 
         form = ctk.CTkFrame(self)
@@ -3442,78 +3089,83 @@ class ProjectPage(ScrollablePage):
             ent.grid(row=i, column=1, padx=20, pady=10)
             self.entries[key] = ent
 
-        ctk.CTkLabel(form, text="Engineer Name", font=("Arial", 14)).grid(row=4, column=0, padx=20, pady=10, sticky="w")
-        self.engineer_var = ctk.StringVar(value=self.state.project.engineer_name or STAFF_ENGINEERS[0])
-        ctk.CTkComboBox(
-            form, values=list(STAFF_ENGINEERS), variable=self.engineer_var, width=400
-        ).grid(row=4, column=1, padx=20, pady=10)
+        row = len(fields)
+        for label, attr, default in [
+            ("Engineer Name", "engineer_var", "Akash"),
+            ("Prepared By", "prepared_var", "Akash"),
+            ("Checked By", "checked_var", "Akash"),
+            ("Approved By", "approved_var", "Omkar"),
+        ]:
+            ctk.CTkLabel(form, text=label, font=("Arial", 14)).grid(row=row, column=0, padx=20, pady=10, sticky="w")
+            existing = getattr(self.state.project.revision, label.split()[-1].lower().replace("by", "_by"), None)
+            if label == "Engineer Name":
+                existing = self.state.project.engineer_name
+            elif label == "Prepared By":
+                existing = self.state.project.revision.prepared_by
+            elif label == "Checked By":
+                existing = self.state.project.revision.checked_by
+            elif label == "Approved By":
+                existing = self.state.project.revision.approved_by
+            var = ctk.StringVar(value=existing or default)
+            setattr(self, attr, var)
+            ctk.CTkComboBox(form, values=list(STAFF_NAMES), variable=var, width=400).grid(
+                row=row, column=1, padx=20, pady=10
+            )
+            row += 1
 
-        ctk.CTkLabel(form, text="Plot Mode", font=("Arial", 14)).grid(row=5, column=0, padx=20, pady=10, sticky="w")
+        ctk.CTkLabel(form, text="Plot Mode", font=("Arial", 14)).grid(row=row, column=0, padx=20, pady=10, sticky="w")
         plot_label = next(
             (k for k, v in PLOT_MODE_LABELS.items() if v == self.state.project.plot_mode),
-            list(PLOT_MODE_LABELS.keys())[0],
+            "Plot A + B",
         )
         self.plot_mode_var = ctk.StringVar(value=plot_label)
         ctk.CTkComboBox(
             form, values=list(PLOT_MODE_LABELS.keys()), variable=self.plot_mode_var, width=400
-        ).grid(row=5, column=1, padx=20, pady=10)
+        ).grid(row=row, column=1, padx=20, pady=10)
+        row += 1
 
-        ctk.CTkLabel(form, text="Project Type", font=("Arial", 14)).grid(row=6, column=0, padx=20, pady=10, sticky="w")
+        ctk.CTkLabel(form, text="Project Type", font=("Arial", 14)).grid(row=row, column=0, padx=20, pady=10, sticky="w")
         type_label = next(
             (k for k, v in PROJECT_TYPE_LABELS.items() if v == self.state.project.project_type),
-            list(PROJECT_TYPE_LABELS.keys())[1],
+            "Mixed Use",
         )
         self.project_type_var = ctk.StringVar(value=type_label)
         ctk.CTkComboBox(
             form, values=list(PROJECT_TYPE_LABELS.keys()), variable=self.project_type_var, width=400
-        ).grid(row=6, column=1, padx=20, pady=10)
+        ).grid(row=row, column=1, padx=20, pady=10)
+        row += 1
 
-        ctk.CTkLabel(form, text="Date", font=("Arial", 14)).grid(row=7, column=0, padx=20, pady=10, sticky="w")
-        self.date_entry = DateEntry(form, width=18, date_pattern="dd-mm-yyyy")
-        self.date_entry.grid(row=7, column=1, padx=20, pady=10, sticky="w")
+        ctk.CTkLabel(form, text="Date (Today)", font=("Arial", 14)).grid(row=row, column=0, padx=20, pady=10, sticky="w")
+        self.date_label = ctk.CTkLabel(form, text=datetime.now().strftime("%d-%m-%Y"), font=("Arial", 14))
+        self.date_label.grid(row=row, column=1, padx=20, pady=10, sticky="w")
+        row += 1
 
         ctk.CTkLabel(form, text="Revision Details", font=("Arial", 16, "bold")).grid(
-            row=8, column=0, columnspan=2, pady=(20, 5)
+            row=row, column=0, columnspan=2, pady=(20, 5)
         )
-        rev_fields = [
-            ("revision_no", "Rev. No.", "R0", "entry"),
-            ("description", "Description", "ISSUED FOR REFERENCE", "entry"),
-            ("prepared_by", "Prepared By", "AKASH", "combo"),
-            ("checked_by", "Checked By", "AKASH", "combo"),
-            ("approved_by", "Approved By", "SWAPNIL", "combo"),
-        ]
-        for i, (key, label, default, kind) in enumerate(rev_fields, start=9):
-            ctk.CTkLabel(form, text=label, font=("Arial", 13)).grid(row=i, column=0, padx=20, pady=8, sticky="w")
+        row += 1
+        for key, label, default in [
+            ("revision_no", "Rev. No.", "R0"),
+            ("description", "Description", "ISSUED FOR REFERENCE"),
+        ]:
+            ctk.CTkLabel(form, text=label, font=("Arial", 13)).grid(row=row, column=0, padx=20, pady=8, sticky="w")
+            ent = ctk.CTkEntry(form, width=400)
             val = getattr(self.state.project.revision, key, default)
-            if kind == "combo":
-                var = ctk.StringVar(value=val or default)
-                ctk.CTkComboBox(form, values=list(STAFF_APPROVAL), variable=var, width=400).grid(
-                    row=i, column=1, padx=20, pady=8
-                )
-                self.entries[key] = var
-            else:
-                ent = ctk.CTkEntry(form, width=400)
-                ent.insert(0, val or default)
-                ent.grid(row=i, column=1, padx=20, pady=8)
-                self.entries[key] = ent
+            ent.insert(0, val or default)
+            ent.grid(row=row, column=1, padx=20, pady=8)
+            self.entries[key] = ent
+            row += 1
 
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=15)
         ctk.CTkButton(
-            btn_frame,
-            text="Next -> Residential Details",
-            command=self._save_and_next,
-            fg_color=BRAND_ORANGE,
-            hover_color="#D06018",
-            width=220,
+            btn_frame, text="Next -> Building Details", command=self._save_and_next,
+            fg_color=BRAND_ORANGE, hover_color="#D06018", width=220,
         ).pack()
-
-    def _field_value(self, key: str) -> str:
-        widget = self.entries[key]
-        return widget.get().strip() if hasattr(widget, "get") else str(widget.get()).strip()
 
     def _save_and_next(self) -> None:
         try:
+            today = datetime.now().strftime("%d-%m-%Y")
             self.state.project.project_name = validate_required(self.entries["project_name"].get(), "Project Name")
             self.state.project.client_name = validate_required(self.entries["client_name"].get(), "Client Name")
             self.state.project.project_location = validate_required(
@@ -3521,27 +3173,28 @@ class ProjectPage(ScrollablePage):
             )
             self.state.project.engineer_name = validate_required(self.engineer_var.get(), "Engineer Name")
             self.state.project.project_no = self.entries["project_no"].get().strip()
+            self.state.project.date = today
             self.state.project.plot_mode = PLOT_MODE_LABELS.get(
                 self.plot_mode_var.get(), self.state.project.plot_mode
             )
             self.state.project.project_type = PROJECT_TYPE_LABELS.get(
                 self.project_type_var.get(), self.state.project.project_type
             )
-            self.state.project.date = validate_date(self.date_entry.get())
             self.state.project.revision = RevisionInfo(
-                date=self.state.project.date,
-                revision_no=self._field_value("revision_no") or "R0",
-                description=self._field_value("description") or "ISSUED FOR REFERENCE",
-                prepared_by=self._field_value("prepared_by"),
-                checked_by=self._field_value("checked_by"),
-                approved_by=self._field_value("approved_by"),
+                date=today,
+                revision_no=self.entries["revision_no"].get().strip() or "R0",
+                description=self.entries["description"].get().strip() or "ISSUED FOR REFERENCE",
+                prepared_by=self.prepared_var.get().strip(),
+                checked_by=self.checked_var.get().strip(),
+                approved_by=self.approved_var.get().strip(),
             )
+            self.state.auto_calculate()
             self.on_next()
         except ValidationError as exc:
             messagebox.showerror("Validation Error", exc.message)
 
     def refresh(self) -> None:
-        pass
+        self.date_label.configure(text=datetime.now().strftime("%d-%m-%Y"))
 
 # ==================== ui/pages/residential_page.py ====================
 
@@ -3565,18 +3218,28 @@ class ResidentialPage(ScrollablePage):
     def _build(self) -> None:
         header = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=8)
         header.pack(fill="x", padx=10, pady=(5, 10))
-        plot_text = "Single Plot" if len(self._plot_values()) == 1 else "Plot A & B"
+        plot_text = "Single Plot" if len(self._plot_values()) == 1 else "Plot A + B"
         ctk.CTkLabel(
-            header, text=f"Residential Details ({plot_text})", font=("Arial", 20, "bold"), text_color="white"
+            header,
+            text=f"Residential / Building Details ({plot_text})",
+            font=("Arial", 20, "bold"),
+            text_color="white",
         ).pack(pady=12)
+        ctk.CTkLabel(
+            header,
+            text="Enter BHK units only — Population, Domestic, Flushing & Kitchen auto-calculate per NBC",
+            font=("Arial", 11),
+            text_color="#ECF0F1",
+        ).pack(pady=(0, 10))
 
         self.table_frame.pack(fill="both", expand=True, padx=10, pady=10)
         headers = [
-            "Plot", "Wing", "Bldg Type", "Ht(m)", "Flats",
-            "1BHK", "2BHK", "3BHK", "PH", "Pop/Flat", "Population", "Kitchen", ""
+            "Plot", "Wing", "Config", "Bldg Type", "Ht(m)", "Wings",
+            "1BHK", "2BHK", "3BHK", "4BHK", "PH",
+            "Pop", "Dom", "Flush", "Total", "Kit", "",
         ]
         for i, h in enumerate(headers):
-            ctk.CTkLabel(self.table_frame, text=h, font=("Arial", 10, "bold")).grid(row=0, column=i, padx=2, pady=4)
+            ctk.CTkLabel(self.table_frame, text=h, font=("Arial", 9, "bold")).grid(row=0, column=i, padx=1, pady=4)
 
         if not self.state.residential:
             self._add_default_rows()
@@ -3593,22 +3256,28 @@ class ResidentialPage(ScrollablePage):
 
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=10)
-        ctk.CTkButton(btn_frame, text="+ Add Wing", command=lambda: self._add_row(), fg_color="#2980B9").grid(row=0, column=0, padx=10)
-        ctk.CTkButton(btn_frame, text="+ Add Bungalow", command=self._add_bungalow, fg_color="#2980B9").grid(row=0, column=1, padx=10)
+        ctk.CTkButton(btn_frame, text="+ Add Wing", command=lambda: self._add_row(), fg_color="#2980B9").grid(
+            row=0, column=0, padx=10
+        )
+        ctk.CTkButton(btn_frame, text="+ Add Bungalow", command=self._add_bungalow, fg_color="#2980B9").grid(
+            row=0, column=1, padx=10
+        )
         ctk.CTkButton(btn_frame, text="<- Back", command=self.on_back, fg_color="gray").grid(row=0, column=2, padx=10)
         ctk.CTkButton(
-            btn_frame, text="Save & Next -> Commercial", command=self._save_and_next,
-            fg_color=BRAND_ORANGE, hover_color="#D06018"
+            btn_frame,
+            text="Save & Next ->",
+            command=self._save_and_next,
+            fg_color=BRAND_ORANGE,
+            hover_color="#D06018",
         ).grid(row=0, column=3, padx=10)
 
         self._update_subtotals()
 
     def _add_default_rows(self) -> None:
-        defaults = [
-            ResidentialWing(plot="Plot-A", wing="WING - A", flats=146, pop_per_flat=5),
-            ResidentialWing(plot="Plot-A", wing="WING - B", flats=146, pop_per_flat=5),
-        ]
-        for wing in defaults:
+        for wing in [
+            ResidentialWing(plot="Plot-A", wing="WING - A", building_config="G+7", flats_2bhk=73, flats_3bhk=73),
+            ResidentialWing(plot="Plot-A", wing="WING - B", building_config="G+7", flats_2bhk=73, flats_3bhk=73),
+        ]:
             self._add_row(wing)
 
     def _add_bungalow(self) -> None:
@@ -3617,68 +3286,96 @@ class ResidentialPage(ScrollablePage):
             if "BUNGLOW" in r["wing"].get().upper() or "BUNGALOW" in r["wing"].get().upper()
         )
         letter = chr(65 + count)
-        self._add_row(ResidentialWing(plot="Plot-A", wing=f"BUNGLOW-{letter}", flats=1, pop_per_flat=5))
+        self._add_row(
+            ResidentialWing(
+                plot="Plot-A",
+                wing=f"BUNGLOW-{letter}",
+                building_config="G+1",
+                building_height_m=6.0,
+                num_wings=1,
+                flats_3bhk=1,
+            )
+        )
 
     def _add_row(self, wing: ResidentialWing | None = None) -> None:
         r = len(self.rows) + 1
+        config_values = list(BUILDING_CONFIG_EXAMPLES)
         plot_var = ctk.StringVar(value=wing.plot if wing else self._plot_values()[0])
-        plot_cb = ctk.CTkComboBox(self.table_frame, values=self._plot_values(), variable=plot_var, width=80)
-        w_ent = ctk.CTkEntry(self.table_frame, width=90)
+        plot_cb = ctk.CTkComboBox(self.table_frame, values=self._plot_values(), variable=plot_var, width=72)
+        w_ent = ctk.CTkEntry(self.table_frame, width=78)
         w_ent.insert(0, wing.wing if wing else "")
+        cfg_var = ctk.StringVar(value=wing.building_config if wing else "G+7")
+        cfg_cb = ctk.CTkComboBox(self.table_frame, values=config_values, variable=cfg_var, width=72)
         btype_var = ctk.StringVar(value=wing.building_type if wing else BUILDING_TYPES[0])
-        btype_cb = ctk.CTkComboBox(self.table_frame, values=list(BUILDING_TYPES), variable=btype_var, width=100)
-        ht_ent = ctk.CTkEntry(self.table_frame, width=55)
-        ht_ent.insert(0, str(wing.building_height_m if wing else ""))
-        f_ent = ctk.CTkEntry(self.table_frame, width=50)
-        f_ent.insert(0, str(wing.flats if wing else ""))
-        b1_ent = ctk.CTkEntry(self.table_frame, width=45)
+        btype_cb = ctk.CTkComboBox(self.table_frame, values=list(BUILDING_TYPES), variable=btype_var, width=95)
+        ht_ent = ctk.CTkEntry(self.table_frame, width=48)
+        ht_ent.insert(0, str(wing.building_height_m if wing and wing.building_height_m else ""))
+        wings_ent = ctk.CTkEntry(self.table_frame, width=42)
+        wings_ent.insert(0, str(wing.num_wings if wing else 1))
+        b1_ent = ctk.CTkEntry(self.table_frame, width=40)
         b1_ent.insert(0, str(wing.flats_1bhk if wing else ""))
-        b2_ent = ctk.CTkEntry(self.table_frame, width=45)
+        b2_ent = ctk.CTkEntry(self.table_frame, width=40)
         b2_ent.insert(0, str(wing.flats_2bhk if wing else ""))
-        b3_ent = ctk.CTkEntry(self.table_frame, width=45)
+        b3_ent = ctk.CTkEntry(self.table_frame, width=40)
         b3_ent.insert(0, str(wing.flats_3bhk if wing else ""))
-        ph_ent = ctk.CTkEntry(self.table_frame, width=45)
+        b4_ent = ctk.CTkEntry(self.table_frame, width=40)
+        b4_ent.insert(0, str(wing.flats_4bhk if wing else ""))
+        ph_ent = ctk.CTkEntry(self.table_frame, width=40)
         ph_ent.insert(0, str(wing.flats_penthouse if wing else ""))
-        p_ent = ctk.CTkEntry(self.table_frame, width=50)
-        p_ent.insert(0, str(wing.pop_per_flat if wing else 5))
-        pop_lbl = ctk.CTkLabel(self.table_frame, text="0", width=65)
-        kit_lbl = ctk.CTkLabel(self.table_frame, text="0", width=60)
+        pop_lbl = ctk.CTkLabel(self.table_frame, text="0", width=42)
+        dom_lbl = ctk.CTkLabel(self.table_frame, text="0", width=48)
+        flu_lbl = ctk.CTkLabel(self.table_frame, text="0", width=48)
+        tot_lbl = ctk.CTkLabel(self.table_frame, text="0", width=48)
+        kit_lbl = ctk.CTkLabel(self.table_frame, text="0", width=42)
 
         def update(*_):
             try:
-                b1 = int(b1_ent.get() or 0)
-                b2 = int(b2_ent.get() or 0)
-                b3 = int(b3_ent.get() or 0)
-                ph = int(ph_ent.get() or 0)
-                bhk_total = b1 + b2 + b3 + ph
-                if bhk_total > 0:
-                    temp = ResidentialWing(
-                        flats_1bhk=b1, flats_2bhk=b2, flats_3bhk=b3, flats_penthouse=ph
-                    )
-                    pop = temp.population
-                    kitchen = temp.kitchen_water
-                else:
-                    f = int(f_ent.get() or 0)
-                    p = int(p_ent.get() or 0)
-                    pop = f * p
-                    kitchen = 0
+                b1 = max(0, int(b1_ent.get() or 0))
+                b2 = max(0, int(b2_ent.get() or 0))
+                b3 = max(0, int(b3_ent.get() or 0))
+                b4 = max(0, int(b4_ent.get() or 0))
+                ph = max(0, int(ph_ent.get() or 0))
+                temp = ResidentialWing(
+                    building_config=cfg_var.get(),
+                    building_height_m=float(ht_ent.get() or 0),
+                    flats_1bhk=b1,
+                    flats_2bhk=b2,
+                    flats_3bhk=b3,
+                    flats_4bhk=b4,
+                    flats_penthouse=ph,
+                )
+                pop = temp.population
+                dom, flu, tot = residential_demand(pop)
+                kitchen = temp.kitchen_water
                 pop_lbl.configure(text=str(pop))
+                dom_lbl.configure(text=str(dom))
+                flu_lbl.configure(text=str(flu))
+                tot_lbl.configure(text=str(tot))
                 kit_lbl.configure(text=str(kitchen))
+                if not ht_ent.get().strip() and temp.building_height_m > 0:
+                    ht_ent.delete(0, "end")
+                    ht_ent.insert(0, str(int(temp.building_height_m)))
             except ValueError:
                 pop_lbl.configure(text="0")
+                dom_lbl.configure(text="0")
+                flu_lbl.configure(text="0")
+                tot_lbl.configure(text="0")
                 kit_lbl.configure(text="0")
             self._update_subtotals()
+            self.state.auto_calculate()
 
-        for ent in (f_ent, p_ent, b1_ent, b2_ent, b3_ent, ph_ent):
+        for ent in (ht_ent, wings_ent, b1_ent, b2_ent, b3_ent, b4_ent, ph_ent):
             ent.bind("<KeyRelease>", update)
-        plot_var.trace_add("write", update)
+        for var in (plot_var, cfg_var, btype_var):
+            var.trace_add("write", update)
 
         widgets = [
-            plot_cb, w_ent, btype_cb, ht_ent, f_ent,
-            b1_ent, b2_ent, b3_ent, ph_ent, p_ent, pop_lbl, kit_lbl,
+            plot_cb, w_ent, cfg_cb, btype_cb, ht_ent, wings_ent,
+            b1_ent, b2_ent, b3_ent, b4_ent, ph_ent,
+            pop_lbl, dom_lbl, flu_lbl, tot_lbl, kit_lbl,
         ]
         for j, widget in enumerate(widgets):
-            widget.grid(row=r, column=j, padx=2, pady=4)
+            widget.grid(row=r, column=j, padx=1, pady=4)
 
         def remove_row():
             for widget in widgets + [rm_btn]:
@@ -3686,40 +3383,63 @@ class ResidentialPage(ScrollablePage):
             self.rows = [row for row in self.rows if row["row_idx"] != r]
             self._regrid()
             self._update_subtotals()
+            self.state.auto_calculate()
 
-        rm_btn = ctk.CTkButton(self.table_frame, text="X", width=28, fg_color="#C0392B", command=remove_row)
-        rm_btn.grid(row=r, column=12, padx=2, pady=4)
+        rm_btn = ctk.CTkButton(self.table_frame, text="X", width=26, fg_color="#C0392B", command=remove_row)
+        rm_btn.grid(row=r, column=16, padx=1, pady=4)
 
         self.rows.append({
-            "row_idx": r, "plot": plot_var, "wing": w_ent, "btype": btype_var,
-            "height": ht_ent, "flats": f_ent, "b1": b1_ent, "b2": b2_ent,
-            "b3": b3_ent, "ph": ph_ent, "pop": p_ent, "pop_lbl": pop_lbl,
-            "kit_lbl": kit_lbl, "widgets": widgets + [rm_btn],
+            "row_idx": r,
+            "plot": plot_var,
+            "wing": w_ent,
+            "config": cfg_var,
+            "btype": btype_var,
+            "height": ht_ent,
+            "num_wings": wings_ent,
+            "b1": b1_ent,
+            "b2": b2_ent,
+            "b3": b3_ent,
+            "b4": b4_ent,
+            "ph": ph_ent,
+            "pop_lbl": pop_lbl,
+            "widgets": widgets + [rm_btn],
         })
         update()
+
+
+    def _duplicate_last(self) -> None:
+        if not self.rows:
+            self._add_row()
+            return
+        last = self.rows[-1]
+        wing = ResidentialWing(
+            plot=last["plot"].get(),
+            wing=last["wing"].get() + " (Copy)",
+            flats=int(last["flats"].get() or 0),
+            pop_per_flat=int(last["pop"].get() or 5),
+        )
+        self._add_row(wing)
 
     def _regrid(self) -> None:
         for i, row in enumerate(self.rows, 1):
             row["row_idx"] = i
             for j, widget in enumerate(row["widgets"]):
-                widget.grid(row=i, column=j, padx=2, pady=4)
+                widget.grid(row=i, column=j, padx=1, pady=4)
 
     def _update_subtotals(self) -> None:
         totals = {plot: 0 for plot in self._plot_values()}
         for row in self.rows:
             try:
                 plot = row["plot"].get()
-                b1 = int(row["b1"].get() or 0)
-                b2 = int(row["b2"].get() or 0)
-                b3 = int(row["b3"].get() or 0)
-                ph = int(row["ph"].get() or 0)
-                if b1 + b2 + b3 + ph > 0:
-                    temp = ResidentialWing(flats_1bhk=b1, flats_2bhk=b2, flats_3bhk=b3, flats_penthouse=ph)
-                    pop = temp.population
-                else:
-                    pop = int(row["flats"].get() or 0) * int(row["pop"].get() or 0)
-                totals[plot] = totals.get(plot, 0) + pop
-                row["pop_lbl"].configure(text=str(pop))
+                temp = ResidentialWing(
+                    flats_1bhk=int(row["b1"].get() or 0),
+                    flats_2bhk=int(row["b2"].get() or 0),
+                    flats_3bhk=int(row["b3"].get() or 0),
+                    flats_4bhk=int(row["b4"].get() or 0),
+                    flats_penthouse=int(row["ph"].get() or 0),
+                )
+                totals[plot] = totals.get(plot, 0) + temp.population
+                row["pop_lbl"].configure(text=str(temp.population))
             except ValueError:
                 pass
         for plot, lbl in self.subtotal_labels.items():
@@ -3730,33 +3450,33 @@ class ResidentialPage(ScrollablePage):
         try:
             for idx, row in enumerate(self.rows):
                 wing_name = validate_required(row["wing"].get(), "Wing Name")
-                b1 = int(row["b1"].get() or 0)
-                b2 = int(row["b2"].get() or 0)
-                b3 = int(row["b3"].get() or 0)
-                ph = int(row["ph"].get() or 0)
+                b1 = validate_positive_int(row["b1"].get(), "1 BHK Units", allow_zero=True)
+                b2 = validate_positive_int(row["b2"].get(), "2 BHK Units", allow_zero=True)
+                b3 = validate_positive_int(row["b3"].get(), "3 BHK Units", allow_zero=True)
+                b4 = validate_positive_int(row["b4"].get(), "4 BHK Units", allow_zero=True)
+                ph = validate_positive_int(row["ph"].get(), "Penthouse Units", allow_zero=True)
+                if b1 + b2 + b3 + b4 + ph <= 0:
+                    raise ValidationError(f"Enter at least one BHK unit count for wing '{wing_name}'.")
                 height = float(row["height"].get() or 0)
-                if b1 + b2 + b3 + ph > 0:
-                    flats = 0
-                    pop_per_flat = 5
-                else:
-                    flats = validate_positive_int(row["flats"].get(), "No. Of Flats")
-                    pop_per_flat = validate_positive_int(row["pop"].get(), "Pop/Flat")
+                num_wings = validate_positive_int(row["num_wings"].get(), "No. of Wings", allow_zero=False)
                 wings.append(ResidentialWing(
                     plot=row["plot"].get(),
                     wing=wing_name,
+                    building_config=row["config"].get(),
                     building_type=row["btype"].get(),
                     building_height_m=height,
-                    flats=flats,
+                    num_wings=num_wings,
                     flats_1bhk=b1,
                     flats_2bhk=b2,
                     flats_3bhk=b3,
+                    flats_4bhk=b4,
                     flats_penthouse=ph,
-                    pop_per_flat=pop_per_flat,
                     sort_order=idx,
                 ))
             if not wings:
                 raise ValidationError("Add at least one residential wing.")
             self.state.residential = wings
+            self.state.auto_calculate()
             self.on_next()
         except ValidationError as exc:
             messagebox.showerror("Validation Error", exc.message)
@@ -3782,14 +3502,27 @@ class CommercialPage(ScrollablePage):
     def _build(self) -> None:
         header = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=8)
         header.pack(fill="x", padx=10, pady=(5, 10))
+        plot_text = "Single Plot" if len(plot_choices(self.state.project.plot_mode)) == 1 else "Plot A + B"
         ctk.CTkLabel(
-            header, text="Commercial Details (Plot A & B)", font=("Arial", 20, "bold"), text_color="white"
+            header,
+            text=f"Commercial Details ({plot_text})",
+            font=("Arial", 20, "bold"),
+            text_color="white",
         ).pack(pady=12)
+        ctk.CTkLabel(
+            header,
+            text="Select Occupancy Type and Area — Population & demand auto-calculate per NBC",
+            font=("Arial", 11),
+            text_color="#ECF0F1",
+        ).pack(pady=(0, 10))
 
         self.table_frame.pack(fill="both", expand=True, padx=15, pady=10)
-        headers = ["Plot", "Block", "Type", "Floor", "Area (sq.m)", "Pop (Auto)", ""]
+        headers = [
+            "Plot", "Block", "Occupancy Type", "Floor", "Area (sq.m)",
+            "Pop", "Dom", "Flush", "Total", "",
+        ]
         for i, h in enumerate(headers):
-            ctk.CTkLabel(self.table_frame, text=h, font=("Arial", 12, "bold")).grid(row=0, column=i, padx=4, pady=5)
+            ctk.CTkLabel(self.table_frame, text=h, font=("Arial", 11, "bold")).grid(row=0, column=i, padx=3, pady=5)
 
         if not self.state.commercial:
             self._add_default_row()
@@ -3799,77 +3532,130 @@ class CommercialPage(ScrollablePage):
 
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=10)
-        ctk.CTkButton(btn_frame, text="+ Add Commercial", command=lambda: self._add_row(), fg_color="#2980B9").grid(row=0, column=0, padx=10)
+        ctk.CTkButton(btn_frame, text="+ Add Commercial", command=lambda: self._add_row(), fg_color="#2980B9").grid(
+            row=0, column=0, padx=10
+        )
         ctk.CTkButton(btn_frame, text="<- Back", command=self.on_back, fg_color="gray").grid(row=0, column=1, padx=10)
         ctk.CTkButton(
-            btn_frame, text="Save & Next -> Other", command=self._save_and_next,
-            fg_color=BRAND_ORANGE, hover_color="#D06018"
+            btn_frame,
+            text="Save & Next ->",
+            command=self._save_and_next,
+            fg_color=BRAND_ORANGE,
+            hover_color="#D06018",
         ).grid(row=0, column=2, padx=10)
 
     def _add_default_row(self) -> None:
         self._add_row(CommercialUnit(
-            plot="Plot-A", block="COMM-A", comm_type="Shop - Ground Floor",
-            floor_label="Ground Floor (Shop)", area_sqm=437,
+            plot="Plot-A",
+            block="COMM-A",
+            comm_type="Retail Shop",
+            floor_label="Ground Floor",
+            area_sqm=437,
         ))
 
     def _add_row(self, unit: CommercialUnit | None = None) -> None:
         r = len(self.rows) + 1
-        type_values = list(COMMERCIAL_TYPES.keys())
+        type_values = list(COMMERCIAL_OCCUPANCY_TYPES)
+        default_type = unit.comm_type if unit else "Office"
+        if default_type not in type_values:
+            for alias, spec in COMMERCIAL_TYPES.items():
+                if alias == default_type or spec.label == default_type:
+                    default_type = spec.label if spec.label in type_values else type_values[0]
+                    break
+            else:
+                default_type = type_values[0]
+
         plot_var = ctk.StringVar(value=unit.plot if unit else plot_choices(self.state.project.plot_mode)[0])
         plot_cb = ctk.CTkComboBox(
-            self.table_frame, values=plot_choices(self.state.project.plot_mode), variable=plot_var, width=90
+            self.table_frame, values=plot_choices(self.state.project.plot_mode), variable=plot_var, width=85
         )
-        block_ent = ctk.CTkEntry(self.table_frame, width=80)
+        block_ent = ctk.CTkEntry(self.table_frame, width=75)
         block_ent.insert(0, unit.block if unit else "COMM-A")
-        type_var = ctk.StringVar(value=unit.comm_type if unit else "Shop - Ground Floor")
-        type_cb = ctk.CTkComboBox(self.table_frame, values=type_values, variable=type_var, width=150)
-        floor_ent = ctk.CTkEntry(self.table_frame, width=120)
+        type_var = ctk.StringVar(value=default_type)
+        type_cb = ctk.CTkComboBox(self.table_frame, values=type_values, variable=type_var, width=130)
+        floor_ent = ctk.CTkEntry(self.table_frame, width=100)
         floor_ent.insert(0, unit.floor_label if unit else "")
-        area_ent = ctk.CTkEntry(self.table_frame, width=90)
+        area_ent = ctk.CTkEntry(self.table_frame, width=80)
         area_ent.insert(0, str(unit.area_sqm if unit else ""))
-        pop_var = ctk.StringVar(value="0")
-        pop_lbl = ctk.CTkLabel(self.table_frame, textvariable=pop_var, width=70)
+        pop_lbl = ctk.CTkLabel(self.table_frame, text="0", width=55)
+        dom_lbl = ctk.CTkLabel(self.table_frame, text="0", width=60)
+        flu_lbl = ctk.CTkLabel(self.table_frame, text="0", width=60)
+        tot_lbl = ctk.CTkLabel(self.table_frame, text="0", width=60)
 
-        def update_pop(*_):
+        def update(*_):
             try:
                 area = float(area_ent.get() or 0)
-                spec = COMMERCIAL_TYPES.get(type_var.get(), COMMERCIAL_TYPES["Shop - Ground Floor"])
-                pop_var.set(str(commercial_population(area, spec)))
+                spec = COMMERCIAL_TYPES.get(type_var.get(), COMMERCIAL_TYPES["Office"])
+                pop = commercial_population(area, spec)
+                dom, flu, tot = commercial_demand(pop, spec)
+                pop_lbl.configure(text=str(pop))
+                dom_lbl.configure(text=str(dom))
+                flu_lbl.configure(text=str(flu))
+                tot_lbl.configure(text=str(tot))
             except ValueError:
-                pop_var.set("0")
+                pop_lbl.configure(text="0")
+                dom_lbl.configure(text="0")
+                flu_lbl.configure(text="0")
+                tot_lbl.configure(text="0")
+            self.state.auto_calculate()
 
-        area_ent.bind("<KeyRelease>", update_pop)
-        type_var.trace_add("write", update_pop)
-        update_pop()
+        area_ent.bind("<KeyRelease>", update)
+        type_var.trace_add("write", update)
+        update()
 
-        plot_cb.grid(row=r, column=0, padx=4, pady=5)
-        block_ent.grid(row=r, column=1, padx=4, pady=5)
-        type_cb.grid(row=r, column=2, padx=4, pady=5)
-        floor_ent.grid(row=r, column=3, padx=4, pady=5)
-        area_ent.grid(row=r, column=4, padx=4, pady=5)
-        pop_lbl.grid(row=r, column=5, padx=4, pady=5)
+        plot_cb.grid(row=r, column=0, padx=3, pady=5)
+        block_ent.grid(row=r, column=1, padx=3, pady=5)
+        type_cb.grid(row=r, column=2, padx=3, pady=5)
+        floor_ent.grid(row=r, column=3, padx=3, pady=5)
+        area_ent.grid(row=r, column=4, padx=3, pady=5)
+        pop_lbl.grid(row=r, column=5, padx=3, pady=5)
+        dom_lbl.grid(row=r, column=6, padx=3, pady=5)
+        flu_lbl.grid(row=r, column=7, padx=3, pady=5)
+        tot_lbl.grid(row=r, column=8, padx=3, pady=5)
 
         def remove_row():
             for w in row_data["widgets"]:
                 w.destroy()
             self.rows = [row for row in self.rows if row["row_idx"] != r]
             self._regrid()
+            self.state.auto_calculate()
 
-        rm_btn = ctk.CTkButton(self.table_frame, text="X", width=30, fg_color="#C0392B", command=remove_row)
-        rm_btn.grid(row=r, column=6, padx=4, pady=5)
+        rm_btn = ctk.CTkButton(self.table_frame, text="X", width=28, fg_color="#C0392B", command=remove_row)
+        rm_btn.grid(row=r, column=9, padx=3, pady=5)
 
         row_data = {
-            "row_idx": r, "plot": plot_var, "block": block_ent, "type": type_var,
-            "floor": floor_ent, "area": area_ent, "pop_var": pop_var,
-            "widgets": [plot_cb, block_ent, type_cb, floor_ent, area_ent, pop_lbl, rm_btn],
+            "row_idx": r,
+            "plot": plot_var,
+            "block": block_ent,
+            "type": type_var,
+            "floor": floor_ent,
+            "area": area_ent,
+            "widgets": [
+                plot_cb, block_ent, type_cb, floor_ent, area_ent,
+                pop_lbl, dom_lbl, flu_lbl, tot_lbl, rm_btn,
+            ],
         }
         self.rows.append(row_data)
+
+
+    def _duplicate_last(self) -> None:
+        if not self.rows:
+            self._add_row()
+            return
+        last = self.rows[-1]
+        wing = ResidentialWing(
+            plot=last["plot"].get(),
+            wing=last["wing"].get() + " (Copy)",
+            flats=int(last["flats"].get() or 0),
+            pop_per_flat=int(last["pop"].get() or 5),
+        )
+        self._add_row(wing)
 
     def _regrid(self) -> None:
         for i, row in enumerate(self.rows, 1):
             row["row_idx"] = i
             for j, widget in enumerate(row["widgets"]):
-                widget.grid(row=i, column=j, padx=4, pady=5)
+                widget.grid(row=i, column=j, padx=3, pady=5)
 
     def _save_and_next(self) -> None:
         units: list = []
@@ -3886,6 +3672,7 @@ class CommercialPage(ScrollablePage):
                         sort_order=idx,
                     ))
             self.state.commercial = units
+            self.state.auto_calculate()
             self.on_next()
         except ValidationError as exc:
             messagebox.showerror("Validation Error", exc.message)
@@ -3905,7 +3692,8 @@ class OtherPage(ScrollablePage):
         self.on_calculate = on_calculate
         self.on_back = on_back
         self.entries: dict = {}
-        self.pool_na_vars: dict = {}
+        self.pool_status_vars: dict = {}
+        self.pool_entries: dict = {}
         self.oht_rows: list = []
         self.oht_frame = ctk.CTkFrame(self)
         self.fire_labels: dict = {}
@@ -3915,21 +3703,41 @@ class OtherPage(ScrollablePage):
         return plot_choices(self.state.project.plot_mode)
 
     def _auto_fire_tank(self, plot: str) -> int:
-        heights = [
-            w.building_height_m
+        heights_types = [
+            (w.building_height_m, w.building_type)
             for w in self.state.residential
             if w.plot == plot and w.building_height_m > 0
         ]
-        if heights:
-            return fire_tank_capacity_liters(max(heights))
+        if heights_types:
+            max_height = max(h for h, _ in heights_types)
+            btype = next((t for h, t in heights_types if h == max_height), "")
+            return fire_tank_capacity_liters(max_height, btype)
         return int(self.state.other.fire_tank.get(plot, 0))
+
+    def _pool_label_for_plot(self, plot: str) -> str:
+        status = self.state.other.swimming_pool_status.get(plot, POOL_NOT_APPLICABLE)
+        if self.state.other.swimming_pool_na.get(plot, False):
+            status = POOL_NOT_APPLICABLE
+        for label, value in POOL_STATUS_LABELS.items():
+            if value == status:
+                return label
+        return "Not Applicable"
 
     def _build(self) -> None:
         header = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=8)
         header.pack(fill="x", padx=10, pady=(5, 10))
         ctk.CTkLabel(
-            header, text="Other / Fire Tank / OHT Details", font=("Arial", 20, "bold"), text_color="white"
+            header,
+            text="Landscape / Pool / HVAC / Fire Tank / OHT",
+            font=("Arial", 20, "bold"),
+            text_color="white",
         ).pack(pady=12)
+        ctk.CTkLabel(
+            header,
+            text="UGT, OHT, STP & Fire Tank auto-calculate — updates on every change",
+            font=("Arial", 11),
+            text_color="#ECF0F1",
+        ).pack(pady=(0, 10))
 
         form = ctk.CTkFrame(self)
         form.pack(fill="x", padx=20, pady=10)
@@ -3942,23 +3750,28 @@ class OtherPage(ScrollablePage):
             ent = ctk.CTkEntry(form, width=200)
             ent.insert(0, str(self.state.other.landscape_area.get(plot, 765 if plot == "Plot-A" else 762)))
             ent.grid(row=row, column=1, padx=15, pady=8)
+            ent.bind("<KeyRelease>", lambda *_: self._sync_and_calc())
             self.entries[f"landscape_{plot}"] = ent
             row += 1
 
         for plot in self._plots():
             ctk.CTkLabel(
-                form, text=f"Swimming Pool {plot} (L/day)", font=("Arial", 13)
+                form, text=f"Swimming Pool {plot}", font=("Arial", 13)
             ).grid(row=row, column=0, padx=15, pady=8, sticky="w")
+            status_var = ctk.StringVar(value=self._pool_label_for_plot(plot))
+            status_cb = ctk.CTkComboBox(
+                form, values=list(POOL_STATUS_LABELS.keys()), variable=status_var, width=160,
+                command=lambda *_: self._toggle_pool_fields(),
+            )
+            status_cb.grid(row=row, column=1, padx=15, pady=8, sticky="w")
+            self.pool_status_vars[plot] = status_var
             pool_ent = ctk.CTkEntry(form, width=200)
             pool_ent.insert(0, str(int(self.state.other.swimming_pool.get(plot, 0))))
-            pool_ent.grid(row=row, column=1, padx=15, pady=8)
-            self.entries[f"pool_{plot}"] = pool_ent
-            na_var = ctk.BooleanVar(value=self.state.other.swimming_pool_na.get(plot, False))
-            ctk.CTkCheckBox(
-                form, text="Not Applicable (NA)", variable=na_var
-            ).grid(row=row, column=2, padx=10, pady=8, sticky="w")
-            self.pool_na_vars[plot] = na_var
+            pool_ent.grid(row=row, column=2, padx=15, pady=8)
+            pool_ent.bind("<KeyRelease>", lambda *_: self._sync_and_calc())
+            self.pool_entries[plot] = pool_ent
             row += 1
+        self._toggle_pool_fields()
 
         self.hvac_entries: dict = {}
         if hvac_applicable(self.state.project.project_type):
@@ -3969,12 +3782,13 @@ class OtherPage(ScrollablePage):
                 ent = ctk.CTkEntry(form, width=200)
                 ent.insert(0, str(int(self.state.other.hvac_water.get(plot, 0))))
                 ent.grid(row=row, column=1, padx=15, pady=8)
+                ent.bind("<KeyRelease>", lambda *_: self._sync_and_calc())
                 self.hvac_entries[plot] = ent
                 row += 1
         else:
             ctk.CTkLabel(
                 form,
-                text="HVAC: Not applicable for residential-only projects",
+                text="HVAC: Applicable only for Commercial and IT Park projects",
                 font=("Arial", 12, "italic"),
                 text_color="#7F8C8D",
             ).grid(row=row, column=0, columnspan=3, padx=15, pady=8, sticky="w")
@@ -3985,12 +3799,16 @@ class OtherPage(ScrollablePage):
                 form, text=f"Fire Tank {plot} (litres)", font=("Arial", 13)
             ).grid(row=row, column=0, padx=15, pady=8, sticky="w")
             auto_val = self._auto_fire_tank(plot)
-            lbl = ctk.CTkLabel(form, text=f"{auto_val:,} (auto from NBC height table)", font=("Arial", 12))
-            lbl.grid(row=row, column=1, padx=15, pady=8, sticky="w")
+            lbl = ctk.CTkLabel(
+                form, text=f"{auto_val:,} (auto — NBC Table 7)", font=("Arial", 12)
+            )
+            lbl.grid(row=row, column=1, columnspan=2, padx=15, pady=8, sticky="w")
             self.fire_labels[plot] = lbl
             row += 1
 
-        ctk.CTkLabel(self, text="OHT Details (Optional - auto-calculated if empty)", font=("Arial", 14, "bold")).pack(pady=(15, 5))
+        ctk.CTkLabel(self, text="OHT Details (Optional — auto-calculated if empty)", font=("Arial", 14, "bold")).pack(
+            pady=(15, 5)
+        )
         self.oht_frame.pack(fill="x", padx=15, pady=5)
         oht_headers = ["Plot", "Wing/Block", "Domestic KLD", "Flushing KLD", "Fire Break KLD", "Fire OHT KLD", ""]
         for i, h in enumerate(oht_headers):
@@ -4004,12 +3822,61 @@ class OtherPage(ScrollablePage):
 
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=15)
-        ctk.CTkButton(btn_frame, text="+ Add OHT Row", command=lambda: self._add_oht_row(), fg_color="#2980B9").grid(row=0, column=0, padx=10)
+        ctk.CTkButton(btn_frame, text="+ Add OHT Row", command=lambda: self._add_oht_row(), fg_color="#2980B9").grid(
+            row=0, column=0, padx=10
+        )
         ctk.CTkButton(btn_frame, text="<- Back", command=self.on_back, fg_color="gray").grid(row=0, column=1, padx=10)
         ctk.CTkButton(
-            btn_frame, text="Calculate & Generate Report", command=self._calculate,
-            fg_color=BRAND_ORANGE, hover_color="#D06018", width=220,
+            btn_frame,
+            text="Next -> Generate Report",
+            command=self._finish,
+            fg_color=BRAND_ORANGE,
+            hover_color="#D06018",
+            width=220,
         ).grid(row=0, column=2, padx=10)
+
+        self._sync_and_calc()
+
+    def _toggle_pool_fields(self) -> None:
+        for plot, var in self.pool_status_vars.items():
+            ent = self.pool_entries.get(plot)
+            if not ent:
+                continue
+            if var.get() == "Not Applicable":
+                ent.configure(state="disabled")
+            else:
+                ent.configure(state="normal")
+        self._sync_and_calc()
+
+    def _sync_and_calc(self) -> None:
+        try:
+            for plot in self._plots():
+                self.state.other.landscape_area[plot] = float(
+                    self.entries[f"landscape_{plot}"].get() or 0
+                )
+                status = POOL_STATUS_LABELS.get(
+                    self.pool_status_vars[plot].get(), POOL_NOT_APPLICABLE
+                )
+                self.state.other.swimming_pool_status[plot] = status
+                self.state.other.swimming_pool_na[plot] = status == POOL_NOT_APPLICABLE
+                if status == POOL_NOT_APPLICABLE:
+                    self.state.other.swimming_pool[plot] = 0.0
+                else:
+                    self.state.other.swimming_pool[plot] = float(
+                        self.pool_entries[plot].get() or 0
+                    )
+                if hvac_applicable(self.state.project.project_type):
+                    self.state.other.hvac_water[plot] = float(
+                        self.hvac_entries[plot].get() or 0
+                    )
+                else:
+                    self.state.other.hvac_water[plot] = 0.0
+                self.state.other.fire_tank[plot] = float(self._auto_fire_tank(plot))
+            self.state.auto_calculate()
+            for plot, lbl in self.fire_labels.items():
+                lbl.configure(text=f"{self._auto_fire_tank(plot):,} (auto — NBC Table 7)")
+        except (ValueError, KeyError):
+            pass
 
     def _add_oht_row(self, oht: OHTDetail | None = None) -> None:
         r = len(self.oht_rows) + 1
@@ -4042,20 +3909,29 @@ class OtherPage(ScrollablePage):
         rm_btn.grid(row=r, column=6, padx=3, pady=3)
         widgets = [plot_cb, wing_ent, dom_ent, flu_ent, fb_ent, fo_ent, rm_btn]
         self.oht_rows.append({
-            "idx": r, "plot": plot_var, "wing": wing_ent,
-            "dom": dom_ent, "flu": flu_ent, "fb": fb_ent, "fo": fo_ent,
+            "idx": r,
+            "plot": plot_var,
+            "wing": wing_ent,
+            "dom": dom_ent,
+            "flu": flu_ent,
+            "fb": fb_ent,
+            "fo": fo_ent,
         })
 
-    def _calculate(self) -> None:
+    def _finish(self) -> None:
         try:
             for plot in self._plots():
                 self.state.other.landscape_area[plot] = validate_positive_float(
                     self.entries[f"landscape_{plot}"].get(), f"Landscape {plot}"
                 )
-                self.state.other.swimming_pool_na[plot] = self.pool_na_vars[plot].get()
-                if not self.state.other.swimming_pool_na[plot]:
+                status = POOL_STATUS_LABELS.get(
+                    self.pool_status_vars[plot].get(), POOL_NOT_APPLICABLE
+                )
+                self.state.other.swimming_pool_status[plot] = status
+                self.state.other.swimming_pool_na[plot] = status == POOL_NOT_APPLICABLE
+                if status != POOL_NOT_APPLICABLE:
                     self.state.other.swimming_pool[plot] = validate_positive_float(
-                        self.entries[f"pool_{plot}"].get(), f"Swimming Pool {plot}"
+                        self.pool_entries[plot].get(), f"Swimming Pool {plot}"
                     )
                 else:
                     self.state.other.swimming_pool[plot] = 0.0
@@ -4079,13 +3955,15 @@ class OtherPage(ScrollablePage):
                         fire_oht_kld=validate_positive_float(row["fo"].get(), f"OHT Fire OHT ({wing})"),
                     ))
             self.state.other.oht_details = oht_list
+            self.state.auto_calculate()
             self.on_calculate()
         except ValidationError as exc:
             messagebox.showerror("Validation Error", exc.message)
 
     def refresh(self) -> None:
         for plot, lbl in self.fire_labels.items():
-            lbl.configure(text=f"{self._auto_fire_tank(plot):,} (auto from NBC height table)")
+            lbl.configure(text=f"{self._auto_fire_tank(plot):,} (auto — NBC Table 7)")
+        self._sync_and_calc()
 
 # ==================== ui/pages/final_page.py ====================
 
@@ -4234,6 +4112,7 @@ class FinalPage(ScrollablePage):
 
         if safe_execute(do_save, lambda msg: messagebox.showerror("Database Error", msg)):
             messagebox.showinfo("Success", "Project saved to database successfully!")
+
 # ==================== _app_sidebar.py ====================
 
 # ============================================================
@@ -4260,11 +4139,6 @@ class WaterDemandApp(ctk.CTk):
         self.minsize(1100, 700)
         self.configure(fg_color="#F0F2F5")
         init_db()
-        if RWH_AVAILABLE and init_rwh_db is not None:
-            try:
-                init_rwh_db(DB_PATH)
-            except Exception:
-                pass
         self._sidebar()
         self.container = ctk.CTkFrame(self, fg_color="#F0F2F5")
         self.container.pack(side="right", fill="both", expand=True, padx=8, pady=8)
@@ -4275,39 +4149,20 @@ class WaterDemandApp(ctk.CTk):
     def _plots(self) -> list[str]:
         return plot_choices(self.app_state.project.plot_mode)
 
-    def _auto_fire_tank(self, plot: str) -> int:
-        heights = [
-            w.building_height_m
-            for w in self.app_state.residential
-            if w.plot == plot and w.building_height_m > 0
-        ]
-        if heights:
-            return fire_tank_capacity_liters(max(heights))
-        return int(self.app_state.other.fire_tank.get(plot, 0))
-
     def _sidebar(self):
         sb = ctk.CTkFrame(self, width=230, fg_color=BRAND_NAVY, corner_radius=0)
         sb.pack(side="left", fill="y")
         sb.pack_propagate(False)
         ctk.CTkLabel(sb, text="AMERICAN EDGE\nENGINEERS", font=("Arial", 14, "bold"), text_color=BRAND_ORANGE, justify="center").pack(pady=(20, 5))
-        if os.path.exists(LOGO_PATH):
-            try:
-                from PIL import Image as PILImage
-                logo_img = ctk.CTkImage(light_image=PILImage.open(LOGO_PATH), size=(160, 70))
-                ctk.CTkLabel(sb, image=logo_img, text="").pack(pady=(0, 5))
-            except Exception:
-                pass
-        ctk.CTkLabel(sb, text="Engineering Modules", font=("Arial", 10), text_color="white").pack(pady=(0, 8))
-        # Module group labels
-        ctk.CTkLabel(sb, text="  WATER DEMAND", font=("Arial", 9, "bold"), text_color="#7F8C8D", anchor="w").pack(fill="x", padx=8, pady=(4, 2))
+        ctk.CTkLabel(sb, text="Water Demand Generator", font=("Arial", 10), text_color="white").pack(pady=(0, 15))
         self.nav_btns = {}
         for k, lbl in self.NAV:
+            if k == "Residential" and not show_residential_section(self.app_state.project.project_type):
+                continue
+            if k == "Commercial" and not show_commercial_section(self.app_state.project.project_type):
+                continue
             if k == "HVAC" and not hvac_applicable(self.app_state.project.project_type):
                 continue
-            if k == "RWH":
-                ctk.CTkLabel(sb, text="  RAIN WATER HARVESTING", font=("Arial", 9, "bold"), text_color="#7F8C8D", anchor="w").pack(fill="x", padx=8, pady=(10, 2))
-            if k == "Settings":
-                ctk.CTkLabel(sb, text="  SYSTEM", font=("Arial", 9, "bold"), text_color="#7F8C8D", anchor="w").pack(fill="x", padx=8, pady=(10, 2))
             b = ctk.CTkButton(sb, text=lbl, height=36, anchor="w", fg_color="transparent", hover_color=BRAND_ORANGE,
                               text_color="white", font=("Arial", 12), command=lambda x=k: self.show(x))
             b.pack(fill="x", padx=8, pady=2)
@@ -4316,90 +4171,38 @@ class WaterDemandApp(ctk.CTk):
         ctk.CTkButton(sb, text="Open Project", fg_color="#2980B9", command=self._open_db).pack(side="bottom", fill="x", padx=10, pady=4)
         ctk.CTkButton(sb, text="New Project", fg_color="#27AE60", command=self._new).pack(side="bottom", fill="x", padx=10, pady=(4, 15))
 
-    def _page_wrapper(self) -> ctk.CTkFrame:
-        return ctk.CTkFrame(self.container, fg_color="#FFFFFF", corner_radius=0)
-
     def _pages(self):
-        self.wrappers: Dict[str, ctk.CTkFrame] = {}
-        self.pages = {}
-
-        w = self._page_wrapper()
-        self.pages["Project"] = ProjectPage(w, self.app_state, on_next=lambda: self.show("Residential"))
-        self.pages["Project"].pack(fill="both", expand=True)
-        self.wrappers["Project"] = w
-
-        w = self._page_wrapper()
-        self.pages["Residential"] = ResidentialPage(w, self.app_state, on_next=lambda: self.show("Commercial"), on_back=lambda: self.show("Project"))
-        self.pages["Residential"].pack(fill="both", expand=True)
-        self.wrappers["Residential"] = w
-
-        w = self._page_wrapper()
-        self.pages["Commercial"] = CommercialPage(w, self.app_state, on_next=lambda: self.show("Landscape"), on_back=lambda: self.show("Residential"))
-        self.pages["Commercial"].pack(fill="both", expand=True)
-        self.wrappers["Commercial"] = w
-
-        w = self._page_wrapper()
-        self.pages["Landscape"] = self._form_page(w, "Landscape (NBC-2026)", self._landscape_ui)
-        self.wrappers["Landscape"] = w
-
-        w = self._page_wrapper()
-        self.pages["Swimming"] = self._form_page(w, "Swimming Pool", self._pool_ui)
-        self.wrappers["Swimming"] = w
-
+        self.pages["Project"] = ProjectPage(self.container, self.app_state, on_next=self._next_from_project)
+        self.pages["Residential"] = ResidentialPage(self.container, self.app_state, on_next=self._next_from_residential, on_back=lambda: self.show("Project"))
+        self.pages["Commercial"] = CommercialPage(self.container, self.app_state, on_next=lambda: self.show("Landscape"), on_back=self._back_from_commercial)
+        self.pages["Landscape"] = self._form_page("Landscape (NBC-2026)", self._landscape_ui)
+        self.pages["Swimming"] = self._form_page("Swimming Pool", self._pool_ui)
         if hvac_applicable(self.app_state.project.project_type):
-            w = self._page_wrapper()
-            self.pages["HVAC"] = self._form_page(w, "HVAC Water", self._hvac_ui)
-            self.wrappers["HVAC"] = w
-
-        w = self._page_wrapper()
-        self.pages["UGT"] = self._form_page(w, "UGT / Fire Tank", self._ugt_ui)
-        self.wrappers["UGT"] = w
-
-        w = self._page_wrapper()
-        self.pages["OHT"] = OtherPage(w, self.app_state, on_calculate=self._calc_and_show_stp, on_back=lambda: self.show("UGT"))
-        self.pages["OHT"].pack(fill="both", expand=True)
-        self.wrappers["OHT"] = w
-
-        w = self._page_wrapper()
-        self.pages["STP"] = self._stp_page(w)
-        self.wrappers["STP"] = w
-
-        w = self._page_wrapper()
-        self.pages["Preview"] = self._preview_page(w)
-        self.wrappers["Preview"] = w
-
-        w = self._page_wrapper()
-        self.pages["Report"] = FinalPage(w, self.app_state, on_back=lambda: self.show("Preview"))
-        self.pages["Report"].pack(fill="both", expand=True)
-        self.wrappers["Report"] = w
-
-        if RWH_AVAILABLE and RWHPage is not None:
-            w = self._page_wrapper()
+            self.pages["HVAC"] = self._form_page("HVAC Water", self._hvac_ui)
+        self.pages["UGT"] = self._form_page("UGT / Fire Tank", self._ugt_ui)
+        self.pages["Report"] = FinalPage(self.container, self.app_state, on_back=lambda: self.show("Preview"))
+        self.pages["STP"] = self._stp_page()
+        self.pages["Preview"] = self._preview_page()
+        try:
+            init_rwh_db()
             self.pages["RWH"] = RWHPage(
-                w,
-                logo_path=LOGO_PATH,
-                db_path=DB_PATH,
-                on_back=lambda: self.show("Report"),
+                self.container,
                 seed_project=self.app_state.project,
+                on_back=lambda: self.show("Report"),
             )
-            self.pages["RWH"].pack(fill="both", expand=True)
-            self.wrappers["RWH"] = w
+        except Exception:
+            pass
+        self.pages["Settings"] = self._settings_page()
+        for p in self.pages.values():
+            p.grid(row=0, column=0, sticky="nsew")
 
-        w = self._page_wrapper()
-        self.pages["Settings"] = self._settings_page(w)
-        self.wrappers["Settings"] = w
-
-        for wrapper in self.wrappers.values():
-            wrapper.place_forget()
-
-    def _form_page(self, parent, title, builder):
-        f = ScrollablePage(parent, fg_color="#FFFFFF")
-        f.pack(fill="both", expand=True)
+    def _form_page(self, title, builder):
+        f = ScrollablePage(self.container)
         h = ctk.CTkFrame(f, fg_color=BRAND_NAVY, corner_radius=8)
         h.pack(fill="x", padx=5, pady=5)
         ctk.CTkLabel(h, text=title, font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
         builder(f)
-        return parent
+        return f
 
     def _landscape_ui(self, p):
         self._le = {}
@@ -4424,27 +4227,36 @@ class WaterDemandApp(ctk.CTk):
 
     def _pool_ui(self, p):
         self._pe = {}
-        self._pool_na = {}
+        self._pool_status = {}
         form = ctk.CTkFrame(p)
         form.pack(padx=20, pady=10)
         for i, plot in enumerate(self._plots()):
-            ctk.CTkLabel(form, text=f"Pool Makeup {plot} (L/day)", font=("Arial", 13)).grid(row=i, column=0, padx=10, pady=8, sticky="w")
+            ctk.CTkLabel(form, text=f"Swimming Pool {plot}", font=("Arial", 13)).grid(row=i, column=0, padx=10, pady=8, sticky="w")
+            status = self.app_state.other.swimming_pool_status.get(plot, POOL_NOT_APPLICABLE)
+            if self.app_state.other.swimming_pool_na.get(plot, False):
+                status = POOL_NOT_APPLICABLE
+            label = next((k for k, v in POOL_STATUS_LABELS.items() if v == status), "Not Applicable")
+            status_var = ctk.StringVar(value=label)
+            ctk.CTkComboBox(form, values=list(POOL_STATUS_LABELS.keys()), variable=status_var, width=160).grid(
+                row=i, column=1, padx=10, pady=8, sticky="w"
+            )
+            self._pool_status[plot] = status_var
             e = ctk.CTkEntry(form, width=180)
             e.insert(0, str(int(self.app_state.other.swimming_pool.get(plot, 0))))
-            e.grid(row=i, column=1, padx=10, pady=8)
+            e.grid(row=i, column=2, padx=10, pady=8)
             self._pe[plot] = e
-            na_var = ctk.BooleanVar(value=self.app_state.other.swimming_pool_na.get(plot, False))
-            ctk.CTkCheckBox(form, text="Not Applicable (NA)", variable=na_var).grid(row=i, column=2, padx=10, pady=8)
-            self._pool_na[plot] = na_var
         ctk.CTkButton(p, text="Save & Next", fg_color=BRAND_ORANGE, command=self._save_pool).pack(pady=12)
 
     def _save_pool(self):
         for plot in self._plots():
-            self.app_state.other.swimming_pool_na[plot] = self._pool_na[plot].get()
-            if self.app_state.other.swimming_pool_na[plot]:
+            status = POOL_STATUS_LABELS.get(self._pool_status[plot].get(), POOL_NOT_APPLICABLE)
+            self.app_state.other.swimming_pool_status[plot] = status
+            self.app_state.other.swimming_pool_na[plot] = status == POOL_NOT_APPLICABLE
+            if status == POOL_NOT_APPLICABLE:
                 self.app_state.other.swimming_pool[plot] = 0.0
             else:
                 self.app_state.other.swimming_pool[plot] = float(self._pe[plot].get() or 0)
+        self.app_state.auto_calculate()
         next_page = "HVAC" if hvac_applicable(self.app_state.project.project_type) else "UGT"
         self.show(next_page)
 
@@ -4477,16 +4289,15 @@ class WaterDemandApp(ctk.CTk):
         for plot, e in entries.items():
             target[plot] = float(e.get() or 0)
 
-    def _stp_page(self, parent):
-        f = ScrollablePage(parent, fg_color="#FFFFFF")
-        f.pack(fill="both", expand=True)
+    def _stp_page(self):
+        f = ScrollablePage(self.container)
         h = ctk.CTkFrame(f, fg_color=BRAND_NAVY, corner_radius=8)
         h.pack(fill="x", padx=5, pady=5)
         ctk.CTkLabel(h, text="STP Summary", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
         self.stp_box = ctk.CTkTextbox(f, height=400, font=("Courier", 11))
         self.stp_box.pack(fill="both", expand=True, padx=15, pady=10)
         ctk.CTkButton(f, text="Calculate STP", fg_color=BRAND_ORANGE, command=self._refresh_stp).pack(pady=10)
-        return parent
+        return f
 
     def _refresh_stp(self):
         self._calc()
@@ -4505,59 +4316,84 @@ class WaterDemandApp(ctk.CTk):
         self.stp_box.delete("1.0", "end")
         self.stp_box.insert("1.0", "\n".join(lines))
 
-    def _preview_page(self, parent):
-        f = ScrollablePage(parent, fg_color="#FFFFFF")
-        f.pack(fill="both", expand=True)
+    def _preview_page(self):
+        f = ScrollablePage(self.container)
         h = ctk.CTkFrame(f, fg_color=BRAND_NAVY, corner_radius=8)
         h.pack(fill="x", padx=5, pady=5)
         ctk.CTkLabel(h, text="Report Preview (8 Pages)", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
         ctk.CTkButton(f, text="Calculate & Open Preview", fg_color="#8E44AD", height=42, command=self._open_preview).pack(pady=20)
         ctk.CTkButton(f, text="Go to Generate Report", fg_color=BRAND_ORANGE, height=38, command=lambda: (self._calc(), self.show("Report"))).pack(pady=8)
-        return parent
+        return f
 
-    def _settings_page(self, parent):
-        f = ScrollablePage(parent, fg_color="#FFFFFF")
-        f.pack(fill="both", expand=True)
+    def _settings_page(self):
+        f = ScrollablePage(self.container)
         h = ctk.CTkFrame(f, fg_color=BRAND_NAVY, corner_radius=8)
         h.pack(fill="x", padx=5, pady=5)
         ctk.CTkLabel(h, text="Settings", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
         ctk.CTkLabel(
             f,
-            text=f"Database: {DB_PATH}\nLogo: {LOGO_PATH}\n\nNBC-2026 Standards:\nResidential 105+30 LPCD\nLandscape 6 L/sq.m\nSTP 90% sewage\n\nModules:\n• Water Demand Report Generator\n• Rain Water Harvesting",
+            text=f"Database: {DB_PATH}\nLogo: {LOGO_PATH}\n\nNBC-2026 Standards:\nResidential 105+30 LPCD\nLandscape 6 L/sq.m\nSTP 90% sewage",
             font=("Arial", 12),
             justify="left",
         ).pack(anchor="w", padx=20, pady=10)
         ctk.CTkButton(f, text="Export JSON", command=self._exp_json).pack(pady=8)
         ctk.CTkButton(f, text="Import JSON", command=self._imp_json).pack(pady=8)
-        return parent
+        return f
 
-    def show(self, name: str) -> None:
+    def _auto_fire_tank(self, plot: str) -> int:
+        heights_types = [
+            (w.building_height_m, w.building_type)
+            for w in self.app_state.residential
+            if w.plot == plot and w.building_height_m > 0
+        ]
+        if heights_types:
+            max_height = max(h for h, _ in heights_types)
+            btype = next((t for h, t in heights_types if h == max_height), "")
+            return fire_tank_capacity_liters(max_height, btype)
+        return int(self.app_state.other.fire_tank.get(plot, 0))
+
+    def _next_from_project(self):
+        ptype = self.app_state.project.project_type
+        if show_residential_section(ptype):
+            self.show("Residential")
+        elif show_commercial_section(ptype):
+            self.show("Commercial")
+        else:
+            self.show("Landscape")
+
+    def _next_from_residential(self):
+        if show_commercial_section(self.app_state.project.project_type):
+            self.show("Commercial")
+        else:
+            self.show("Landscape")
+
+    def _back_from_commercial(self):
+        if show_residential_section(self.app_state.project.project_type):
+            self.show("Residential")
+        else:
+            self.show("Project")
+
+    def show(self, name):
         if name == "HVAC" and not hvac_applicable(self.app_state.project.project_type):
             self.show("UGT")
             return
-        if name not in self.wrappers:
+        if name == "Residential" and not show_residential_section(self.app_state.project.project_type):
+            self.show("Commercial" if show_commercial_section(self.app_state.project.project_type) else "Landscape")
             return
-        for key, wrapper in self.wrappers.items():
-            if key == name:
-                wrapper.place(relx=0, rely=0, relwidth=1, relheight=1)
-                wrapper.lift()
-            else:
-                wrapper.place_forget()
-        page = self.pages.get(name)
-        if page and hasattr(page, "refresh"):
-            page.refresh()
+        if name == "Commercial" and not show_commercial_section(self.app_state.project.project_type):
+            self.show("Residential" if show_residential_section(self.app_state.project.project_type) else "Landscape")
+            return
+        self.pages[name].tkraise()
+        if hasattr(self.pages[name], "refresh"):
+            self.pages[name].refresh()
         for k, b in self.nav_btns.items():
             b.configure(fg_color=BRAND_ORANGE if k == name else "transparent")
 
     def _calc(self):
         try:
-            self.app_state.run_calculations()
+            self.app_state.auto_calculate()
         except Exception as ex:
             messagebox.showerror("Error", str(ex))
-
-    def _calc_and_show_stp(self):
-        self._calc()
-        self.show("STP")
 
     def _open_preview(self):
         self._calc()
@@ -4567,8 +4403,8 @@ class WaterDemandApp(ctk.CTk):
     def _new(self):
         if messagebox.askyesno("New", "Start new project?"):
             self.app_state = AppState()
-            for wrapper in self.wrappers.values():
-                wrapper.destroy()
+            for p in self.pages.values():
+                p.destroy()
             self._pages()
             self.show("Project")
 

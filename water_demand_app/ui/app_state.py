@@ -42,6 +42,13 @@ class AppState:
         self.results = calc.calculate()
         self.calculated_legacy = self.results.legacy_dict()
 
+    def auto_calculate(self) -> None:
+        """Recalculate whenever inputs change (no manual Calculate button)."""
+        try:
+            self.run_calculations()
+        except Exception:
+            self.results = None
+
     def load_defaults(self) -> None:
         if not self.residential:
             self.residential = [

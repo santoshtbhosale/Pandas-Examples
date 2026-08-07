@@ -6,7 +6,7 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from config.nbc_2026 import BRAND_NAVY, BRAND_ORANGE
+from config.nbc_2026 import BRAND_NAVY, BRAND_ORANGE, show_commercial_section, show_residential_section
 from services.database import init_db, list_projects, load_project_from_db
 from services.json_io import load_project_json, save_project_json
 from ui.app_state import AppState
@@ -86,16 +86,16 @@ class WaterDemandApp(ctk.CTk):
             self.nav_buttons[key] = btn
 
     def _create_pages(self) -> None:
-        self.frames["Project"] = ProjectPage(self.container, self.state, on_next=lambda: self.show_frame("Residential"))
+        self.frames["Project"] = ProjectPage(self.container, self.state, on_next=self._next_from_project)
         self.frames["Residential"] = ResidentialPage(
             self.container, self.state,
-            on_next=lambda: self.show_frame("Commercial"),
+            on_next=self._next_from_residential,
             on_back=lambda: self.show_frame("Project"),
         )
         self.frames["Commercial"] = CommercialPage(
             self.container, self.state,
             on_next=lambda: self.show_frame("Other"),
-            on_back=lambda: self.show_frame("Residential"),
+            on_back=self._back_from_commercial,
         )
         self.frames["Other"] = OtherPage(
             self.container, self.state,
@@ -116,11 +116,51 @@ class WaterDemandApp(ctk.CTk):
         for frame in self.frames.values():
             frame.grid(row=0, column=0, sticky="nsew")
 
+    def _next_from_project(self) -> None:
+        ptype = self.state.project.project_type
+        if show_residential_section(ptype):
+            self.show_frame("Residential")
+        elif show_commercial_section(ptype):
+            self.show_frame("Commercial")
+        else:
+            self.show_frame("Other")
+
+    def _next_from_residential(self) -> None:
+        if show_commercial_section(self.state.project.project_type):
+            self.show_frame("Commercial")
+        else:
+            self.show_frame("Other")
+
+    def _back_from_commercial(self) -> None:
+        if show_residential_section(self.state.project.project_type):
+            self.show_frame("Residential")
+        else:
+            self.show_frame("Project")
+
+    def _update_nav_visibility(self) -> None:
+        ptype = self.state.project.project_type
+        show_res = show_residential_section(ptype)
+        show_com = show_commercial_section(ptype)
+        if "Residential" in self.nav_buttons:
+            self.nav_buttons["Residential"].pack_forget()
+            if show_res:
+                self.nav_buttons["Residential"].pack(side="left", padx=4, pady=6)
+        if "Commercial" in self.nav_buttons:
+            self.nav_buttons["Commercial"].pack_forget()
+            if show_com:
+                self.nav_buttons["Commercial"].pack(side="left", padx=4, pady=6)
+
     def show_frame(self, page_name: str) -> None:
+        ptype = self.state.project.project_type
+        if page_name == "Residential" and not show_residential_section(ptype):
+            page_name = "Commercial" if show_commercial_section(ptype) else "Other"
+        if page_name == "Commercial" and not show_commercial_section(ptype):
+            page_name = "Residential" if show_residential_section(ptype) else "Other"
         frame = self.frames[page_name]
         frame.tkraise()
         if hasattr(frame, "refresh"):
             frame.refresh()
+        self._update_nav_visibility()
         for key, btn in self.nav_buttons.items():
             if key == page_name:
                 btn.configure(fg_color=BRAND_ORANGE, text_color="white")

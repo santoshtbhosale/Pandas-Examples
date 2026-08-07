@@ -3,7 +3,15 @@ from __future__ import annotations
 import customtkinter as ctk
 from tkinter import messagebox
 
-from config.nbc_2026 import BRAND_NAVY, BRAND_ORANGE, COMMERCIAL_TYPES, plot_choices
+from config.nbc_2026 import (
+    BRAND_NAVY,
+    BRAND_ORANGE,
+    COMMERCIAL_OCCUPANCY_TYPES,
+    COMMERCIAL_TYPES,
+    commercial_demand,
+    commercial_population,
+    plot_choices,
+)
 from models.commercial import CommercialUnit
 from ui.app_state import AppState
 from ui.components.scrollable_frame import ScrollablePage
@@ -23,14 +31,27 @@ class CommercialPage(ScrollablePage):
     def _build(self) -> None:
         header = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=8)
         header.pack(fill="x", padx=10, pady=(5, 10))
+        plot_text = "Single Plot" if len(plot_choices(self.state.project.plot_mode)) == 1 else "Plot A + B"
         ctk.CTkLabel(
-            header, text="Commercial Details (Plot A & B)", font=("Arial", 20, "bold"), text_color="white"
+            header,
+            text=f"Commercial Details ({plot_text})",
+            font=("Arial", 20, "bold"),
+            text_color="white",
         ).pack(pady=12)
+        ctk.CTkLabel(
+            header,
+            text="Select Occupancy Type and Area — Population & demand auto-calculate per NBC",
+            font=("Arial", 11),
+            text_color="#ECF0F1",
+        ).pack(pady=(0, 10))
 
         self.table_frame.pack(fill="both", expand=True, padx=15, pady=10)
-        headers = ["Plot", "Block", "Type", "Floor", "Area (sq.m)", "Pop (Auto)", ""]
+        headers = [
+            "Plot", "Block", "Occupancy Type", "Floor", "Area (sq.m)",
+            "Pop", "Dom", "Flush", "Total", "",
+        ]
         for i, h in enumerate(headers):
-            ctk.CTkLabel(self.table_frame, text=h, font=("Arial", 12, "bold")).grid(row=0, column=i, padx=4, pady=5)
+            ctk.CTkLabel(self.table_frame, text=h, font=("Arial", 11, "bold")).grid(row=0, column=i, padx=3, pady=5)
 
         if not self.state.commercial:
             self._add_default_row()
@@ -40,70 +61,108 @@ class CommercialPage(ScrollablePage):
 
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=10)
-        ctk.CTkButton(btn_frame, text="+ Add Commercial", command=lambda: self._add_row(), fg_color="#2980B9").grid(row=0, column=0, padx=10)
+        ctk.CTkButton(btn_frame, text="+ Add Commercial", command=lambda: self._add_row(), fg_color="#2980B9").grid(
+            row=0, column=0, padx=10
+        )
         ctk.CTkButton(btn_frame, text="<- Back", command=self.on_back, fg_color="gray").grid(row=0, column=1, padx=10)
         ctk.CTkButton(
-            btn_frame, text="Save & Next -> Other", command=self._save_and_next,
-            fg_color=BRAND_ORANGE, hover_color="#D06018"
+            btn_frame,
+            text="Save & Next ->",
+            command=self._save_and_next,
+            fg_color=BRAND_ORANGE,
+            hover_color="#D06018",
         ).grid(row=0, column=2, padx=10)
 
     def _add_default_row(self) -> None:
         self._add_row(CommercialUnit(
-            plot="Plot-A", block="COMM-A", comm_type="Shop - Ground Floor",
-            floor_label="Ground Floor (Shop)", area_sqm=437,
+            plot="Plot-A",
+            block="COMM-A",
+            comm_type="Retail Shop",
+            floor_label="Ground Floor",
+            area_sqm=437,
         ))
 
     def _add_row(self, unit: CommercialUnit | None = None) -> None:
         r = len(self.rows) + 1
-        type_values = list(COMMERCIAL_TYPES.keys())
+        type_values = list(COMMERCIAL_OCCUPANCY_TYPES)
+        default_type = unit.comm_type if unit else "Office"
+        if default_type not in type_values:
+            for alias, spec in COMMERCIAL_TYPES.items():
+                if alias == default_type or spec.label == default_type:
+                    default_type = spec.label if spec.label in type_values else type_values[0]
+                    break
+            else:
+                default_type = type_values[0]
+
         plot_var = ctk.StringVar(value=unit.plot if unit else plot_choices(self.state.project.plot_mode)[0])
         plot_cb = ctk.CTkComboBox(
-            self.table_frame, values=plot_choices(self.state.project.plot_mode), variable=plot_var, width=90
+            self.table_frame, values=plot_choices(self.state.project.plot_mode), variable=plot_var, width=85
         )
-        block_ent = ctk.CTkEntry(self.table_frame, width=80)
+        block_ent = ctk.CTkEntry(self.table_frame, width=75)
         block_ent.insert(0, unit.block if unit else "COMM-A")
-        type_var = ctk.StringVar(value=unit.comm_type if unit else "Shop - Ground Floor")
-        type_cb = ctk.CTkComboBox(self.table_frame, values=type_values, variable=type_var, width=150)
-        floor_ent = ctk.CTkEntry(self.table_frame, width=120)
+        type_var = ctk.StringVar(value=default_type)
+        type_cb = ctk.CTkComboBox(self.table_frame, values=type_values, variable=type_var, width=130)
+        floor_ent = ctk.CTkEntry(self.table_frame, width=100)
         floor_ent.insert(0, unit.floor_label if unit else "")
-        area_ent = ctk.CTkEntry(self.table_frame, width=90)
+        area_ent = ctk.CTkEntry(self.table_frame, width=80)
         area_ent.insert(0, str(unit.area_sqm if unit else ""))
-        pop_var = ctk.StringVar(value="0")
-        pop_lbl = ctk.CTkLabel(self.table_frame, textvariable=pop_var, width=70)
+        pop_lbl = ctk.CTkLabel(self.table_frame, text="0", width=55)
+        dom_lbl = ctk.CTkLabel(self.table_frame, text="0", width=60)
+        flu_lbl = ctk.CTkLabel(self.table_frame, text="0", width=60)
+        tot_lbl = ctk.CTkLabel(self.table_frame, text="0", width=60)
 
-        def update_pop(*_):
+        def update(*_):
             try:
-                from config.nbc_2026 import commercial_population
                 area = float(area_ent.get() or 0)
-                spec = COMMERCIAL_TYPES.get(type_var.get(), COMMERCIAL_TYPES["Shop - Ground Floor"])
-                pop_var.set(str(commercial_population(area, spec)))
+                spec = COMMERCIAL_TYPES.get(type_var.get(), COMMERCIAL_TYPES["Office"])
+                pop = commercial_population(area, spec)
+                dom, flu, tot = commercial_demand(pop, spec)
+                pop_lbl.configure(text=str(pop))
+                dom_lbl.configure(text=str(dom))
+                flu_lbl.configure(text=str(flu))
+                tot_lbl.configure(text=str(tot))
             except ValueError:
-                pop_var.set("0")
+                pop_lbl.configure(text="0")
+                dom_lbl.configure(text="0")
+                flu_lbl.configure(text="0")
+                tot_lbl.configure(text="0")
+            self.state.auto_calculate()
 
-        area_ent.bind("<KeyRelease>", update_pop)
-        type_var.trace_add("write", update_pop)
-        update_pop()
+        area_ent.bind("<KeyRelease>", update)
+        type_var.trace_add("write", update)
+        update()
 
-        plot_cb.grid(row=r, column=0, padx=4, pady=5)
-        block_ent.grid(row=r, column=1, padx=4, pady=5)
-        type_cb.grid(row=r, column=2, padx=4, pady=5)
-        floor_ent.grid(row=r, column=3, padx=4, pady=5)
-        area_ent.grid(row=r, column=4, padx=4, pady=5)
-        pop_lbl.grid(row=r, column=5, padx=4, pady=5)
+        plot_cb.grid(row=r, column=0, padx=3, pady=5)
+        block_ent.grid(row=r, column=1, padx=3, pady=5)
+        type_cb.grid(row=r, column=2, padx=3, pady=5)
+        floor_ent.grid(row=r, column=3, padx=3, pady=5)
+        area_ent.grid(row=r, column=4, padx=3, pady=5)
+        pop_lbl.grid(row=r, column=5, padx=3, pady=5)
+        dom_lbl.grid(row=r, column=6, padx=3, pady=5)
+        flu_lbl.grid(row=r, column=7, padx=3, pady=5)
+        tot_lbl.grid(row=r, column=8, padx=3, pady=5)
 
         def remove_row():
             for w in row_data["widgets"]:
                 w.destroy()
             self.rows = [row for row in self.rows if row["row_idx"] != r]
             self._regrid()
+            self.state.auto_calculate()
 
-        rm_btn = ctk.CTkButton(self.table_frame, text="X", width=30, fg_color="#C0392B", command=remove_row)
-        rm_btn.grid(row=r, column=6, padx=4, pady=5)
+        rm_btn = ctk.CTkButton(self.table_frame, text="X", width=28, fg_color="#C0392B", command=remove_row)
+        rm_btn.grid(row=r, column=9, padx=3, pady=5)
 
         row_data = {
-            "row_idx": r, "plot": plot_var, "block": block_ent, "type": type_var,
-            "floor": floor_ent, "area": area_ent, "pop_var": pop_var,
-            "widgets": [plot_cb, block_ent, type_cb, floor_ent, area_ent, pop_lbl, rm_btn],
+            "row_idx": r,
+            "plot": plot_var,
+            "block": block_ent,
+            "type": type_var,
+            "floor": floor_ent,
+            "area": area_ent,
+            "widgets": [
+                plot_cb, block_ent, type_cb, floor_ent, area_ent,
+                pop_lbl, dom_lbl, flu_lbl, tot_lbl, rm_btn,
+            ],
         }
         self.rows.append(row_data)
 
@@ -111,7 +170,7 @@ class CommercialPage(ScrollablePage):
         for i, row in enumerate(self.rows, 1):
             row["row_idx"] = i
             for j, widget in enumerate(row["widgets"]):
-                widget.grid(row=i, column=j, padx=4, pady=5)
+                widget.grid(row=i, column=j, padx=3, pady=5)
 
     def _save_and_next(self) -> None:
         units: list = []
@@ -128,6 +187,7 @@ class CommercialPage(ScrollablePage):
                         sort_order=idx,
                     ))
             self.state.commercial = units
+            self.state.auto_calculate()
             self.on_next()
         except ValidationError as exc:
             messagebox.showerror("Validation Error", exc.message)
