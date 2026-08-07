@@ -76,6 +76,7 @@ PLOT_MODE_LABELS: Dict[str, str] = {
     "Single Plot": PLOT_MODE_SINGLE,
 }
 PLOTS = ("Plot-A", "Plot-B")
+PLOT_SIMPLE = "Plot"
 
 # Project types
 PROJECT_TYPE_RESIDENTIAL = "residential"
@@ -164,6 +165,30 @@ def active_plots(plot_mode: str = PLOT_MODE_DUAL) -> Tuple[str, ...]:
 
 def plot_choices(plot_mode: str = PLOT_MODE_DUAL) -> List[str]:
     return list(active_plots(plot_mode))
+
+
+def plot_dropdown_choices(plot_mode: str = PLOT_MODE_DUAL) -> List[str]:
+    """Plot labels shown in residential/commercial row dropdowns."""
+    if plot_mode == PLOT_MODE_SINGLE:
+        return [PLOT_SIMPLE]
+    return [PLOT_SIMPLE, *PLOTS]
+
+
+def normalize_plot_for_calc(plot: str) -> str:
+    """Map UI label 'Plot' to internal Plot-A for calculations and exports."""
+    if plot == PLOT_SIMPLE:
+        return "Plot-A"
+    return plot
+
+
+def ui_plot_label(stored_plot: str, plot_mode: str = PLOT_MODE_DUAL) -> str:
+    """Convert stored plot key to the label shown in dropdowns."""
+    choices = plot_dropdown_choices(plot_mode)
+    if plot_mode == PLOT_MODE_SINGLE and stored_plot in (PLOT_SIMPLE, "Plot-A"):
+        return PLOT_SIMPLE
+    if stored_plot in choices:
+        return stored_plot
+    return choices[0]
 
 
 def project_type_key(label: str) -> str:

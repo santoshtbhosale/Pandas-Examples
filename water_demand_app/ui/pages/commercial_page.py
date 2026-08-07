@@ -8,9 +8,11 @@ from config.nbc_2026 import (
     BRAND_ORANGE,
     COMMERCIAL_OCCUPANCY_TYPES,
     COMMERCIAL_TYPES,
+    PLOT_MODE_SINGLE,
     commercial_demand,
     commercial_population,
-    plot_choices,
+    plot_dropdown_choices,
+    ui_plot_label,
 )
 from models.commercial import CommercialUnit
 from ui.app_state import AppState
@@ -28,10 +30,13 @@ class CommercialPage(ScrollablePage):
         self.table_frame = ctk.CTkFrame(self)
         self._build()
 
+    def _plot_values(self) -> list[str]:
+        return plot_dropdown_choices(self.state.project.plot_mode)
+
     def _build(self) -> None:
         header = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=8)
         header.pack(fill="x", padx=10, pady=(5, 10))
-        plot_text = "Single Plot" if len(plot_choices(self.state.project.plot_mode)) == 1 else "Plot A + B"
+        plot_text = "Single Plot" if self.state.project.plot_mode == PLOT_MODE_SINGLE else "Plot A + B"
         ctk.CTkLabel(
             header,
             text=f"Commercial Details ({plot_text})",
@@ -77,7 +82,7 @@ class CommercialPage(ScrollablePage):
 
     def _add_default_row(self) -> None:
         self._add_row(CommercialUnit(
-            plot="Plot-A",
+            plot=self._plot_values()[0],
             block="COMM-A",
             comm_type="Retail Shop",
             floor_label="Ground Floor",
@@ -96,10 +101,10 @@ class CommercialPage(ScrollablePage):
             else:
                 default_type = type_values[0]
 
-        plot_var = ctk.StringVar(value=unit.plot if unit else plot_choices(self.state.project.plot_mode)[0])
-        plot_cb = ctk.CTkComboBox(
-            self.table_frame, values=plot_choices(self.state.project.plot_mode), variable=plot_var, width=85
+        plot_var = ctk.StringVar(
+            value=ui_plot_label(unit.plot, self.state.project.plot_mode) if unit else self._plot_values()[0]
         )
+        plot_cb = ctk.CTkComboBox(self.table_frame, values=self._plot_values(), variable=plot_var, width=85)
         block_ent = ctk.CTkEntry(self.table_frame, width=75)
         block_ent.insert(0, unit.block if unit else "COMM-A")
         type_var = ctk.StringVar(value=default_type)

@@ -8,8 +8,10 @@ from config.nbc_2026 import (
     BRAND_ORANGE,
     BUILDING_CONFIG_EXAMPLES,
     BUILDING_TYPES,
-    plot_choices,
+    PLOT_MODE_SINGLE,
+    plot_dropdown_choices,
     residential_demand,
+    ui_plot_label,
 )
 from models.residential import ResidentialWing
 from ui.app_state import AppState
@@ -29,12 +31,12 @@ class ResidentialPage(ScrollablePage):
         self._build()
 
     def _plot_values(self) -> list[str]:
-        return plot_choices(self.state.project.plot_mode)
+        return plot_dropdown_choices(self.state.project.plot_mode)
 
     def _build(self) -> None:
         header = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=8)
         header.pack(fill="x", padx=10, pady=(5, 10))
-        plot_text = "Single Plot" if len(self._plot_values()) == 1 else "Plot A + B"
+        plot_text = "Single Plot" if self.state.project.plot_mode == PLOT_MODE_SINGLE else "Plot A + B"
         ctk.CTkLabel(
             header,
             text=f"Residential / Building Details ({plot_text})",
@@ -90,9 +92,10 @@ class ResidentialPage(ScrollablePage):
         self._update_subtotals()
 
     def _add_default_rows(self) -> None:
+        default_plot = self._plot_values()[0]
         for wing in [
-            ResidentialWing(plot="Plot-A", wing="WING - A", building_config="G+7", flats_2bhk=73, flats_3bhk=73),
-            ResidentialWing(plot="Plot-A", wing="WING - B", building_config="G+7", flats_2bhk=73, flats_3bhk=73),
+            ResidentialWing(plot=default_plot, wing="WING - A", building_config="G+7", flats_2bhk=73, flats_3bhk=73),
+            ResidentialWing(plot=default_plot, wing="WING - B", building_config="G+7", flats_2bhk=73, flats_3bhk=73),
         ]:
             self._add_row(wing)
 
@@ -104,7 +107,7 @@ class ResidentialPage(ScrollablePage):
         letter = chr(65 + count)
         self._add_row(
             ResidentialWing(
-                plot="Plot-A",
+                plot=self._plot_values()[0],
                 wing=f"BUNGLOW-{letter}",
                 building_config="G+1",
                 building_height_m=6.0,
@@ -116,7 +119,9 @@ class ResidentialPage(ScrollablePage):
     def _add_row(self, wing: ResidentialWing | None = None) -> None:
         r = len(self.rows) + 1
         config_values = list(BUILDING_CONFIG_EXAMPLES)
-        plot_var = ctk.StringVar(value=wing.plot if wing else self._plot_values()[0])
+        plot_var = ctk.StringVar(
+            value=ui_plot_label(wing.plot, self.state.project.plot_mode) if wing else self._plot_values()[0]
+        )
         plot_cb = ctk.CTkComboBox(self.table_frame, values=self._plot_values(), variable=plot_var, width=72)
         w_ent = ctk.CTkEntry(self.table_frame, width=78)
         w_ent.insert(0, wing.wing if wing else "")

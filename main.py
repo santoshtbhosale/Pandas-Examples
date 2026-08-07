@@ -109,6 +109,7 @@ PLOT_MODE_LABELS: Dict[str, str] = {
     "Single Plot": PLOT_MODE_SINGLE,
 }
 PLOTS = ("Plot-A", "Plot-B")
+PLOT_SIMPLE = "Plot"
 
 # Project types
 PROJECT_TYPE_RESIDENTIAL = "residential"
@@ -197,6 +198,30 @@ def active_plots(plot_mode: str = PLOT_MODE_DUAL) -> Tuple[str, ...]:
 
 def plot_choices(plot_mode: str = PLOT_MODE_DUAL) -> List[str]:
     return list(active_plots(plot_mode))
+
+
+def plot_dropdown_choices(plot_mode: str = PLOT_MODE_DUAL) -> List[str]:
+    """Plot labels shown in residential/commercial row dropdowns."""
+    if plot_mode == PLOT_MODE_SINGLE:
+        return [PLOT_SIMPLE]
+    return [PLOT_SIMPLE, *PLOTS]
+
+
+def normalize_plot_for_calc(plot: str) -> str:
+    """Map UI label 'Plot' to internal Plot-A for calculations and exports."""
+    if plot == PLOT_SIMPLE:
+        return "Plot-A"
+    return plot
+
+
+def ui_plot_label(stored_plot: str, plot_mode: str = PLOT_MODE_DUAL) -> str:
+    """Convert stored plot key to the label shown in dropdowns."""
+    choices = plot_dropdown_choices(plot_mode)
+    if plot_mode == PLOT_MODE_SINGLE and stored_plot in (PLOT_SIMPLE, "Plot-A"):
+        return PLOT_SIMPLE
+    if stored_plot in choices:
+        return stored_plot
+    return choices[0]
 
 
 def project_type_key(label: str) -> str:
@@ -908,12 +933,15 @@ class WaterDemandCalculator:
         results.total = self._calculate_totals(results.plots)
         return results
 
+    def _on_plot(self, item_plot: str, plot: str) -> bool:
+        return normalize_plot_for_calc(item_plot) == plot
+
     def _apply_auto_fire_tanks(self) -> None:
         for plot in self._plots:
             heights_types = [
                 (w.building_height_m, w.building_type)
                 for w in self.residential
-                if w.plot == plot and w.building_height_m > 0
+                if self._on_plot(w.plot, plot) and w.building_height_m > 0
             ]
             if heights_types:
                 max_height = max(h for h, _ in heights_types)
@@ -924,8 +952,8 @@ class WaterDemandCalculator:
 
     def _calculate_plot(self, plot: str) -> PlotResults:
         plot_res = PlotResults(plot=plot)
-        res_wings = [w for w in self.residential if w.plot == plot]
-        com_units = [c for c in self.commercial if c.plot == plot]
+        res_wings = [w for w in self.residential if self._on_plot(w.plot, plot)]
+        com_units = [c for c in self.commercial if self._on_plot(c.plot, plot)]
 
         for wing in sorted(res_wings, key=lambda w: w.sort_order):
             dom, flu, tot = residential_demand(wing.population)
@@ -3452,12 +3480,12 @@ class ResidentialPage(ScrollablePage):
         self._build()
 
     def _plot_values(self) -> list[str]:
-        return plot_choices(self.state.project.plot_mode)
+        return plot_dropdown_choices(self.state.project.plot_mode)
 
     def _build(self) -> None:
         header = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=8)
         header.pack(fill="x", padx=10, pady=(5, 10))
-        plot_text = "Single Plot" if len(self._plot_values()) == 1 else "Plot A + B"
+        plot_text = "Single Plot" if self.state.project.plot_mode == PLOT_MODE_SINGLE else "Plot A + B"
         ctk.CTkLabel(
             header,
             text=f"Residential / Building Details ({plot_text})",
@@ -3513,9 +3541,10 @@ class ResidentialPage(ScrollablePage):
         self._update_subtotals()
 
     def _add_default_rows(self) -> None:
+        default_plot = self._plot_values()[0]
         for wing in [
-            ResidentialWing(plot="Plot-A", wing="WING - A", building_config="G+7", flats_2bhk=73, flats_3bhk=73),
-            ResidentialWing(plot="Plot-A", wing="WING - B", building_config="G+7", flats_2bhk=73, flats_3bhk=73),
+            ResidentialWing(plot=default_plot, wing="WING - A", building_config="G+7", flats_2bhk=73, flats_3bhk=73),
+            ResidentialWing(plot=default_plot, wing="WING - B", building_config="G+7", flats_2bhk=73, flats_3bhk=73),
         ]:
             self._add_row(wing)
 
@@ -3527,7 +3556,7 @@ class ResidentialPage(ScrollablePage):
         letter = chr(65 + count)
         self._add_row(
             ResidentialWing(
-                plot="Plot-A",
+                plot=self._plot_values()[0],
                 wing=f"BUNGLOW-{letter}",
                 building_config="G+1",
                 building_height_m=6.0,
@@ -3539,7 +3568,9 @@ class ResidentialPage(ScrollablePage):
     def _add_row(self, wing: ResidentialWing | None = None) -> None:
         r = len(self.rows) + 1
         config_values = list(BUILDING_CONFIG_EXAMPLES)
-        plot_var = ctk.StringVar(value=wing.plot if wing else self._plot_values()[0])
+        plot_var = ctk.StringVar(
+            value=ui_plot_label(wing.plot, self.state.project.plot_mode) if wing else self._plot_values()[0]
+        )
         plot_cb = ctk.CTkComboBox(self.table_frame, values=self._plot_values(), variable=plot_var, width=72)
         w_ent = ctk.CTkEntry(self.table_frame, width=78)
         w_ent.insert(0, wing.wing if wing else "")
@@ -3738,10 +3769,13 @@ class CommercialPage(ScrollablePage):
         self.table_frame = ctk.CTkFrame(self)
         self._build()
 
+    def _plot_values(self) -> list[str]:
+        return plot_dropdown_choices(self.state.project.plot_mode)
+
     def _build(self) -> None:
         header = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=8)
         header.pack(fill="x", padx=10, pady=(5, 10))
-        plot_text = "Single Plot" if len(plot_choices(self.state.project.plot_mode)) == 1 else "Plot A + B"
+        plot_text = "Single Plot" if self.state.project.plot_mode == PLOT_MODE_SINGLE else "Plot A + B"
         ctk.CTkLabel(
             header,
             text=f"Commercial Details ({plot_text})",
@@ -3787,7 +3821,7 @@ class CommercialPage(ScrollablePage):
 
     def _add_default_row(self) -> None:
         self._add_row(CommercialUnit(
-            plot="Plot-A",
+            plot=self._plot_values()[0],
             block="COMM-A",
             comm_type="Retail Shop",
             floor_label="Ground Floor",
@@ -3806,10 +3840,10 @@ class CommercialPage(ScrollablePage):
             else:
                 default_type = type_values[0]
 
-        plot_var = ctk.StringVar(value=unit.plot if unit else plot_choices(self.state.project.plot_mode)[0])
-        plot_cb = ctk.CTkComboBox(
-            self.table_frame, values=plot_choices(self.state.project.plot_mode), variable=plot_var, width=85
+        plot_var = ctk.StringVar(
+            value=ui_plot_label(unit.plot, self.state.project.plot_mode) if unit else self._plot_values()[0]
         )
+        plot_cb = ctk.CTkComboBox(self.table_frame, values=self._plot_values(), variable=plot_var, width=85)
         block_ent = ctk.CTkEntry(self.table_frame, width=75)
         block_ent.insert(0, unit.block if unit else "COMM-A")
         type_var = ctk.StringVar(value=default_type)

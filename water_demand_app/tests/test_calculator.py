@@ -180,5 +180,18 @@ class TestNewFeatures(unittest.TestCase):
         self.assertEqual(results.plots["Plot-B"].total_population, 0)
         self.assertEqual(results.total["Total Population"], 20)
 
+    def test_plot_label_maps_to_plot_a(self):
+        project = ProjectData(plot_mode=PLOT_MODE_SINGLE)
+        calc = WaterDemandCalculator(
+            [ResidentialWing(plot="Plot", wing="A", flats_2bhk=10)],
+            [CommercialUnit(plot="Plot", block="COMM-A", comm_type="Office", area_sqm=100)],
+            OtherDetails(),
+            project,
+        )
+        results = calc.calculate()
+        self.assertEqual(results.plots["Plot-A"].res_population, 40)
+        self.assertGreater(results.plots["Plot-A"].com_population, 0)
+        self.assertEqual(results.plots["Plot-B"].total_population, 0)
+
 if __name__ == "__main__":
     unittest.main()
