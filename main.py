@@ -33,19 +33,6 @@ DB_PATH = os.path.join(APP_DIR, "water_demand.db")
 LOGO_PATH = os.path.join(APP_DIR, "logo.png")
 JSON_SCHEMA_VERSION = "1.0"
 
-# Rain Water Harvesting module lives under water_demand_app/rwh (separate from Water Demand)
-_WDA_ROOT = os.path.join(APP_DIR, "water_demand_app")
-if _WDA_ROOT not in sys.path:
-    sys.path.insert(0, _WDA_ROOT)
-try:
-    from rwh.database import init_rwh_db
-    from ui.pages.rwh_page import RWHPage
-    RWH_AVAILABLE = True
-except Exception:
-    RWH_AVAILABLE = False
-    init_rwh_db = None  # type: ignore
-    RWHPage = None  # type: ignore
-
 
 # ==================== config/nbc_2026.py ====================
 """NBC-2026 water demand constants and calculation parameters."""
@@ -2266,6 +2253,7 @@ def export_pdf(
 
 
 
+
 HEADER_FILL = PatternFill("solid", fgColor=BRAND_DARK_GRAY.replace("#", ""))
 NAVY_FILL = PatternFill("solid", fgColor=BRAND_NAVY.replace("#", ""))
 ORANGE_FILL = PatternFill("solid", fgColor=BRAND_ORANGE.replace("#", ""))
@@ -2603,14 +2591,32 @@ class TemplateExcelExporter:
 
     @staticmethod
     def _set(ws, cell: str, value: Any) -> None:
-        ws[cell] = value
+        target = ws[cell]
+        if type(target).__name__ == "MergedCell":
+            for merged in ws.merged_cells.ranges:
+                if target.coordinate in merged:
+                    ws.cell(row=merged.min_row, column=merged.min_col).value = value
+                    return
+        target.value = value
 
     @staticmethod
-    def _find_row(ws, needle: str, column: int = 1, start: int = 1) -> Optional[int]:
-        needle_l = needle.lower()
+    def _find_row(
+        ws,
+        needle: str,
+        column: int = 1,
+        start: int = 1,
+        exact: bool = False,
+    ) -> Optional[int]:
+        needle_l = needle.lower().strip()
         for row in range(start, ws.max_row + 1):
             val = ws.cell(row=row, column=column).value
-            if val is not None and needle_l in str(val).lower():
+            if val is None:
+                continue
+            text = str(val).lower().strip()
+            if exact:
+                if text == needle_l:
+                    return row
+            elif needle_l in text:
                 return row
         return None
 
@@ -2709,6 +2715,25 @@ class TemplateExcelExporter:
             for col, val in zip("CDEFGHI", (c, d, e, f, g, h, i)):
                 self._set(ws, f"{col}{row}", val)
 
+    @staticmethod
+    def _copy_row_style(ws, src_row: int, dest_row: int, max_col: int = 9) -> None:
+        for col in range(1, max_col + 1):
+            src = ws.cell(row=src_row, column=col)
+            dst = ws.cell(row=dest_row, column=col)
+            dst.value = None
+            if src.has_style:
+                dst._style = copy(src._style)
+            dst.number_format = src.number_format
+
+    @staticmethod
+    def _insert_rows_before(ws, before_row: int, count: int, style_row: int, max_col: int = 9) -> None:
+        if count <= 0:
+            return
+        ws.insert_rows(before_row, count)
+        TemplateExcelExporter._copy_row_style(ws, style_row, style_row, max_col)
+        for offset in range(count):
+            TemplateExcelExporter._copy_row_style(ws, style_row, before_row + offset, max_col)
+
     def _populate_plot_demand(self, wb, plot_name: str) -> None:
         sheet_name = f"{plot_name} Demand"
         if sheet_name not in wb.sheetnames:
@@ -2717,15 +2742,17 @@ class TemplateExcelExporter:
         plot = self.results.plots[plot_name]
 
         res_hdr = self._find_row(ws, "SR.NO", start=1)
-        sub_row = self._find_row(ws, "SUB-TOTAL", column=2)
-        comm_row = self._find_row(ws, "COMMERCIAL")
-        other_row = self._find_row(ws, "OTHER MEASURES")
-
+        sub_row = self._find_row(ws, "SUB-TOTAL", column=2, exact=True)
         if res_hdr and sub_row:
             data_start = res_hdr + 1
+            wings = plot.residential_wings
+            available = max(0, sub_row - data_start)
+            if len(wings) > available:
+                self._insert_rows_before(ws, sub_row, len(wings) - available, data_start, 8)
+                sub_row = self._find_row(ws, "SUB-TOTAL", column=2, exact=True)
             self._clear_range(ws, data_start, sub_row - 1, 1, 8)
             row = data_start
-            for idx, wing in enumerate(plot.residential_wings, 1):
+            for idx, wing in enumerate(wings, 1):
                 pop_per = wing.pop_per_flat
                 if wing.flats > 0 and wing.population > 0:
                     pop_per = round(wing.population / wing.flats)
@@ -2743,11 +2770,20 @@ class TemplateExcelExporter:
             self._set(ws, f"G{sub_row}", plot.res_flushing_lpd)
             self._set(ws, f"H{sub_row}", plot.res_total_lpd)
 
+        comm_row = self._find_row(ws, "COMMERCIAL", exact=True)
+        other_row = self._find_row(ws, "OTHER MEASURES", exact=True)
         if comm_row and other_row:
             hdr = comm_row + 1
-            self._clear_range(ws, hdr + 1, other_row - 2, 1, 9)
-            row = hdr + 1
-            for idx, unit in enumerate(plot.commercial_units, 1):
+            data_start = hdr + 1
+            units = plot.commercial_units
+            gap_before_other = 1 if other_row - data_start > 0 else 0
+            available = max(0, other_row - data_start - gap_before_other)
+            if len(units) > available:
+                self._insert_rows_before(ws, other_row, len(units) - available, data_start, 9)
+                other_row = self._find_row(ws, "OTHER MEASURES", exact=True)
+            self._clear_range(ws, data_start, other_row - 2, 1, 9)
+            row = data_start
+            for idx, unit in enumerate(units, 1):
                 label = unit.floor_label or unit.comm_type
                 self._set(ws, f"A{row}", idx)
                 self._set(ws, f"B{row}", unit.block)
@@ -2760,6 +2796,7 @@ class TemplateExcelExporter:
                 self._set(ws, f"I{row}", unit.total_lpd)
                 row += 1
 
+        other_row = self._find_row(ws, "OTHER MEASURES", exact=True)
         if other_row:
             for label, value in (
                 ("Landscape", plot.landscape_dry_lpd),
@@ -2770,7 +2807,7 @@ class TemplateExcelExporter:
                 row = self._find_row(ws, label, start=other_row)
                 if row:
                     self._set(ws, f"B{row}", value)
-            grand = self._find_row(ws, "GRAND TOTAL", start=other_row)
+            grand = self._find_row(ws, "GRAND TOTAL", start=other_row, exact=True)
             if grand:
                 self._set(ws, f"B{grand}", plot.dry_total_water_lpd)
 
@@ -2780,8 +2817,14 @@ class TemplateExcelExporter:
             return
         ws = wb[sheet_name]
         plot = self.results.plots[plot_name]
-        oht_hdr = self._find_row(ws, "OHT DETAILS")
+        oht_hdr = self._find_row(ws, "OHT DETAILS", start=3, exact=True)
         ugt_end = (oht_hdr - 2) if oht_hdr else 20
+        sections = plot.ugt_sections
+        available = max(0, ugt_end - 4 + 1)
+        if len(sections) > available and oht_hdr:
+            self._insert_rows_before(ws, oht_hdr, len(sections) - available, 4, 6)
+            oht_hdr = self._find_row(ws, "OHT DETAILS", start=3, exact=True)
+            ugt_end = oht_hdr - 2
         self._clear_range(ws, 4, ugt_end, 1, 6)
         row = 4
         for idx, sec in enumerate(plot.ugt_sections, 1):
@@ -2795,7 +2838,11 @@ class TemplateExcelExporter:
 
         if oht_hdr:
             hdr = oht_hdr + 1
-            self._clear_range(ws, hdr + 1, hdr + 20, 1, 6)
+            oht_rows = plot.oht_rows
+            available = 20
+            if len(oht_rows) > available:
+                self._insert_rows_before(ws, hdr + available + 1, len(oht_rows) - available, hdr + 1, 6)
+            self._clear_range(ws, hdr + 1, hdr + max(len(oht_rows), 20), 1, 6)
             row = hdr + 1
             for idx, oht in enumerate(plot.oht_rows, 1):
                 self._set(ws, f"A{row}", idx)

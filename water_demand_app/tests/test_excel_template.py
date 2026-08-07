@@ -59,6 +59,57 @@ class TestTemplateExcelExport(unittest.TestCase):
         finally:
             os.unlink(out_path)
 
+    def test_punavale_export_grand_total_and_commercial_rows(self) -> None:
+        residential = [
+            ResidentialWing(plot="Plot-A", wing="WING - A", flats=146, pop_per_flat=5),
+            ResidentialWing(plot="Plot-A", wing="WING - B", flats=146, pop_per_flat=5),
+            ResidentialWing(plot="Plot-A", wing="BUNGLOW-A", flats=1, pop_per_flat=5),
+            ResidentialWing(plot="Plot-A", wing="BUNGLOW-B", flats=1, pop_per_flat=5),
+            ResidentialWing(plot="Plot-B", wing="WING - C", flats=56, pop_per_flat=5),
+            ResidentialWing(plot="Plot-B", wing="WING - D", flats=56, pop_per_flat=5),
+            ResidentialWing(plot="Plot-B", wing="WING - E", flats=56, pop_per_flat=5),
+            ResidentialWing(plot="Plot-B", wing="WING - F", flats=56, pop_per_flat=5),
+        ]
+        commercial = [
+            CommercialUnit(plot="Plot-A", block="COMM-A", comm_type="Shop - Ground Floor", floor_label="Ground Floor (Shop)", area_sqm=437),
+            CommercialUnit(plot="Plot-A", block="COMM-A", comm_type="Shop - Upper Floor", floor_label="1st Floor (Shop)", area_sqm=437),
+            CommercialUnit(plot="Plot-A", block="COMM-A", comm_type="Office", floor_label="2nd to 6th (Office)", area_sqm=2185),
+            CommercialUnit(plot="Plot-A", block="COMM-A", comm_type="Restaurant", floor_label="7th (Restaurant)", area_sqm=437),
+            CommercialUnit(plot="Plot-A", block="COMM-B", comm_type="Shop - Ground Floor", floor_label="Gr.+Mezz Floor (Shop)", area_sqm=213),
+            CommercialUnit(plot="Plot-A", block="COMM-B", comm_type="Office", floor_label="1st & 2nd (office)", area_sqm=484),
+            CommercialUnit(plot="Plot-A", block="COMM-B", comm_type="Office", floor_label="3rd & 4th (office)", area_sqm=924),
+            CommercialUnit(plot="Plot-B", block="COMM-C", comm_type="Shop - Ground Floor", floor_label="Ground & Mezz", area_sqm=339),
+        ]
+        other = OtherDetails(
+            landscape_area={"Plot-A": 765.0, "Plot-B": 762.0},
+            fire_tank={"Plot-A": 300000.0, "Plot-B": 230000.0},
+        )
+        project = ProjectData(project_name="PUNAVALE", client_name="CLIENT", engineer_name="Akash")
+        calc = WaterDemandCalculator(residential, commercial, other, project)
+        results = calc.calculate()
+
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+            out_path = tmp.name
+        try:
+            export_excel(out_path, project, results)
+            wb = load_workbook(out_path)
+            demand = wb["Plot-A Demand"]
+            grand_row = None
+            for row in range(1, demand.max_row + 1):
+                if demand.cell(row=row, column=1).value == "GRAND TOTAL":
+                    grand_row = row
+                    break
+            self.assertIsNotNone(grand_row)
+            self.assertEqual(demand.cell(row=grand_row, column=2).value, results.plots["Plot-A"].dry_total_water_lpd)
+            blocks = {
+                demand.cell(row=row, column=2).value
+                for row in range(1, grand_row)
+                if demand.cell(row=row, column=2).value in {"COMM-A", "COMM-B"}
+            }
+            self.assertEqual(blocks, {"COMM-A", "COMM-B"})
+        finally:
+            os.unlink(out_path)
+
 
 if __name__ == "__main__":
     unittest.main()
