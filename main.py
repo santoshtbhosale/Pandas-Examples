@@ -2574,16 +2574,13 @@ class ExcelExporter:
         self._auto_width(ws)
 
 
-        self._auto_width(ws)
-
-
 TEMPLATE_PATH = os.path.normpath(
     os.path.join(APP_DIR, "..", "templates", "WaterDemand_Template.xlsx")
 )
 
 
 class TemplateExcelExporter:
-    """Populate the master Excel template without altering formatting."""
+    """Populate the master Excel template — formatting preserved, data cells only."""
 
     def __init__(self, project: ProjectData, results: CalculationResults) -> None:
         self.project = project
@@ -2594,18 +2591,43 @@ class TemplateExcelExporter:
         wb = load_workbook(file_path)
         self._populate_cover(wb)
         self._populate_consolidated(wb)
-        for plot in active_plots(self.project.plot_mode):
-            self._populate_plot_sheets(wb, plot)
+        for plot in ("Plot-A", "Plot-B"):
+            if plot in active_plots(self.project.plot_mode):
+                self._populate_plot_demand(wb, plot)
+                self._populate_ugt_oht(wb, plot)
+                self._populate_stp(wb, plot)
+            else:
+                self._clear_plot_sheets(wb, plot)
         self._populate_summary(wb)
         wb.save(file_path)
 
-    def _set(self, ws, cell: str, value: Any) -> None:
+    @staticmethod
+    def _set(ws, cell: str, value: Any) -> None:
         ws[cell] = value
 
+    @staticmethod
+    def _find_row(ws, needle: str, column: int = 1, start: int = 1) -> Optional[int]:
+        needle_l = needle.lower()
+        for row in range(start, ws.max_row + 1):
+            val = ws.cell(row=row, column=column).value
+            if val is not None and needle_l in str(val).lower():
+                return row
+        return None
+
+    @staticmethod
+    def _clear_range(ws, start_row: int, end_row: int, start_col: int, end_col: int) -> None:
+        for row in range(start_row, end_row + 1):
+            for col in range(start_col, end_col + 1):
+                cell = ws.cell(row=row, column=col)
+                if cell.value is not None and not str(cell.value).startswith("="):
+                    cell.value = None
+
     def _populate_cover(self, wb) -> None:
-        ws = wb["Cover"] if "Cover" in wb.sheetnames else wb.active
+        if "Cover" not in wb.sheetnames:
+            return
+        ws = wb["Cover"]
         rev = self.project.revision
-        mapping = {
+        fields = {
             "B4": self.project.project_name,
             "B5": self.project.client_name,
             "B6": self.project.project_location,
@@ -2619,11 +2641,8 @@ class TemplateExcelExporter:
             "E12": rev.checked_by,
             "F12": rev.approved_by,
         }
-        for cell, val in mapping.items():
-            try:
-                self._set(ws, cell, val)
-            except Exception:
-                pass
+        for cell, val in fields.items():
+            self._set(ws, cell, val)
 
     def _populate_consolidated(self, wb) -> None:
         if "Consolidated" not in wb.sheetnames:
@@ -2632,89 +2651,221 @@ class TemplateExcelExporter:
         pa = self.results.plots["Plot-A"]
         pb = self.results.plots["Plot-B"]
         tot = self.results.total
+        single = self.project.plot_mode == PLOT_MODE_SINGLE
         rows = [
-            (4, pa.num_buildings_res, pa.num_buildings_com, pa.num_buildings_res + pa.num_buildings_com,
-             pb.num_buildings_res, pb.num_buildings_com, pb.num_buildings_res + pb.num_buildings_com,
-             pa.num_buildings_res + pa.num_buildings_com + pb.num_buildings_res + pb.num_buildings_com),
-            (5, pa.total_flats, 0, pa.total_flats, pb.total_flats, 0, pb.total_flats, tot.get("Total Flats", 0)),
-            (6, pa.res_population, pa.com_population, pa.total_population,
-             pb.res_population, pb.com_population, pb.total_population, tot.get("Total Population", 0)),
-            (7, pa.res_total_lpd + pa.com_total_lpd, 0, pa.dry_total_water_lpd,
-             pb.res_total_lpd + pb.com_total_lpd, 0, pb.dry_total_water_lpd, tot.get("Total Water (LPD)", 0)),
-            (8, pa.stp_capacity_kld, 0, pa.stp_capacity_kld,
-             pb.stp_capacity_kld, 0, pb.stp_capacity_kld, tot.get("Total STP Capacity (KLD)", 0)),
+            (
+                4,
+                pa.num_buildings_res,
+                pa.num_buildings_com,
+                pa.num_buildings_res + pa.num_buildings_com,
+                0 if single else pb.num_buildings_res,
+                0 if single else pb.num_buildings_com,
+                0 if single else pb.num_buildings_res + pb.num_buildings_com,
+                pa.num_buildings_res + pa.num_buildings_com
+                + (0 if single else pb.num_buildings_res + pb.num_buildings_com),
+            ),
+            (
+                5,
+                pa.total_flats,
+                0,
+                pa.total_flats,
+                0 if single else pb.total_flats,
+                0,
+                0 if single else pb.total_flats,
+                tot.get("Total Flats", pa.total_flats),
+            ),
+            (
+                6,
+                pa.res_population,
+                pa.com_population,
+                pa.total_population,
+                0 if single else pb.res_population,
+                0 if single else pb.com_population,
+                0 if single else pb.total_population,
+                tot.get("Total Population", pa.total_population),
+            ),
+            (
+                7,
+                pa.res_total_lpd + pa.com_total_lpd,
+                0,
+                pa.dry_total_water_lpd,
+                0 if single else pb.res_total_lpd + pb.com_total_lpd,
+                0,
+                0 if single else pb.dry_total_water_lpd,
+                tot.get("Total Water (LPD)", pa.dry_total_water_lpd),
+            ),
+            (
+                8,
+                pa.stp_capacity_kld,
+                0,
+                pa.stp_capacity_kld,
+                0 if single else pb.stp_capacity_kld,
+                0,
+                0 if single else pb.stp_capacity_kld,
+                tot.get("Total STP Capacity (KLD)", pa.stp_capacity_kld),
+            ),
         ]
         for row, c, d, e, f, g, h, i in rows:
             for col, val in zip("CDEFGHI", (c, d, e, f, g, h, i)):
-                try:
-                    self._set(ws, f"{col}{row}", val)
-                except Exception:
-                    pass
+                self._set(ws, f"{col}{row}", val)
 
-    def _populate_plot_sheets(self, wb, plot_name: str) -> None:
+    def _populate_plot_demand(self, wb, plot_name: str) -> None:
+        sheet_name = f"{plot_name} Demand"
+        if sheet_name not in wb.sheetnames:
+            return
+        ws = wb[sheet_name]
         plot = self.results.plots[plot_name]
-        demand_name = f"{plot_name} Demand"
-        if demand_name in wb.sheetnames:
-            ws = wb[demand_name]
-            row = 5
-            for idx, w in enumerate(plot.residential_wings, 1):
-                try:
-                    self._set(ws, f"A{row}", idx)
-                    self._set(ws, f"B{row}", w.wing)
-                    self._set(ws, f"C{row}", w.flats)
-                    self._set(ws, f"E{row}", w.population)
-                    self._set(ws, f"F{row}", w.domestic_lpd)
-                    self._set(ws, f"G{row}", w.flushing_lpd)
-                    self._set(ws, f"H{row}", w.kitchen_water_lpd)
-                    self._set(ws, f"I{row}", w.total_lpd)
-                    row += 1
-                except Exception:
-                    pass
-            try:
-                self._set(ws, f"E{row}", plot.res_population)
-                self._set(ws, f"F{row}", plot.res_domestic_lpd)
-                self._set(ws, f"G{row}", plot.res_flushing_lpd)
-                self._set(ws, f"H{row}", plot.kitchen_water_lpd)
-                self._set(ws, f"I{row}", plot.res_total_lpd)
-            except Exception:
-                pass
 
-        ugt_name = f"{plot_name} UGT-OHT"
-        if ugt_name in wb.sheetnames:
-            ws = wb[ugt_name]
-            row = 4
-            for idx, sec in enumerate(plot.ugt_sections, 1):
-                try:
-                    self._set(ws, f"A{row}", idx)
-                    self._set(ws, f"B{row}", sec.description)
-                    self._set(ws, f"C{row}", sec.water_requirement_lpd)
-                    self._set(ws, f"D{row}", sec.storage_days)
-                    self._set(ws, f"E{row}", sec.total_storage_liters)
-                    self._set(ws, f"F{row}", sec.total_storage_kld)
-                    row += 1
-                except Exception:
-                    pass
-            try:
-                self._set(ws, f"B{row + 2}", plot.fire_tank_liters)
-            except Exception:
-                pass
+        res_hdr = self._find_row(ws, "SR.NO", start=1)
+        sub_row = self._find_row(ws, "SUB-TOTAL", column=2)
+        comm_row = self._find_row(ws, "COMMERCIAL")
+        other_row = self._find_row(ws, "OTHER MEASURES")
 
-        stp_name = f"{plot_name} STP"
-        if stp_name in wb.sheetnames:
-            ws = wb[stp_name]
-            row = 4
-            for stp in plot.stp_sections:
-                try:
-                    self._set(ws, f"A{row}", 1)
-                    self._set(ws, f"B{row}", "Total Water Requirement")
-                    self._set(ws, f"C{row}", stp.total_water_lpd)
-                    row += 1
-                    self._set(ws, f"A{row}", 2)
-                    self._set(ws, f"B{row}", "Say STP Capacity")
-                    self._set(ws, f"C{row}", stp.say_stp_kld)
-                    row += 3
-                except Exception:
-                    pass
+        if res_hdr and sub_row:
+            data_start = res_hdr + 1
+            self._clear_range(ws, data_start, sub_row - 1, 1, 8)
+            row = data_start
+            for idx, wing in enumerate(plot.residential_wings, 1):
+                pop_per = wing.pop_per_flat
+                if wing.flats > 0 and wing.population > 0:
+                    pop_per = round(wing.population / wing.flats)
+                self._set(ws, f"A{row}", idx)
+                self._set(ws, f"B{row}", wing.wing)
+                self._set(ws, f"C{row}", wing.flats)
+                self._set(ws, f"D{row}", pop_per)
+                self._set(ws, f"E{row}", wing.population)
+                self._set(ws, f"F{row}", wing.domestic_lpd)
+                self._set(ws, f"G{row}", wing.flushing_lpd)
+                self._set(ws, f"H{row}", wing.total_lpd)
+                row += 1
+            self._set(ws, f"E{sub_row}", plot.res_population)
+            self._set(ws, f"F{sub_row}", plot.res_domestic_lpd)
+            self._set(ws, f"G{sub_row}", plot.res_flushing_lpd)
+            self._set(ws, f"H{sub_row}", plot.res_total_lpd)
+
+        if comm_row and other_row:
+            hdr = comm_row + 1
+            self._clear_range(ws, hdr + 1, other_row - 2, 1, 9)
+            row = hdr + 1
+            for idx, unit in enumerate(plot.commercial_units, 1):
+                label = unit.floor_label or unit.comm_type
+                self._set(ws, f"A{row}", idx)
+                self._set(ws, f"B{row}", unit.block)
+                self._set(ws, f"C{row}", label)
+                self._set(ws, f"D{row}", unit.area_sqm)
+                self._set(ws, f"E{row}", unit.density)
+                self._set(ws, f"F{row}", unit.population)
+                self._set(ws, f"G{row}", unit.domestic_lpd)
+                self._set(ws, f"H{row}", unit.flushing_lpd)
+                self._set(ws, f"I{row}", unit.total_lpd)
+                row += 1
+
+        if other_row:
+            for label, value in (
+                ("Landscape", plot.landscape_dry_lpd),
+                ("Swimming Pool", plot.swimming_pool_lpd if plot.swimming_pool_lpd else "NA"),
+                ("HVAC", plot.hvac_lpd),
+                ("Kitchen", plot.kitchen_water_lpd),
+            ):
+                row = self._find_row(ws, label, start=other_row)
+                if row:
+                    self._set(ws, f"B{row}", value)
+            grand = self._find_row(ws, "GRAND TOTAL", start=other_row)
+            if grand:
+                self._set(ws, f"B{grand}", plot.dry_total_water_lpd)
+
+    def _populate_ugt_oht(self, wb, plot_name: str) -> None:
+        sheet_name = f"{plot_name} UGT-OHT"
+        if sheet_name not in wb.sheetnames:
+            return
+        ws = wb[sheet_name]
+        plot = self.results.plots[plot_name]
+        oht_hdr = self._find_row(ws, "OHT DETAILS")
+        ugt_end = (oht_hdr - 2) if oht_hdr else 20
+        self._clear_range(ws, 4, ugt_end, 1, 6)
+        row = 4
+        for idx, sec in enumerate(plot.ugt_sections, 1):
+            self._set(ws, f"A{row}", idx)
+            self._set(ws, f"B{row}", sec.description)
+            self._set(ws, f"C{row}", sec.water_requirement_lpd)
+            self._set(ws, f"D{row}", sec.storage_days)
+            self._set(ws, f"E{row}", sec.total_storage_liters)
+            self._set(ws, f"F{row}", sec.total_storage_kld)
+            row += 1
+
+        if oht_hdr:
+            hdr = oht_hdr + 1
+            self._clear_range(ws, hdr + 1, hdr + 20, 1, 6)
+            row = hdr + 1
+            for idx, oht in enumerate(plot.oht_rows, 1):
+                self._set(ws, f"A{row}", idx)
+                self._set(ws, f"B{row}", oht["wing"])
+                self._set(ws, f"C{row}", oht["domestic_kld"])
+                self._set(ws, f"D{row}", oht["flushing_kld"])
+                self._set(ws, f"E{row}", oht["fire_break_kld"])
+                self._set(ws, f"F{row}", oht["fire_oht_kld"])
+                row += 1
+
+    def _populate_stp(self, wb, plot_name: str) -> None:
+        sheet_name = f"{plot_name} STP"
+        if sheet_name not in wb.sheetnames:
+            return
+        ws = wb[sheet_name]
+        plot = self.results.plots[plot_name]
+        stp_labels = [
+            "Total Water Requirement",
+            "Sewage Generation @90%",
+            "Capacity of Sewage Generation",
+            "Say STP Capacity",
+            "Treated Water After Filtration",
+            "Reuse Water for Flushing",
+            "Reuse Water for Landscape",
+            "Reuse Water for HVAC",
+            "Excess Treated Water",
+        ]
+        stp_data = []
+        for stp in plot.stp_sections:
+            stp_data.append(
+                (
+                    f"STP FOR {stp.scope}",
+                    [
+                        (stp.total_water_lpd, "LITERS/DAY"),
+                        (stp.sewage_lpd, "LITERS/DAY"),
+                        (stp.sewage_kld, "KLD"),
+                        (stp.say_stp_kld, "KLD"),
+                        (stp.treated_water_lpd, "LITERS/DAY"),
+                        (stp.reuse_flushing_lpd, "LITERS/DAY"),
+                        (stp.reuse_landscape_lpd, "LITERS/DAY"),
+                        (stp.reuse_hvac_lpd, "LITERS/DAY"),
+                        (stp.excess_treated_lpd, "LITERS/DAY"),
+                    ],
+                )
+            )
+
+        row = 3
+        for title, rows in stp_data:
+            title_row = self._find_row(ws, title, start=row)
+            if not title_row:
+                ws.cell(row=row, column=1, value=title)
+                title_row = row
+            hdr = title_row + 1
+            data_start = hdr + 1
+            self._clear_range(ws, data_start, data_start + 8, 1, 4)
+            for idx, (desc, (cap, unit)) in enumerate(zip(stp_labels, rows), 1):
+                r = data_start + idx - 1
+                self._set(ws, f"A{r}", idx)
+                self._set(ws, f"B{r}", desc)
+                self._set(ws, f"C{r}", cap)
+                self._set(ws, f"D{r}", unit)
+            row = data_start + 12
+
+    def _clear_plot_sheets(self, wb, plot_name: str) -> None:
+        for suffix in (" Demand", " UGT-OHT", " STP"):
+            name = f"{plot_name}{suffix}"
+            if name not in wb.sheetnames:
+                continue
+            ws = wb[name]
+            self._clear_range(ws, 5, ws.max_row, 1, 12)
 
     def _populate_summary(self, wb) -> None:
         if "Summary" not in wb.sheetnames:
@@ -2723,24 +2874,22 @@ class TemplateExcelExporter:
         tot = self.results.total
         pa = self.results.plots["Plot-A"]
         pb = self.results.plots["Plot-B"]
-        mapping = {
+        single = self.project.plot_mode == PLOT_MODE_SINGLE
+        fields = {
             "B3": self.project.project_name,
             "B4": self.project.client_name,
             "B5": self.project.project_location,
             "B6": self.project.engineer_name,
             "B7": self.project.date,
             "B9": pa.stp_capacity_kld,
-            "B10": pb.stp_capacity_kld,
-            "B11": tot.get("Total Water (LPD)", 0),
-            "B12": tot.get("Total STP Capacity (KLD)", 0),
-            "B13": tot.get("Total Population", 0),
-            "B14": tot.get("Total Flats", 0),
+            "B10": 0 if single else pb.stp_capacity_kld,
+            "B11": tot.get("Total Water (LPD)", pa.dry_total_water_lpd),
+            "B12": tot.get("Total STP Capacity (KLD)", pa.stp_capacity_kld),
+            "B13": tot.get("Total Population", pa.total_population),
+            "B14": tot.get("Total Flats", pa.total_flats),
         }
-        for cell, val in mapping.items():
-            try:
-                self._set(ws, cell, val)
-            except Exception:
-                pass
+        for cell, val in fields.items():
+            self._set(ws, cell, val)
 
 
 def export_excel(file_path: str, project: ProjectData, results: CalculationResults) -> None:
