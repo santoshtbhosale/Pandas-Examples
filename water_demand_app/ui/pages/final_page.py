@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
+from typing import Callable, Optional
 
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 
-from config.nbc_2026 import BRAND_NAVY, BRAND_ORANGE
+from config.nbc_2026 import BRAND_NAVY, BRAND_ORANGE, plot_choices
 from services.database import save_project
 from services.excel_exporter import export_excel
 from services.json_io import save_project_json
@@ -17,10 +18,17 @@ from ui.components.validation import safe_execute
 
 
 class FinalPage(ScrollablePage):
-    def __init__(self, master, state: AppState, on_back) -> None:
+    def __init__(
+        self,
+        master,
+        state: AppState,
+        on_back,
+        on_generate_all: Optional[Callable[[], None]] = None,
+    ) -> None:
         super().__init__(master)
         self.state = state
         self.on_back = on_back
+        self.on_generate_all = on_generate_all
         self.summary_label = None
         self.detail_text = None
         self._build()
@@ -28,12 +36,29 @@ class FinalPage(ScrollablePage):
     def _build(self) -> None:
         header = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=8)
         header.pack(fill="x", padx=10, pady=(5, 10))
-        ctk.CTkLabel(header, text="Calculations Ready!", font=("Arial", 22, "bold"), text_color="white").pack(pady=12)
+        ctk.CTkLabel(header, text="Generate Report", font=("Arial", 22, "bold"), text_color="white").pack(pady=12)
+        ctk.CTkLabel(
+            header,
+            text="Calculate, validate, export PDF & Excel, save project, and open preview",
+            font=("Arial", 11),
+            text_color="#DDDDDD",
+        ).pack(pady=(0, 10))
+
+        if self.on_generate_all:
+            ctk.CTkButton(
+                self,
+                text="Generate Report",
+                command=self.on_generate_all,
+                fg_color=BRAND_ORANGE,
+                hover_color="#D06018",
+                height=48,
+                font=("Arial", 16, "bold"),
+            ).pack(pady=(5, 10), padx=20, fill="x")
 
         self.summary_label = ctk.CTkLabel(self, text="", font=("Arial", 15, "bold"), justify="center")
         self.summary_label.pack(pady=10)
 
-        self.detail_text = ctk.CTkTextbox(self, height=280, font=("Courier", 11))
+        self.detail_text = ctk.CTkTextbox(self, height=260, font=("Courier", 11))
         self.detail_text.pack(fill="both", expand=True, padx=20, pady=10)
 
         act_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -47,21 +72,27 @@ class FinalPage(ScrollablePage):
 
     def refresh(self) -> None:
         if not self.state.results:
-            self.summary_label.configure(text="No calculations available. Go back and calculate.")
+            self.summary_label.configure(text="No calculations available. Complete project data and use Generate Report.")
             return
         tot = self.state.results.total
-        pa = self.state.results.plots["Plot-A"]
-        pb = self.state.results.plots["Plot-B"]
+        plots = plot_choices(self.state.project.plot_mode)
+        parts = []
+        for plot_name in plots:
+            plot = self.state.results.plots.get(plot_name)
+            if plot:
+                parts.append(f"{plot_name} STP: {plot.stp_capacity_kld} KLD")
         summary = (
-            f"Plot-A STP: {pa.stp_capacity_kld} KLD  |  Plot-B STP: {pb.stp_capacity_kld} KLD\n"
+            "  |  ".join(parts) + "\n"
             f"Total Project Demand: {tot.get('Total Water (LPD)', 0):,} LPD "
             f"({tot.get('Total Water (LPD)', 0) / 1000:.2f} KLD)"
         )
         self.summary_label.configure(text=summary)
 
         lines = ["DETAILED CALCULATION SUMMARY", "=" * 50, ""]
-        for plot_name in ("Plot-A", "Plot-B"):
-            plot = self.state.results.plots[plot_name]
+        for plot_name in plots:
+            plot = self.state.results.plots.get(plot_name)
+            if not plot:
+                continue
             lines.append(f"{plot_name}:")
             lines.append(f"  Residential: {plot.res_population} pop, {plot.res_total_lpd:,} LPD")
             lines.append(f"  Commercial: {plot.com_population} pop, {plot.com_total_lpd:,} LPD")
@@ -79,7 +110,7 @@ class FinalPage(ScrollablePage):
 
     def _ensure_results(self) -> bool:
         if not self.state.results:
-            messagebox.showwarning("No Data", "Please calculate first from the Other Details page.")
+            messagebox.showwarning("No Data", "Please complete project data and calculate first.")
             return False
         return True
 

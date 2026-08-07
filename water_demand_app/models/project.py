@@ -4,7 +4,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from typing import Any, Dict
 
-from config.nbc_2026 import PLOT_MODE_DUAL, PROJECT_TYPE_MIXED
+from config.nbc_2026 import PLOT_MODE_DUAL, PROJECT_TYPE_MIXED, parse_building_config
 
 
 @dataclass
@@ -35,6 +35,18 @@ class ProjectData:
     date: str = ""
     plot_mode: str = PLOT_MODE_DUAL
     project_type: str = PROJECT_TYPE_MIXED
+    building_config: str = "G+7"
+    building_height_m: float = 0.0
+    num_wings: int = 1
+    building_type: str = "Residential Apartment"
+    client_address: str = ""
+    client_contact: str = ""
+    client_email: str = ""
+    client_gst: str = ""
+    city: str = ""
+    state: str = ""
+    rainfall_zone: str = ""
+    climate: str = ""
     revision: RevisionInfo = field(default_factory=RevisionInfo)
 
     def __post_init__(self) -> None:
@@ -42,6 +54,10 @@ class ProjectData:
             self.project_id = "WD-" + datetime.now().strftime("%Y%m%d-%H%M%S")
         if not self.date:
             self.date = datetime.now().strftime("%d-%m-%Y")
+        if self.building_height_m <= 0 and self.building_config:
+            _, est_height = parse_building_config(self.building_config)
+            if est_height > 0:
+                self.building_height_m = est_height
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -54,6 +70,18 @@ class ProjectData:
             "date": self.date,
             "plot_mode": self.plot_mode,
             "project_type": self.project_type,
+            "building_config": self.building_config,
+            "building_height_m": self.building_height_m,
+            "num_wings": self.num_wings,
+            "building_type": self.building_type,
+            "client_address": self.client_address,
+            "client_contact": self.client_contact,
+            "client_email": self.client_email,
+            "client_gst": self.client_gst,
+            "city": self.city,
+            "state": self.state,
+            "rainfall_zone": self.rainfall_zone,
+            "climate": self.climate,
             "revision": self.revision.to_dict(),
         }
 
@@ -74,6 +102,18 @@ class ProjectData:
             date=data.get("date", data.get("Date", "")),
             plot_mode=data.get("plot_mode", PLOT_MODE_DUAL),
             project_type=data.get("project_type", PROJECT_TYPE_MIXED),
+            building_config=data.get("building_config", "G+7"),
+            building_height_m=float(data.get("building_height_m", 0) or 0),
+            num_wings=int(data.get("num_wings", 1) or 1),
+            building_type=data.get("building_type", "Residential Apartment"),
+            client_address=data.get("client_address", ""),
+            client_contact=data.get("client_contact", ""),
+            client_email=data.get("client_email", ""),
+            client_gst=data.get("client_gst", ""),
+            city=data.get("city", ""),
+            state=data.get("state", ""),
+            rainfall_zone=data.get("rainfall_zone", ""),
+            climate=data.get("climate", ""),
             revision=revision,
         )
 

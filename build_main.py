@@ -77,6 +77,7 @@ def patch_source(src: str) -> str:
 
 FILES = [
     "config/nbc_2026.py",
+    "config/page_visibility.py",
     "models/project.py",
     "models/residential.py",
     "models/commercial.py",
@@ -84,6 +85,7 @@ FILES = [
     "models/calculations.py",
     "services/calculator.py",
     "services/database.py",
+    "services/lookup_db.py",
     "services/pdf_exporter.py",
     "services/excel_exporter.py",
     "ui/components/validation.py",

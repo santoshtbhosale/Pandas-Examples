@@ -15,9 +15,12 @@ def _raise_page(page) -> None:
 
 class WaterDemandApp(ctk.CTk):
     NAV = [
-        ("Project", "Project Details"),
-        ("Residential", "Residential"),
-        ("Commercial", "Commercial"),
+        ("Project", "1. Project Details"),
+        ("Residential", "2. Residential"),
+        ("Commercial", "3. Commercial"),
+        ("Hospital", "Hospital Details"),
+        ("Hotel", "Hotel / Kitchen"),
+        ("FoodCourt", "Food Court"),
         ("Landscape", "Landscape"),
         ("Swimming", "Swimming Pool"),
         ("HVAC", "HVAC"),
@@ -40,6 +43,8 @@ class WaterDemandApp(ctk.CTk):
         self.minsize(1100, 700)
         self.configure(fg_color="#F0F2F5")
         init_db()
+        init_lookup_tables(DB_PATH)
+        self._autosave_job = None
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
         self.sidebar = self._build_sidebar()
@@ -48,21 +53,36 @@ class WaterDemandApp(ctk.CTk):
         self.container.grid_rowconfigure(0, weight=1)
         self.container.grid_columnconfigure(0, weight=1)
         self.pages: dict = {}
+        self._current_page = "Project"
         self._build_pages()
         self.show("Project")
+        self._schedule_autosave()
+
+    def _schedule_autosave(self) -> None:
+        if self._autosave_job is not None:
+            self.after_cancel(self._autosave_job)
+        self._autosave_job = self.after(120_000, self._auto_save_tick)
+
+    def _auto_save_tick(self) -> None:
+        try:
+            save_project(
+                self.app_state.project,
+                self.app_state.residential,
+                self.app_state.commercial,
+                self.app_state.other,
+                self.app_state.results.to_dict() if self.app_state.results else None,
+                DB_PATH,
+            )
+        except Exception:
+            pass
+        self._schedule_autosave()
 
     def _plots(self) -> list[str]:
         return plot_choices(self.app_state.project.plot_mode)
 
     def _nav_visible(self, key: str) -> bool:
-        ptype = self.app_state.project.project_type
-        if key == "Residential":
-            return show_residential_section(ptype)
-        if key == "Commercial":
-            return show_commercial_section(ptype)
-        if key == "HVAC":
-            return hvac_applicable(ptype)
-        return True
+        from config.page_visibility import visible_pages
+        return key in visible_pages(self.app_state.project.project_type)
 
     def _build_sidebar(self):
         sb = ctk.CTkFrame(self, width=230, fg_color=BRAND_NAVY, corner_radius=0)
@@ -109,7 +129,12 @@ class WaterDemandApp(ctk.CTk):
         self.sidebar = self._build_sidebar()
 
     def _build_pages(self) -> None:
-        self.pages["Project"] = ProjectPage(self.container, self.app_state, on_next=self._next_from_project)
+        self.pages["Project"] = ProjectPage(
+            self.container,
+            self.app_state,
+            on_next=self._next_from_project,
+            on_type_change=self._on_project_type_changed,
+        )
         self.pages["Residential"] = ResidentialPage(
             self.container,
             self.app_state,
@@ -119,22 +144,71 @@ class WaterDemandApp(ctk.CTk):
         self.pages["Commercial"] = CommercialPage(
             self.container,
             self.app_state,
-            on_next=lambda: self.show("Landscape"),
+            on_next=lambda: self._wizard_show_next("Commercial"),
             on_back=self._back_from_commercial,
+        )
+        self.pages["Hospital"] = self._placeholder_page(
+            "Hospital Details",
+            "Enter hospital bed counts and medical water requirements.\n"
+            "Use Commercial page with Hospital occupancy for NBC calculations.",
+            lambda: self._wizard_show_next("Hospital"),
+        )
+        self.pages["Hotel"] = self._placeholder_page(
+            "Hotel / Kitchen / Laundry",
+            "Hotel kitchen and laundry water demands are calculated from commercial occupancy rules.\n"
+            "Add Hotel-type units on the Commercial page.",
+            lambda: self._wizard_show_next("Hotel"),
+        )
+        self.pages["FoodCourt"] = self._placeholder_page(
+            "Food Court",
+            "Food court water demand uses Restaurant occupancy (÷1.4 population density).\n"
+            "Add Restaurant units on the Commercial page.",
+            lambda: self._wizard_show_next("FoodCourt"),
         )
         self.pages["Landscape"] = self._form_page("Landscape (NBC-2026)", self._landscape_ui)
         self.pages["Swimming"] = self._form_page("Swimming Pool", self._pool_ui)
-        if hvac_applicable(self.app_state.project.project_type):
-            self.pages["HVAC"] = self._form_page("HVAC Water", self._hvac_ui)
+        self.pages["HVAC"] = self._form_page("HVAC Water", self._hvac_ui)
         self.pages["UGT"] = self._form_page("UGT / Fire Tank", self._ugt_ui)
         self.pages["OHT"] = self._oht_page()
         self.pages["STP"] = self._stp_page()
         self.pages["Preview"] = self._preview_page()
-        self.pages["Report"] = FinalPage(self.container, self.app_state, on_back=lambda: self.show("Preview"))
+        self.pages["Report"] = FinalPage(
+            self.container,
+            self.app_state,
+            on_back=lambda: self.show("Preview"),
+            on_generate_all=self._generate_report_all,
+        )
         self.pages["RWH"] = self._create_rwh_page()
         self.pages["Settings"] = self._settings_page()
         for page in self.pages.values():
             page.grid(row=0, column=0, sticky="nsew")
+
+    def _placeholder_page(self, title: str, body: str, on_next):
+        frame = ScrollablePage(self.container)
+        header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
+        header.pack(fill="x", padx=5, pady=5)
+        ctk.CTkLabel(header, text=title, font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
+        ctk.CTkLabel(frame, text=body, font=("Arial", 12), justify="left", wraplength=900).pack(
+            anchor="w", padx=20, pady=20
+        )
+        ctk.CTkButton(frame, text="Next ->", fg_color=BRAND_ORANGE, command=on_next).pack(pady=12)
+        return frame
+
+    def _on_project_type_changed(self) -> None:
+        from config.page_visibility import visible_pages, wizard_first_page_after_project
+        self._rebuild_sidebar()
+        self._calc()
+        visible = visible_pages(self.app_state.project.project_type)
+        if self._current_page not in visible:
+            self.show(wizard_first_page_after_project(self.app_state.project.project_type))
+
+    def _wizard_show_next(self, current: str) -> None:
+        from config.page_visibility import wizard_next_page
+        nxt = wizard_next_page(current, self.app_state.project.project_type)
+        if nxt:
+            self.show(nxt)
+        else:
+            self.show("Preview")
 
     def _create_rwh_page(self):
         try:
@@ -195,14 +269,14 @@ class WaterDemandApp(ctk.CTk):
             entry.bind("<KeyRelease>", lambda *_: self._calc())
             self._le[plot] = entry
         ctk.CTkLabel(parent, text="Auto: 6 L/sq.m/day per NBC-2026", font=("Arial", 11, "italic")).pack(anchor="w", padx=20)
-        ctk.CTkButton(parent, text="Save & Next", fg_color=BRAND_ORANGE, command=self._save_landscape).pack(pady=12)
+        ctk.CTkButton(parent, text="Next ->", fg_color=BRAND_ORANGE, command=self._save_landscape).pack(pady=12)
 
     def _save_landscape(self):
         try:
             for plot, entry in self._le.items():
                 self.app_state.other.landscape_area[plot] = validate_positive_float(entry.get(), f"Landscape {plot}")
             self._calc()
-            self.show("Swimming")
+            self._wizard_show_next("Landscape")
         except ValidationError as exc:
             messagebox.showerror("Error", exc.message)
 
@@ -233,7 +307,7 @@ class WaterDemandApp(ctk.CTk):
             entry.grid(row=i, column=2, padx=10, pady=8, sticky="w")
             entry.bind("<KeyRelease>", lambda *_: self._calc())
             self._pe[plot] = entry
-        ctk.CTkButton(parent, text="Save & Next", fg_color=BRAND_ORANGE, command=self._save_pool).pack(pady=12)
+        ctk.CTkButton(parent, text="Next ->", fg_color=BRAND_ORANGE, command=self._save_pool).pack(pady=12)
 
     def _save_pool(self):
         for plot in self._plots():
@@ -245,8 +319,7 @@ class WaterDemandApp(ctk.CTk):
             else:
                 self.app_state.other.swimming_pool[plot] = float(self._pe[plot].get() or 0)
         self._calc()
-        next_page = "HVAC" if hvac_applicable(self.app_state.project.project_type) else "UGT"
-        self.show(next_page)
+        self._wizard_show_next("Swimming")
 
     def _hvac_ui(self, parent):
         self._he = {}
@@ -265,7 +338,7 @@ class WaterDemandApp(ctk.CTk):
             parent,
             text="Save & Next",
             fg_color=BRAND_ORANGE,
-            command=lambda: (self._save_dict(self._he, self.app_state.other.hvac_water), self._calc(), self.show("UGT")),
+            command=lambda: (self._save_dict(self._he, self.app_state.other.hvac_water), self._calc(), self._wizard_show_next("HVAC")),
         ).pack(pady=12)
 
     def _plot_building_info(self, plot: str) -> tuple[float, str]:
@@ -278,6 +351,9 @@ class WaterDemandApp(ctk.CTk):
             max_height = max(h for h, _ in heights_types)
             btype = next((t for h, t in heights_types if h == max_height), "")
             return max_height, btype
+        project = self.app_state.project
+        if project.building_height_m > 0:
+            return project.building_height_m, project.building_type or "Residential Apartment"
         return 0.0, ""
 
     def _ugt_ui(self, parent):
@@ -317,7 +393,7 @@ class WaterDemandApp(ctk.CTk):
             text="UGT storage: Domestic 2-day, Flushing 1-day, Fire 1-day (auto-calculated in report)",
             font=("Arial", 11, "italic"),
         ).pack(anchor="w", padx=20, pady=5)
-        ctk.CTkButton(parent, text="Save & Go to OHT", fg_color=BRAND_ORANGE, command=lambda: self.show("OHT")).pack(pady=12)
+        ctk.CTkButton(parent, text="Next ->", fg_color=BRAND_ORANGE, command=lambda: self._wizard_show_next("UGT")).pack(pady=12)
 
     def _refresh_ugt(self) -> None:
         for plot, lbl in getattr(self, "_ugt_labels", {}).items():
@@ -478,19 +554,11 @@ class WaterDemandApp(ctk.CTk):
         return int(self.app_state.other.fire_tank.get(plot, 0))
 
     def _next_from_project(self):
-        ptype = self.app_state.project.project_type
-        if show_residential_section(ptype):
-            self.show("Residential")
-        elif show_commercial_section(ptype):
-            self.show("Commercial")
-        else:
-            self.show("Landscape")
+        from config.page_visibility import wizard_first_page_after_project
+        self.show(wizard_first_page_after_project(self.app_state.project.project_type))
 
     def _next_from_residential(self):
-        if show_commercial_section(self.app_state.project.project_type):
-            self.show("Commercial")
-        else:
-            self.show("Landscape")
+        self._wizard_show_next("Residential")
 
     def _back_from_commercial(self):
         if show_residential_section(self.app_state.project.project_type):
@@ -499,12 +567,20 @@ class WaterDemandApp(ctk.CTk):
             self.show("Project")
 
     def _resolve_page_name(self, name: str) -> str:
-        if name == "HVAC" and not hvac_applicable(self.app_state.project.project_type):
+        from config.page_visibility import visible_pages
+        pages = visible_pages(self.app_state.project.project_type)
+        if name in pages:
+            return name
+        if name == "HVAC" and "UGT" in pages:
             return "UGT"
-        if name == "Residential" and not show_residential_section(self.app_state.project.project_type):
-            return "Commercial" if show_commercial_section(self.app_state.project.project_type) else "Landscape"
-        if name == "Commercial" and not show_commercial_section(self.app_state.project.project_type):
-            return "Residential" if show_residential_section(self.app_state.project.project_type) else "Landscape"
+        if name == "Swimming" and "UGT" in pages:
+            return "UGT"
+        if name == "Residential" and "Commercial" in pages:
+            return "Commercial"
+        if name == "Commercial" and "Landscape" in pages:
+            return "Landscape"
+        if name in ("Hospital", "Hotel", "FoodCourt") and "Landscape" in pages:
+            return "Landscape"
         return name
 
     def show(self, name: str) -> None:
@@ -516,6 +592,7 @@ class WaterDemandApp(ctk.CTk):
                 "It may be hidden for the current project type or not yet loaded.",
             )
             return
+        self._current_page = name
         page = self.pages[name]
         _raise_page(page)
         if hasattr(page, "refresh"):
@@ -548,6 +625,66 @@ class WaterDemandApp(ctk.CTk):
                 self.app_state.results,
                 on_export_pdf=lambda: self.pages["Report"]._export_pdf(),
             )
+
+    def _validate_for_report(self) -> bool:
+        project = self.app_state.project
+        try:
+            validate_required(project.project_name, "Project Name")
+            validate_required(project.client_name, "Client Name")
+            validate_required(project.project_location, "Location")
+            validate_required(project.engineer_name, "Engineer Name")
+        except ValidationError as exc:
+            messagebox.showerror("Validation Error", exc.message)
+            return False
+        self._calc()
+        if not self.app_state.results:
+            messagebox.showerror(
+                "Validation Error",
+                "Could not calculate water demand. Complete residential/commercial data first.",
+            )
+            return False
+        return True
+
+    def _generate_report_all(self) -> None:
+        """One-button workflow: validate, calculate, PDF, Excel, save, preview."""
+        if not self._validate_for_report():
+            return
+        import re
+
+        project = self.app_state.project
+        reports_dir = os.path.join(os.path.dirname(DB_PATH), "reports")
+        os.makedirs(reports_dir, exist_ok=True)
+        safe_name = re.sub(r"[^\w\-]+", "_", project.project_name or "Water_Demand")[:50].strip("_") or "Water_Demand"
+        pdf_path = os.path.join(reports_dir, f"{safe_name}_Water_Demand.pdf")
+        xlsx_path = os.path.join(reports_dir, f"{safe_name}_Water_Demand.xlsx")
+
+        try:
+            save_project(
+                self.app_state.project,
+                self.app_state.residential,
+                self.app_state.commercial,
+                self.app_state.other,
+                self.app_state.results.to_dict() if self.app_state.results else None,
+                DB_PATH,
+            )
+            logo = LOGO_PATH if os.path.exists(LOGO_PATH) else None
+            export_pdf(pdf_path, self.app_state.project, self.app_state.results, logo)
+            export_excel(xlsx_path, self.app_state.project, self.app_state.results)
+        except Exception as exc:
+            messagebox.showerror("Generate Report", str(exc))
+            return
+
+        messagebox.showinfo(
+            "Generate Report",
+            f"Report generated successfully.\n\nPDF: {pdf_path}\nExcel: {xlsx_path}\n\nProject saved to database.",
+        )
+        self.show("Preview")
+        PreviewDialog(
+            self,
+            self.app_state.project,
+            self.app_state.results,
+            on_export_pdf=lambda: self.pages["Report"]._export_pdf(),
+        )
 
     def _new(self):
         if messagebox.askyesno("New", "Start new project?"):

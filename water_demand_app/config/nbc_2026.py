@@ -86,8 +86,11 @@ PROJECT_TYPE_INDUSTRIAL = "industrial"
 PROJECT_TYPE_HOSPITAL = "hospital"
 PROJECT_TYPE_HOTEL = "hotel"
 PROJECT_TYPE_SCHOOL = "school"
+PROJECT_TYPE_COLLEGE = "college"
 PROJECT_TYPE_MALL = "mall"
 PROJECT_TYPE_IT_PARK = "it_park"
+PROJECT_TYPE_WAREHOUSE = "warehouse"
+PROJECT_TYPE_TOWNSHIP = "township"
 
 PROJECT_TYPE_LABELS: Dict[str, str] = {
     "Residential": PROJECT_TYPE_RESIDENTIAL,
@@ -97,8 +100,12 @@ PROJECT_TYPE_LABELS: Dict[str, str] = {
     "Hospital": PROJECT_TYPE_HOSPITAL,
     "Hotel": PROJECT_TYPE_HOTEL,
     "School": PROJECT_TYPE_SCHOOL,
+    "College": PROJECT_TYPE_COLLEGE,
+    "Shopping Mall": PROJECT_TYPE_MALL,
     "Mall": PROJECT_TYPE_MALL,
     "IT Park": PROJECT_TYPE_IT_PARK,
+    "Warehouse": PROJECT_TYPE_WAREHOUSE,
+    "Township": PROJECT_TYPE_TOWNSHIP,
 }
 
 # Swimming pool
@@ -199,6 +206,7 @@ def show_residential_section(project_type: str) -> bool:
     return project_type in (
         PROJECT_TYPE_RESIDENTIAL,
         PROJECT_TYPE_MIXED,
+        PROJECT_TYPE_TOWNSHIP,
     )
 
 
@@ -207,17 +215,44 @@ def show_commercial_section(project_type: str) -> bool:
         PROJECT_TYPE_COMMERCIAL,
         PROJECT_TYPE_MIXED,
         PROJECT_TYPE_INDUSTRIAL,
-        PROJECT_TYPE_HOSPITAL,
-        PROJECT_TYPE_HOTEL,
         PROJECT_TYPE_SCHOOL,
+        PROJECT_TYPE_COLLEGE,
         PROJECT_TYPE_MALL,
         PROJECT_TYPE_IT_PARK,
+        PROJECT_TYPE_WAREHOUSE,
+        PROJECT_TYPE_TOWNSHIP,
+    )
+
+
+def show_hospital_section(project_type: str) -> bool:
+    return project_type == PROJECT_TYPE_HOSPITAL
+
+
+def show_hotel_section(project_type: str) -> bool:
+    return project_type == PROJECT_TYPE_HOTEL
+
+
+def show_food_court_section(project_type: str) -> bool:
+    return project_type == PROJECT_TYPE_MALL
+
+
+def show_swimming_section(project_type: str) -> bool:
+    return project_type in (
+        PROJECT_TYPE_RESIDENTIAL,
+        PROJECT_TYPE_MIXED,
+        PROJECT_TYPE_HOTEL,
+        PROJECT_TYPE_TOWNSHIP,
     )
 
 
 def hvac_applicable(project_type: str) -> bool:
-    """HVAC only for Commercial and IT Park projects."""
-    return project_type in (PROJECT_TYPE_COMMERCIAL, PROJECT_TYPE_IT_PARK)
+    return project_type in (
+        PROJECT_TYPE_COMMERCIAL,
+        PROJECT_TYPE_IT_PARK,
+        PROJECT_TYPE_MALL,
+        PROJECT_TYPE_INDUSTRIAL,
+        PROJECT_TYPE_TOWNSHIP,
+    )
 
 
 def parse_building_config(config: str) -> Tuple[int, float]:

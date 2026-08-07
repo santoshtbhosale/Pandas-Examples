@@ -18,6 +18,7 @@ class TestSidebarNavigation(unittest.TestCase):
 
             spec = importlib.util.spec_from_file_location("water_main", os.path.join(WORKSPACE_ROOT, "main.py"))
             water_main = importlib.util.module_from_spec(spec)
+            sys.modules["water_main"] = water_main
             assert spec.loader is not None
             spec.loader.exec_module(water_main)
             WaterDemandApp = water_main.WaterDemandApp
@@ -56,6 +57,18 @@ class TestSidebarNavigation(unittest.TestCase):
 
     def test_oht_page_exists(self) -> None:
         self.assertIn("OHT", self.app.pages)
+
+    def test_hospital_type_navigation(self) -> None:
+        self.app.app_state.apply_project_type("hospital")
+        self.app._rebuild_sidebar()
+        for key, _label in self.app.NAV:
+            if not self.app._nav_visible(key):
+                continue
+            with self.subTest(page=key, project_type="hospital"):
+                self.app.show(key)
+                self.app.update_idletasks()
+                self.app.update()
+                self.assertIn(key, self.app.pages)
 
 
 if __name__ == "__main__":
