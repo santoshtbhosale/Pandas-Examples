@@ -4353,18 +4353,1138 @@ class FinalPage(ScrollablePage):
         if safe_execute(do_save, lambda msg: messagebox.showerror("Database Error", msg)):
             messagebox.showinfo("Success", "Project saved to database successfully!")
 
+# ==================== rwh/config.py ====================
+"""Rain Water Harvesting module constants and surface coefficients."""
+
+
+
+
+# Reuse app brand colors (duplicated lightly so RWH stays self-contained)
+RWH_BRAND_NAVY = "#001F3F"
+RWH_BRAND_ORANGE = "#F37021"
+RWH_HEADER_TEAL = "#1ABC9C"
+
+# Collection efficiency after first-flush / filter losses (0-1)
+DEFAULT_COLLECTION_EFFICIENCY = 0.90
+
+# Default climate assumptions (user-editable in GUI)
+DEFAULT_ANNUAL_RAINFALL_MM = 750.0
+DEFAULT_RAINY_DAYS = 60
+DEFAULT_MAX_DAILY_RAINFALL_MM = 50.0
+
+
+@dataclass(frozen=True)
+class CatchmentSurfaceSpec:
+    label: str
+    runoff_coefficient: float
+
+
+CATCHMENT_SURFACES: Dict[str, CatchmentSurfaceSpec] = {
+    "RCC Roof": CatchmentSurfaceSpec("RCC Roof", 0.85),
+    "Metal Roof": CatchmentSurfaceSpec("Metal Roof", 0.90),
+    "Tiled Roof": CatchmentSurfaceSpec("Tiled Roof", 0.75),
+    "Paved Area": CatchmentSurfaceSpec("Paved Area", 0.70),
+    "Unpaved / Garden": CatchmentSurfaceSpec("Unpaved / Garden", 0.20),
+    "Custom": CatchmentSurfaceSpec("Custom", 0.80),
+}
+
+
+def harvestable_liters(
+    area_sqm: float,
+    rainfall_mm: float,
+    runoff_coefficient: float,
+    collection_efficiency: float = DEFAULT_COLLECTION_EFFICIENCY,
+) -> float:
+    """Annual harvestable volume in litres: A × R × K × η."""
+    if area_sqm <= 0 or rainfall_mm <= 0 or runoff_coefficient <= 0:
+        return 0.0
+    eff = max(0.0, min(1.0, collection_efficiency))
+    coeff = max(0.0, min(1.0, runoff_coefficient))
+    return area_sqm * rainfall_mm * coeff * eff
+
+
+def recommended_tank_liters(annual_harvest_l: float, rainy_days: int) -> float:
+    """Simple tank sizing: annual harvest / rainy days."""
+    if annual_harvest_l <= 0 or rainy_days <= 0:
+        return 0.0
+    return annual_harvest_l / float(rainy_days)
+
+
+def peak_day_harvest_liters(
+    area_sqm: float,
+    max_daily_rainfall_mm: float,
+    runoff_coefficient: float,
+    collection_efficiency: float = DEFAULT_COLLECTION_EFFICIENCY,
+) -> float:
+    """Peak single-day harvest potential in litres."""
+    return harvestable_liters(area_sqm, max_daily_rainfall_mm, runoff_coefficient, collection_efficiency)
+
+# ==================== rwh/models.py ====================
+"""Rain Water Harvesting input/output models."""
+
+
+
+
+
+@dataclass
+class RWHCatchmentSurface:
+    surface_type: str = "RCC Roof"
+    area_sqm: float = 0.0
+    runoff_coefficient: float = 0.85
+    label: str = ""
+    sort_order: int = 0
+
+    def resolved_coefficient(self) -> float:
+        if self.surface_type == "Custom":
+            return self.runoff_coefficient
+        spec = CATCHMENT_SURFACES.get(self.surface_type)
+        return spec.runoff_coefficient if spec else self.runoff_coefficient
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "RWHCatchmentSurface":
+        return cls(
+            surface_type=data.get("surface_type", "RCC Roof"),
+            area_sqm=float(data.get("area_sqm", 0) or 0),
+            runoff_coefficient=float(data.get("runoff_coefficient", 0.85) or 0.85),
+            label=data.get("label", ""),
+            sort_order=int(data.get("sort_order", 0) or 0),
+        )
+
+
+@dataclass
+class RWHProjectData:
+    rwh_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    project_name: str = ""
+    client_name: str = ""
+    project_location: str = ""
+    engineer_name: str = "AKASH KHADE"
+    project_no: str = ""
+    date: str = field(default_factory=lambda: datetime.now().strftime("%d-%m-%Y"))
+    annual_rainfall_mm: float = DEFAULT_ANNUAL_RAINFALL_MM
+    rainy_days: int = DEFAULT_RAINY_DAYS
+    max_daily_rainfall_mm: float = DEFAULT_MAX_DAILY_RAINFALL_MM
+    collection_efficiency: float = DEFAULT_COLLECTION_EFFICIENCY
+    proposed_tank_liters: float = 0.0  # 0 = use recommended
+    notes: str = ""
+    surfaces: List[RWHCatchmentSurface] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = asdict(self)
+        data["surfaces"] = [s.to_dict() for s in self.surfaces]
+        return data
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "RWHProjectData":
+        surfaces = [RWHCatchmentSurface.from_dict(s) for s in data.get("surfaces", [])]
+        return cls(
+            rwh_id=data.get("rwh_id", str(uuid.uuid4())),
+            project_name=data.get("project_name", ""),
+            client_name=data.get("client_name", ""),
+            project_location=data.get("project_location", ""),
+            engineer_name=data.get("engineer_name", "AKASH KHADE"),
+            project_no=data.get("project_no", ""),
+            date=data.get("date", datetime.now().strftime("%d-%m-%Y")),
+            annual_rainfall_mm=float(data.get("annual_rainfall_mm", DEFAULT_ANNUAL_RAINFALL_MM) or DEFAULT_ANNUAL_RAINFALL_MM),
+            rainy_days=int(data.get("rainy_days", DEFAULT_RAINY_DAYS) or DEFAULT_RAINY_DAYS),
+            max_daily_rainfall_mm=float(
+                data.get("max_daily_rainfall_mm", DEFAULT_MAX_DAILY_RAINFALL_MM) or DEFAULT_MAX_DAILY_RAINFALL_MM
+            ),
+            collection_efficiency=float(
+                data.get("collection_efficiency", DEFAULT_COLLECTION_EFFICIENCY) or DEFAULT_COLLECTION_EFFICIENCY
+            ),
+            proposed_tank_liters=float(data.get("proposed_tank_liters", 0) or 0),
+            notes=data.get("notes", ""),
+            surfaces=surfaces,
+        )
+
+
+@dataclass
+class RWHSurfaceResult:
+    surface_type: str
+    label: str
+    area_sqm: float
+    runoff_coefficient: float
+    annual_harvest_liters: float
+    peak_day_liters: float
+
+
+@dataclass
+class RWHResults:
+    surfaces: List[RWHSurfaceResult] = field(default_factory=list)
+    total_catchment_sqm: float = 0.0
+    annual_harvest_liters: float = 0.0
+    annual_harvest_cum: float = 0.0
+    daily_average_liters: float = 0.0
+    peak_day_liters: float = 0.0
+    recommended_tank_liters: float = 0.0
+    design_tank_liters: float = 0.0
+    collection_efficiency: float = DEFAULT_COLLECTION_EFFICIENCY
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "surfaces": [asdict(s) for s in self.surfaces],
+            "total_catchment_sqm": self.total_catchment_sqm,
+            "annual_harvest_liters": self.annual_harvest_liters,
+            "annual_harvest_cum": self.annual_harvest_cum,
+            "daily_average_liters": self.daily_average_liters,
+            "peak_day_liters": self.peak_day_liters,
+            "recommended_tank_liters": self.recommended_tank_liters,
+            "design_tank_liters": self.design_tank_liters,
+            "collection_efficiency": self.collection_efficiency,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> Optional["RWHResults"]:
+        if not data:
+            return None
+        surfaces = [RWHSurfaceResult(**s) for s in data.get("surfaces", [])]
+        return cls(
+            surfaces=surfaces,
+            total_catchment_sqm=float(data.get("total_catchment_sqm", 0) or 0),
+            annual_harvest_liters=float(data.get("annual_harvest_liters", 0) or 0),
+            annual_harvest_cum=float(data.get("annual_harvest_cum", 0) or 0),
+            daily_average_liters=float(data.get("daily_average_liters", 0) or 0),
+            peak_day_liters=float(data.get("peak_day_liters", 0) or 0),
+            recommended_tank_liters=float(data.get("recommended_tank_liters", 0) or 0),
+            design_tank_liters=float(data.get("design_tank_liters", 0) or 0),
+            collection_efficiency=float(data.get("collection_efficiency", DEFAULT_COLLECTION_EFFICIENCY) or DEFAULT_COLLECTION_EFFICIENCY),
+        )
+
+# ==================== rwh/calculator.py ====================
+"""Rain Water Harvesting calculator."""
+
+
+
+
+class RWHCalculator:
+    def __init__(self, project: RWHProjectData) -> None:
+        self.project = project
+
+    def calculate(self) -> RWHResults:
+        surface_results: list[RWHSurfaceResult] = []
+        total_area = 0.0
+        annual_total = 0.0
+        peak_total = 0.0
+        eff = self.project.collection_efficiency
+
+        for surf in self.project.surfaces:
+            if surf.area_sqm <= 0:
+                continue
+            coeff = surf.resolved_coefficient()
+            annual = harvestable_liters(
+                surf.area_sqm,
+                self.project.annual_rainfall_mm,
+                coeff,
+                eff,
+            )
+            peak = peak_day_harvest_liters(
+                surf.area_sqm,
+                self.project.max_daily_rainfall_mm,
+                coeff,
+                eff,
+            )
+            surface_results.append(
+                RWHSurfaceResult(
+                    surface_type=surf.surface_type,
+                    label=surf.label or surf.surface_type,
+                    area_sqm=surf.area_sqm,
+                    runoff_coefficient=coeff,
+                    annual_harvest_liters=round(annual, 2),
+                    peak_day_liters=round(peak, 2),
+                )
+            )
+            total_area += surf.area_sqm
+            annual_total += annual
+            peak_total += peak
+
+        recommended = recommended_tank_liters(annual_total, self.project.rainy_days)
+        design = self.project.proposed_tank_liters if self.project.proposed_tank_liters > 0 else recommended
+
+        return RWHResults(
+            surfaces=surface_results,
+            total_catchment_sqm=round(total_area, 2),
+            annual_harvest_liters=round(annual_total, 2),
+            annual_harvest_cum=round(annual_total / 1000.0, 3),
+            daily_average_liters=round(annual_total / 365.0, 2) if annual_total else 0.0,
+            peak_day_liters=round(peak_total, 2),
+            recommended_tank_liters=round(recommended, 2),
+            design_tank_liters=round(design, 2),
+            collection_efficiency=eff,
+        )
+
+
+def default_surfaces() -> list[RWHCatchmentSurface]:
+    return [
+        RWHCatchmentSurface(surface_type="RCC Roof", area_sqm=500.0, runoff_coefficient=0.85, label="Main Building Roof", sort_order=0),
+        RWHCatchmentSurface(surface_type="Paved Area", area_sqm=200.0, runoff_coefficient=0.70, label="Paved Courtyard", sort_order=1),
+    ]
+
+# ==================== rwh/database.py ====================
+"""SQLite persistence for Rain Water Harvesting projects (separate table)."""
+
+
+
+
+# Prefer shared app data folder when available
+_APP_DIR = APP_DIR
+_DEFAULT_DB = os.path.join(_APP_DIR, "data", "water_demand.db")
+
+
+def _resolve_db_path(db_path: Optional[str] = None) -> str:
+    if db_path:
+        return db_path
+    # Fallbacks used by consolidated main.py
+    candidates = [
+        os.path.join(os.path.dirname(_APP_DIR), "data", "water_demand.db"),
+        os.path.join(os.path.dirname(_APP_DIR), "water_demand.db"),
+        _DEFAULT_DB,
+    ]
+    for path in candidates:
+        parent = os.path.dirname(path)
+        if parent and (os.path.exists(path) or os.path.isdir(parent) or parent.endswith("data")):
+            return path
+    return _DEFAULT_DB
+
+
+def init_rwh_db(db_path: Optional[str] = None) -> str:
+    """Create RWH table in the shared SQLite database. Does not alter Water Demand tables."""
+    path = _resolve_db_path(db_path)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    conn = sqlite3.connect(path)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS rwh_projects (
+            rwh_id TEXT PRIMARY KEY,
+            project_name TEXT,
+            client_name TEXT,
+            project_location TEXT,
+            engineer_name TEXT,
+            project_no TEXT,
+            date TEXT,
+            annual_rainfall_mm REAL,
+            rainy_days INTEGER,
+            max_daily_rainfall_mm REAL,
+            collection_efficiency REAL,
+            proposed_tank_liters REAL,
+            annual_harvest_liters REAL,
+            design_tank_liters REAL,
+            notes TEXT,
+            json_snapshot TEXT,
+            created_at TEXT,
+            updated_at TEXT
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+    return path
+
+
+def save_rwh_project(
+    project: RWHProjectData,
+    results: Optional[RWHResults] = None,
+    db_path: Optional[str] = None,
+) -> None:
+    path = init_rwh_db(db_path)
+    snapshot = {
+        "project": project.to_dict(),
+        "results": results.to_dict() if results else None,
+    }
+    conn = sqlite3.connect(path)
+    cursor = conn.cursor()
+    now = datetime.now().isoformat()
+    cursor.execute(
+        """
+        INSERT OR REPLACE INTO rwh_projects (
+            rwh_id, project_name, client_name, project_location, engineer_name,
+            project_no, date, annual_rainfall_mm, rainy_days, max_daily_rainfall_mm,
+            collection_efficiency, proposed_tank_liters, annual_harvest_liters,
+            design_tank_liters, notes, json_snapshot, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(
+            (SELECT created_at FROM rwh_projects WHERE rwh_id = ?), ?
+        ), ?)
+        """,
+        (
+            project.rwh_id,
+            project.project_name,
+            project.client_name,
+            project.project_location,
+            project.engineer_name,
+            project.project_no,
+            project.date,
+            project.annual_rainfall_mm,
+            project.rainy_days,
+            project.max_daily_rainfall_mm,
+            project.collection_efficiency,
+            project.proposed_tank_liters,
+            results.annual_harvest_liters if results else 0.0,
+            results.design_tank_liters if results else 0.0,
+            project.notes,
+            json.dumps(snapshot),
+            project.rwh_id,
+            now,
+            now,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def list_rwh_projects(db_path: Optional[str] = None) -> List[Dict[str, str]]:
+    path = init_rwh_db(db_path)
+    conn = sqlite3.connect(path)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT rwh_id, project_name, client_name, date, annual_harvest_liters, updated_at
+        FROM rwh_projects
+        ORDER BY updated_at DESC
+        """
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {
+            "rwh_id": r[0],
+            "project_name": r[1] or "",
+            "client_name": r[2] or "",
+            "date": r[3] or "",
+            "annual_harvest_liters": str(r[4] or 0),
+            "updated_at": r[5] or "",
+        }
+        for r in rows
+    ]
+
+
+def load_rwh_project(rwh_id: str, db_path: Optional[str] = None) -> Dict[str, Any]:
+    path = init_rwh_db(db_path)
+    conn = sqlite3.connect(path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT json_snapshot FROM rwh_projects WHERE rwh_id = ?", (rwh_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row or not row[0]:
+        raise ValueError(f"RWH project not found: {rwh_id}")
+    return json.loads(row[0])
+
+# ==================== rwh/pdf_exporter.py ====================
+"""ReportLab PDF exporter for Rain Water Harvesting reports."""
+
+
+
+
+
+COMPANY_NAME = "AMERICAN EDGE ENGINEERS PVT. LTD."
+COMPANY_FOOTER = (
+    "American Edge Engineers Pvt. Ltd. | Austin | New York | Pune | Info@americanedgeee.com"
+)
+
+
+class RWHPDFExporter:
+    def __init__(
+        self,
+        project: RWHProjectData,
+        results: RWHResults,
+        logo_path: Optional[str] = None,
+    ) -> None:
+        self.project = project
+        self.results = results
+        self.logo_path = logo_path
+        self.styles = getSampleStyleSheet()
+        self.page_width = A4[0] - 60
+
+    def export(self, file_path: str) -> None:
+        doc = SimpleDocTemplate(
+            file_path,
+            pagesize=A4,
+            leftMargin=30,
+            rightMargin=30,
+            topMargin=40,
+            bottomMargin=36,
+        )
+        story: List[Any] = []
+        story.extend(self._build_header())
+        story.append(Spacer(1, 12))
+        story.extend(self._build_meta())
+        story.append(Spacer(1, 10))
+        story.extend(self._build_climate())
+        story.append(Spacer(1, 10))
+        story.extend(self._build_surfaces())
+        story.append(Spacer(1, 10))
+        story.extend(self._build_summary())
+        if self.project.notes.strip():
+            story.append(Spacer(1, 8))
+            story.append(self._p(f"<b>Notes:</b> {self.project.notes}", size=8))
+        story.append(Spacer(1, 12))
+        story.append(
+            self._p(
+                "<i>Formula: Annual Harvest (L) = Catchment Area (m²) × Annual Rainfall (mm) "
+                "× Runoff Coefficient × Collection Efficiency</i>",
+                size=7,
+            )
+        )
+        doc.build(story, onFirstPage=self._footer, onLaterPages=self._footer)
+
+    def _footer(self, canvas, doc) -> None:
+        canvas.saveState()
+        canvas.setFont("Helvetica", 6)
+        canvas.drawCentredString(A4[0] / 2, 16, COMPANY_FOOTER)
+        canvas.restoreState()
+
+    def _p(self, text: str, size: float = 9, bold: bool = False, align: int = 0, color=colors.black):
+        style = ParagraphStyle(
+            f"RWH_{size}_{bold}_{align}",
+            parent=self.styles["Normal"],
+            fontName="Helvetica-Bold" if bold else "Helvetica",
+            fontSize=size,
+            leading=size + 2,
+            alignment=align,
+            textColor=color,
+        )
+        return Paragraph(text, style)
+
+    def _build_header(self) -> List[Any]:
+        items: List[Any] = []
+        if self.logo_path and os.path.exists(self.logo_path):
+            try:
+                img = Image(self.logo_path, width=1.8 * inch, height=0.75 * inch)
+                img.hAlign = "LEFT"
+                items.append(img)
+            except Exception:
+                pass
+        title = Table(
+            [[self._p("<b>RAIN WATER HARVESTING REPORT</b>", size=14, bold=True, align=1, color=colors.white)]],
+            colWidths=[self.page_width],
+            rowHeights=[28],
+        )
+        title.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(RWH_HEADER_TEAL)),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("BOX", (0, 0), (-1, -1), 0.8, colors.black),
+                ]
+            )
+        )
+        items.append(Spacer(1, 6))
+        items.append(title)
+        items.append(self._p(f"<b>{COMPANY_NAME}</b>", size=9, bold=True, align=1))
+        return items
+
+    def _build_meta(self) -> List[Any]:
+        p = self.project
+        rows = [
+            [self._p("<b>TITLE</b>", size=8), self._p(": RAIN WATER HARVESTING", size=8)],
+            [self._p("<b>PROJECT NAME</b>", size=8), self._p(f": {p.project_name.upper()}", size=8)],
+            [self._p("<b>CLIENT NAME</b>", size=8), self._p(f": {p.client_name.upper()}", size=8)],
+            [self._p("<b>PROJECT LOCATION</b>", size=8), self._p(f": {p.project_location.upper()}", size=8)],
+            [self._p("<b>PROJECT NO.</b>", size=8), self._p(f": {p.project_no}", size=8)],
+            [self._p("<b>ENGINEER</b>", size=8), self._p(f": MR.{p.engineer_name.upper()}", size=8)],
+            [self._p("<b>DATE</b>", size=8), self._p(f": {p.date}", size=8)],
+        ]
+        t = Table(rows, colWidths=[130, self.page_width - 130])
+        t.setStyle(
+            TableStyle(
+                [
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#ECF0F1")),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ]
+            )
+        )
+        return [t]
+
+    def _build_climate(self) -> List[Any]:
+        p = self.project
+        header = self._p("<b>CLIMATE & SYSTEM PARAMETERS</b>", size=9, bold=True, align=1, color=colors.white)
+        bar = Table([[header]], colWidths=[self.page_width], rowHeights=[18])
+        bar.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(RWH_BRAND_NAVY)), ("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
+        rows = [
+            [
+                self._p("<b>Parameter</b>", size=8, bold=True, align=1),
+                self._p("<b>Value</b>", size=8, bold=True, align=1),
+                self._p("<b>Unit</b>", size=8, bold=True, align=1),
+            ],
+            [self._p("Annual Rainfall", size=8), self._p(f"{p.annual_rainfall_mm:.1f}", size=8, align=1), self._p("mm", size=8, align=1)],
+            [self._p("No. of Rainy Days", size=8), self._p(str(p.rainy_days), size=8, align=1), self._p("days", size=8, align=1)],
+            [self._p("Max Daily Rainfall", size=8), self._p(f"{p.max_daily_rainfall_mm:.1f}", size=8, align=1), self._p("mm", size=8, align=1)],
+            [self._p("Collection Efficiency", size=8), self._p(f"{p.collection_efficiency * 100:.0f}", size=8, align=1), self._p("%", size=8, align=1)],
+        ]
+        t = Table(rows, colWidths=[220, 120, 80])
+        t.setStyle(
+            TableStyle(
+                [
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D5F5E3")),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ]
+            )
+        )
+        return [bar, Spacer(1, 4), t]
+
+    def _build_surfaces(self) -> List[Any]:
+        header = self._p("<b>CATCHMENT SURFACE BREAKDOWN</b>", size=9, bold=True, align=1, color=colors.white)
+        bar = Table([[header]], colWidths=[self.page_width], rowHeights=[18])
+        bar.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(RWH_BRAND_ORANGE)), ("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
+        rows = [
+            [
+                self._p("<b>Sr</b>", size=7, bold=True, align=1),
+                self._p("<b>Surface / Label</b>", size=7, bold=True, align=1),
+                self._p("<b>Type</b>", size=7, bold=True, align=1),
+                self._p("<b>Area (m²)</b>", size=7, bold=True, align=1),
+                self._p("<b>Coeff (K)</b>", size=7, bold=True, align=1),
+                self._p("<b>Annual (L)</b>", size=7, bold=True, align=1),
+                self._p("<b>Peak Day (L)</b>", size=7, bold=True, align=1),
+            ]
+        ]
+        for i, s in enumerate(self.results.surfaces, 1):
+            rows.append(
+                [
+                    self._p(str(i), size=7, align=1),
+                    self._p(s.label, size=7),
+                    self._p(s.surface_type, size=7),
+                    self._p(f"{s.area_sqm:.1f}", size=7, align=1),
+                    self._p(f"{s.runoff_coefficient:.2f}", size=7, align=1),
+                    self._p(f"{s.annual_harvest_liters:,.0f}", size=7, align=1),
+                    self._p(f"{s.peak_day_liters:,.0f}", size=7, align=1),
+                ]
+            )
+        t = Table(rows, colWidths=[28, 120, 90, 70, 60, 80, 80])
+        t.setStyle(
+            TableStyle(
+                [
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#FDEBD0")),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ]
+            )
+        )
+        return [bar, Spacer(1, 4), t]
+
+    def _build_summary(self) -> List[Any]:
+        r = self.results
+        header = self._p("<b>HARVESTING SUMMARY</b>", size=9, bold=True, align=1, color=colors.white)
+        bar = Table([[header]], colWidths=[self.page_width], rowHeights=[18])
+        bar.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(RWH_HEADER_TEAL)), ("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
+        rows = [
+            [self._p("<b>Description</b>", size=8, bold=True), self._p("<b>Value</b>", size=8, bold=True, align=1), self._p("<b>Unit</b>", size=8, bold=True, align=1)],
+            [self._p("Total Catchment Area", size=8), self._p(f"{r.total_catchment_sqm:,.1f}", size=8, align=1), self._p("m²", size=8, align=1)],
+            [self._p("Annual Harvestable Water", size=8), self._p(f"{r.annual_harvest_liters:,.0f}", size=8, align=1), self._p("Litres", size=8, align=1)],
+            [self._p("Annual Harvestable Water", size=8), self._p(f"{r.annual_harvest_cum:,.2f}", size=8, align=1), self._p("m³ / KL", size=8, align=1)],
+            [self._p("Daily Average Availability", size=8), self._p(f"{r.daily_average_liters:,.1f}", size=8, align=1), self._p("Litres/day", size=8, align=1)],
+            [self._p("Peak Day Harvest Potential", size=8), self._p(f"{r.peak_day_liters:,.0f}", size=8, align=1), self._p("Litres", size=8, align=1)],
+            [self._p("Recommended Tank Capacity", size=8), self._p(f"{r.recommended_tank_liters:,.0f}", size=8, align=1), self._p("Litres", size=8, align=1)],
+            [self._p("<b>Design Tank Capacity</b>", size=8, bold=True), self._p(f"<b>{r.design_tank_liters:,.0f}</b>", size=8, bold=True, align=1), self._p("Litres", size=8, align=1)],
+        ]
+        t = Table(rows, colWidths=[260, 120, 90])
+        t.setStyle(
+            TableStyle(
+                [
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D5F5E3")),
+                    ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#D5F5E3")),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ]
+            )
+        )
+        return [bar, Spacer(1, 4), t]
+
+
+def export_rwh_pdf(
+    file_path: str,
+    project: RWHProjectData,
+    results: RWHResults,
+    logo_path: Optional[str] = None,
+) -> None:
+    RWHPDFExporter(project, results, logo_path).export(file_path)
+
+# ==================== ui/pages/rwh_page.py ====================
+"""Rain Water Harvesting GUI page — CustomTkinter, matches app theme."""
+
+
+
+
+
+
+class RWHPage(ScrollablePage):
+    """Standalone Rain Water Harvesting module screen."""
+
+    SURFACE_TYPES = list(CATCHMENT_SURFACES.keys())
+
+    def __init__(
+        self,
+        master,
+        logo_path: Optional[str] = None,
+        db_path: Optional[str] = None,
+        on_back: Optional[Callable] = None,
+        seed_project: Optional[Any] = None,
+    ) -> None:
+        super().__init__(master)
+        self.logo_path = logo_path
+        self.db_path = db_path
+        self.on_back = on_back
+        self.seed_project = seed_project
+        self.project = RWHProjectData(surfaces=default_surfaces())
+        self.results: Optional[RWHResults] = None
+        self.meta_entries: Dict[str, ctk.CTkEntry] = {}
+        self.param_entries: Dict[str, ctk.CTkEntry] = {}
+        self.surface_rows: List[Dict[str, Any]] = []
+        self._build()
+        init_rwh_db(self.db_path)
+        if seed_project is not None:
+            self._seed_from_water_demand(seed_project)
+
+    def _build(self) -> None:
+        header = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=8)
+        header.pack(fill="x", padx=10, pady=(5, 10))
+        ctk.CTkLabel(
+            header,
+            text="Rain Water Harvesting",
+            font=("Arial", 20, "bold"),
+            text_color="white",
+        ).pack(side="left", padx=16, pady=12)
+        ctk.CTkLabel(
+            header,
+            text="Independent Module",
+            font=("Arial", 11),
+            text_color=RWH_HEADER_TEAL,
+        ).pack(side="right", padx=16)
+
+        ctk.CTkLabel(
+            self,
+            text="Estimate annual harvestable rainwater from catchment surfaces and size storage tanks. "
+            "This module is separate from Water Demand calculations.",
+            font=("Arial", 12),
+            text_color="#555555",
+            wraplength=780,
+            justify="left",
+        ).pack(anchor="w", padx=20, pady=(0, 8))
+
+        self._build_meta_form()
+        self._build_params_form()
+        self._build_surfaces_section()
+        self._build_results_panel()
+        self._build_actions()
+
+    def _section(self, title: str, color: str = BRAND_NAVY) -> ctk.CTkFrame:
+        box = ctk.CTkFrame(self, fg_color="#FFFFFF", corner_radius=8, border_width=1, border_color="#D0D5DD")
+        box.pack(fill="x", padx=15, pady=8)
+        bar = ctk.CTkFrame(box, fg_color=color, corner_radius=6)
+        bar.pack(fill="x", padx=8, pady=8)
+        ctk.CTkLabel(bar, text=title, font=("Arial", 14, "bold"), text_color="white").pack(pady=6)
+        body = ctk.CTkFrame(box, fg_color="transparent")
+        body.pack(fill="x", padx=12, pady=(0, 12))
+        return body
+
+    def _build_meta_form(self) -> None:
+        body = self._section("Project Details")
+        fields = [
+            ("project_name", "Project Name", self.project.project_name),
+            ("client_name", "Client Name", self.project.client_name),
+            ("project_location", "Location", self.project.project_location),
+            ("engineer_name", "Engineer", self.project.engineer_name),
+            ("project_no", "Project No.", self.project.project_no),
+            ("date", "Date (DD-MM-YYYY)", self.project.date),
+        ]
+        for i, (key, label, value) in enumerate(fields):
+            r, c = divmod(i, 2)
+            ctk.CTkLabel(body, text=label, font=("Arial", 12)).grid(row=r, column=c * 2, padx=8, pady=6, sticky="w")
+            ent = ctk.CTkEntry(body, width=220)
+            ent.insert(0, value)
+            ent.grid(row=r, column=c * 2 + 1, padx=8, pady=6, sticky="w")
+            self.meta_entries[key] = ent
+
+    def _build_params_form(self) -> None:
+        body = self._section("Climate & System Parameters", color=RWH_HEADER_TEAL)
+        fields = [
+            ("annual_rainfall_mm", "Annual Rainfall (mm)", str(self.project.annual_rainfall_mm)),
+            ("rainy_days", "Rainy Days / Year", str(self.project.rainy_days)),
+            ("max_daily_rainfall_mm", "Max Daily Rainfall (mm)", str(self.project.max_daily_rainfall_mm)),
+            ("collection_efficiency", "Collection Efficiency (0-1)", str(self.project.collection_efficiency)),
+            ("proposed_tank_liters", "Proposed Tank (L, 0=auto)", str(self.project.proposed_tank_liters)),
+        ]
+        for i, (key, label, value) in enumerate(fields):
+            r, c = divmod(i, 2)
+            ctk.CTkLabel(body, text=label, font=("Arial", 12)).grid(row=r, column=c * 2, padx=8, pady=6, sticky="w")
+            ent = ctk.CTkEntry(body, width=180)
+            ent.insert(0, value)
+            ent.grid(row=r, column=c * 2 + 1, padx=8, pady=6, sticky="w")
+            self.param_entries[key] = ent
+        ctk.CTkLabel(body, text="Notes", font=("Arial", 12)).grid(row=3, column=0, padx=8, pady=6, sticky="nw")
+        self.notes_box = ctk.CTkTextbox(body, width=520, height=60, font=("Arial", 12))
+        self.notes_box.grid(row=3, column=1, columnspan=3, padx=8, pady=6, sticky="w")
+        if self.project.notes:
+            self.notes_box.insert("1.0", self.project.notes)
+
+    def _build_surfaces_section(self) -> None:
+        body = self._section("Catchment Surfaces", color=BRAND_ORANGE)
+        btn_row = ctk.CTkFrame(body, fg_color="transparent")
+        btn_row.pack(fill="x", pady=(0, 6))
+        ctk.CTkButton(btn_row, text="+ Add Surface", fg_color="#27AE60", width=120, command=lambda: self._add_surface_row()).pack(side="left", padx=4)
+        ctk.CTkButton(btn_row, text="Load Defaults", fg_color="#2980B9", width=120, command=self._load_default_surfaces).pack(side="left", padx=4)
+
+        self.surfaces_frame = ctk.CTkFrame(body, fg_color="#FFFFFF")
+        self.surfaces_frame.pack(fill="x")
+        headers = ["Label", "Surface Type", "Area (m²)", "Runoff Coeff.", ""]
+        for i, h in enumerate(headers):
+            ctk.CTkLabel(self.surfaces_frame, text=h, font=("Arial", 12, "bold")).grid(row=0, column=i, padx=4, pady=4)
+        for surf in self.project.surfaces:
+            self._add_surface_row(surf)
+        if not self.surface_rows:
+            self._add_surface_row()
+
+    def _build_results_panel(self) -> None:
+        body = self._section("Calculation Results", color="#8E44AD")
+        self.results_box = ctk.CTkTextbox(body, height=180, font=("Courier", 12))
+        self.results_box.pack(fill="x", padx=4, pady=4)
+        self.results_box.insert("1.0", "Click Calculate to compute harvestable rainwater and tank sizing.")
+        self.results_box.configure(state="disabled")
+
+    def _build_actions(self) -> None:
+        bar = ctk.CTkFrame(self, fg_color="transparent")
+        bar.pack(pady=16)
+        if self.on_back:
+            ctk.CTkButton(bar, text="<- Back", fg_color="gray", width=100, command=self.on_back).grid(row=0, column=0, padx=6)
+        ctk.CTkButton(bar, text="Calculate", fg_color=BRAND_ORANGE, width=120, command=self._calculate).grid(row=0, column=1, padx=6)
+        ctk.CTkButton(bar, text="Save to Database", fg_color="#16A085", width=140, command=self._save_db).grid(row=0, column=2, padx=6)
+        ctk.CTkButton(bar, text="Open from DB", fg_color="#2980B9", width=120, command=self._open_db).grid(row=0, column=3, padx=6)
+        ctk.CTkButton(bar, text="Export PDF", fg_color="#C0392B", width=120, command=self._export_pdf).grid(row=0, column=4, padx=6)
+        ctk.CTkButton(bar, text="Copy WD Project Info", fg_color="#8E44AD", width=160, command=self._copy_wd_meta).grid(row=0, column=5, padx=6)
+
+    def _add_surface_row(self, surf: Optional[RWHCatchmentSurface] = None) -> None:
+        r = len(self.surface_rows) + 1
+        label_ent = ctk.CTkEntry(self.surfaces_frame, width=160)
+        label_ent.insert(0, (surf.label if surf else ""))
+        type_var = ctk.StringVar(value=surf.surface_type if surf else "RCC Roof")
+        type_cb = ctk.CTkComboBox(
+            self.surfaces_frame,
+            values=self.SURFACE_TYPES,
+            variable=type_var,
+            width=140,
+            command=lambda _v, row_idx=None: self._on_type_change(len(self.surface_rows)),
+        )
+        area_ent = ctk.CTkEntry(self.surfaces_frame, width=100)
+        area_ent.insert(0, str(surf.area_sqm if surf else ""))
+        coeff_ent = ctk.CTkEntry(self.surfaces_frame, width=90)
+        coeff_ent.insert(0, str(surf.runoff_coefficient if surf else CATCHMENT_SURFACES["RCC Roof"].runoff_coefficient))
+
+        label_ent.grid(row=r, column=0, padx=4, pady=4)
+        type_cb.grid(row=r, column=1, padx=4, pady=4)
+        area_ent.grid(row=r, column=2, padx=4, pady=4)
+        coeff_ent.grid(row=r, column=3, padx=4, pady=4)
+
+        row_data = {
+            "label": label_ent,
+            "type": type_var,
+            "type_cb": type_cb,
+            "area": area_ent,
+            "coeff": coeff_ent,
+            "widgets": [label_ent, type_cb, area_ent, coeff_ent],
+        }
+
+        def remove(rd=row_data):
+            for w in rd["widgets"]:
+                w.destroy()
+            if rd.get("rm"):
+                rd["rm"].destroy()
+            self.surface_rows = [x for x in self.surface_rows if x is not rd]
+            self._regrid_surfaces()
+
+        rm = ctk.CTkButton(self.surfaces_frame, text="X", width=32, fg_color="#C0392B", command=remove)
+        rm.grid(row=r, column=4, padx=4, pady=4)
+        row_data["rm"] = rm
+        row_data["widgets"].append(rm)
+        self.surface_rows.append(row_data)
+        # Bind type change for this row
+        type_cb.configure(command=lambda _v, rd=row_data: self._sync_coeff_for_row(rd))
+
+    def _sync_coeff_for_row(self, row: Dict[str, Any]) -> None:
+        stype = row["type"].get()
+        spec = CATCHMENT_SURFACES.get(stype)
+        if spec and stype != "Custom":
+            row["coeff"].delete(0, "end")
+            row["coeff"].insert(0, str(spec.runoff_coefficient))
+
+    def _on_type_change(self, _idx: int) -> None:
+        pass
+
+    def _regrid_surfaces(self) -> None:
+        for i, row in enumerate(self.surface_rows, 1):
+            for j, widget in enumerate(row["widgets"]):
+                widget.grid(row=i, column=j, padx=4, pady=4)
+
+    def _load_default_surfaces(self) -> None:
+        for row in self.surface_rows:
+            for w in row["widgets"]:
+                w.destroy()
+        self.surface_rows.clear()
+        for surf in default_surfaces():
+            self._add_surface_row(surf)
+
+    def _collect(self) -> RWHProjectData:
+        name = validate_required(self.meta_entries["project_name"].get(), "Project Name")
+        surfaces: List[RWHCatchmentSurface] = []
+        for i, row in enumerate(self.surface_rows):
+            area_raw = row["area"].get().strip()
+            if not area_raw:
+                continue
+            area = validate_positive_float(area_raw, f"Surface area #{i + 1}", allow_zero=False)
+            coeff = validate_positive_float(row["coeff"].get(), f"Runoff coeff #{i + 1}", allow_zero=False)
+            if coeff > 1:
+                raise ValidationError("Runoff coefficient must be between 0 and 1.")
+            surfaces.append(
+                RWHCatchmentSurface(
+                    surface_type=row["type"].get(),
+                    area_sqm=area,
+                    runoff_coefficient=coeff,
+                    label=row["label"].get().strip() or row["type"].get(),
+                    sort_order=i,
+                )
+            )
+        if not surfaces:
+            raise ValidationError("Add at least one catchment surface with area > 0.")
+
+        eff = validate_positive_float(self.param_entries["collection_efficiency"].get(), "Collection Efficiency", allow_zero=False)
+        if eff > 1:
+            raise ValidationError("Collection efficiency must be between 0 and 1 (e.g. 0.90).")
+
+        return RWHProjectData(
+            rwh_id=self.project.rwh_id,
+            project_name=name,
+            client_name=self.meta_entries["client_name"].get().strip(),
+            project_location=self.meta_entries["project_location"].get().strip(),
+            engineer_name=self.meta_entries["engineer_name"].get().strip() or "AKASH KHADE",
+            project_no=self.meta_entries["project_no"].get().strip(),
+            date=self.meta_entries["date"].get().strip(),
+            annual_rainfall_mm=validate_positive_float(self.param_entries["annual_rainfall_mm"].get(), "Annual Rainfall", allow_zero=False),
+            rainy_days=int(validate_positive_float(self.param_entries["rainy_days"].get(), "Rainy Days", allow_zero=False)),
+            max_daily_rainfall_mm=validate_positive_float(self.param_entries["max_daily_rainfall_mm"].get(), "Max Daily Rainfall", allow_zero=False),
+            collection_efficiency=eff,
+            proposed_tank_liters=validate_positive_float(self.param_entries["proposed_tank_liters"].get(), "Proposed Tank", allow_zero=True),
+            notes=self.notes_box.get("1.0", "end").strip(),
+            surfaces=surfaces,
+        )
+
+    def _calculate(self) -> None:
+        try:
+            self.project = self._collect()
+            self.results = RWHCalculator(self.project).calculate()
+            self._show_results()
+        except ValidationError as ex:
+            messagebox.showerror("Validation Error", ex.message)
+        except Exception as ex:
+            messagebox.showerror("Calculation Error", str(ex))
+
+    def _show_results(self) -> None:
+        if not self.results:
+            return
+        r = self.results
+        lines = [
+            "RAIN WATER HARVESTING — RESULTS",
+            "=" * 48,
+            f"Total Catchment Area     : {r.total_catchment_sqm:,.1f} m²",
+            f"Annual Harvestable Water : {r.annual_harvest_liters:,.0f} Litres  ({r.annual_harvest_cum:,.2f} m³)",
+            f"Daily Average            : {r.daily_average_liters:,.1f} Litres/day",
+            f"Peak Day Potential       : {r.peak_day_liters:,.0f} Litres",
+            f"Recommended Tank         : {r.recommended_tank_liters:,.0f} Litres",
+            f"Design Tank Capacity     : {r.design_tank_liters:,.0f} Litres",
+            "",
+            "Surface Breakdown:",
+        ]
+        for i, s in enumerate(r.surfaces, 1):
+            lines.append(
+                f"  {i}. {s.label} [{s.surface_type}]  "
+                f"{s.area_sqm:.0f} m² × K={s.runoff_coefficient:.2f}  →  {s.annual_harvest_liters:,.0f} L/yr"
+            )
+        self.results_box.configure(state="normal")
+        self.results_box.delete("1.0", "end")
+        self.results_box.insert("1.0", "\n".join(lines))
+        self.results_box.configure(state="disabled")
+
+    def _save_db(self) -> None:
+        try:
+            if not self.results:
+                self._calculate()
+            if not self.results:
+                return
+            save_rwh_project(self.project, self.results, self.db_path)
+            messagebox.showinfo("Saved", "Rain Water Harvesting project saved to database.")
+        except ValidationError as ex:
+            messagebox.showerror("Validation Error", ex.message)
+        except Exception as ex:
+            messagebox.showerror("Save Error", str(ex))
+
+    def _open_db(self) -> None:
+        projects = list_rwh_projects(self.db_path)
+        if not projects:
+            messagebox.showinfo("Open", "No saved Rain Water Harvesting projects found.")
+            return
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Open RWH Project")
+        dlg.geometry("560x360")
+        dlg.transient(self.winfo_toplevel())
+        dlg.grab_set()
+        ctk.CTkLabel(dlg, text="Select a saved RWH project", font=("Arial", 14, "bold")).pack(pady=10)
+        box = ctk.CTkTextbox(dlg, height=220, font=("Courier", 11))
+        box.pack(fill="both", expand=True, padx=12, pady=6)
+        for i, p in enumerate(projects, 1):
+            box.insert(
+                "end",
+                f"{i}. {p['project_name']} | {p['client_name']} | {p['date']} | "
+                f"Harvest {float(p['annual_harvest_liters']):,.0f} L\n",
+            )
+        box.configure(state="disabled")
+        idx_ent = ctk.CTkEntry(dlg, width=80, placeholder_text="No.")
+        idx_ent.pack(pady=6)
+
+        def load():
+            try:
+                idx = int(idx_ent.get().strip()) - 1
+                snap = load_rwh_project(projects[idx]["rwh_id"], self.db_path)
+                self.project = RWHProjectData.from_dict(snap["project"])
+                self.results = RWHResults.from_dict(snap.get("results"))
+                self._populate_form()
+                self._show_results() if self.results else None
+                dlg.destroy()
+            except Exception as ex:
+                messagebox.showerror("Open Error", str(ex))
+
+        ctk.CTkButton(dlg, text="Load", fg_color=BRAND_ORANGE, command=load).pack(pady=8)
+
+    def _populate_form(self) -> None:
+        mapping = {
+            "project_name": self.project.project_name,
+            "client_name": self.project.client_name,
+            "project_location": self.project.project_location,
+            "engineer_name": self.project.engineer_name,
+            "project_no": self.project.project_no,
+            "date": self.project.date,
+        }
+        for key, value in mapping.items():
+            ent = self.meta_entries[key]
+            ent.delete(0, "end")
+            ent.insert(0, value)
+        params = {
+            "annual_rainfall_mm": self.project.annual_rainfall_mm,
+            "rainy_days": self.project.rainy_days,
+            "max_daily_rainfall_mm": self.project.max_daily_rainfall_mm,
+            "collection_efficiency": self.project.collection_efficiency,
+            "proposed_tank_liters": self.project.proposed_tank_liters,
+        }
+        for key, value in params.items():
+            ent = self.param_entries[key]
+            ent.delete(0, "end")
+            ent.insert(0, str(value))
+        self.notes_box.delete("1.0", "end")
+        self.notes_box.insert("1.0", self.project.notes)
+        for row in self.surface_rows:
+            for w in row["widgets"]:
+                w.destroy()
+        self.surface_rows.clear()
+        for surf in self.project.surfaces:
+            self._add_surface_row(surf)
+        if not self.surface_rows:
+            self._add_surface_row()
+
+    def _export_pdf(self) -> None:
+        try:
+            if not self.results:
+                self._calculate()
+            if not self.results:
+                return
+            path = filedialog.asksaveasfilename(
+                defaultextension=".pdf",
+                filetypes=[("PDF files", "*.pdf")],
+                initialfile="Rain_Water_Harvesting_Report.pdf",
+            )
+            if not path:
+                return
+            logo = self.logo_path if self.logo_path and os.path.exists(self.logo_path) else None
+            export_rwh_pdf(path, self.project, self.results, logo)
+            messagebox.showinfo("Success", "Rain Water Harvesting PDF exported successfully!")
+        except ValidationError as ex:
+            messagebox.showerror("Validation Error", ex.message)
+        except Exception as ex:
+            messagebox.showerror("PDF Error", str(ex))
+
+    def _seed_from_water_demand(self, project: Any) -> None:
+        """Optional: prefill meta from Water Demand project without coupling calculations."""
+        try:
+            if getattr(project, "project_name", ""):
+                self.meta_entries["project_name"].delete(0, "end")
+                self.meta_entries["project_name"].insert(0, project.project_name)
+            if getattr(project, "client_name", ""):
+                self.meta_entries["client_name"].delete(0, "end")
+                self.meta_entries["client_name"].insert(0, project.client_name)
+            if getattr(project, "project_location", ""):
+                self.meta_entries["project_location"].delete(0, "end")
+                self.meta_entries["project_location"].insert(0, project.project_location)
+            if getattr(project, "engineer_name", ""):
+                self.meta_entries["engineer_name"].delete(0, "end")
+                self.meta_entries["engineer_name"].insert(0, project.engineer_name)
+            if getattr(project, "project_no", ""):
+                self.meta_entries["project_no"].delete(0, "end")
+                self.meta_entries["project_no"].insert(0, project.project_no)
+            if getattr(project, "date", ""):
+                self.meta_entries["date"].delete(0, "end")
+                self.meta_entries["date"].insert(0, project.date)
+        except Exception:
+            pass
+
+    def _copy_wd_meta(self) -> None:
+        if self.seed_project is None:
+            messagebox.showinfo("Info", "No Water Demand project is linked for copying.")
+            return
+        self._seed_from_water_demand(self.seed_project)
+        messagebox.showinfo("Copied", "Project details copied from Water Demand module.")
+
+    def refresh(self) -> None:
+        """Called by app shell when page is shown — refresh seed meta hint only."""
+        if self.seed_project is not None and not self.meta_entries["project_name"].get().strip():
+            self._seed_from_water_demand(self.seed_project)
+
 # ==================== _app_sidebar.py ====================
 
 # ============================================================
 # MAIN APPLICATION
 # ============================================================
 
+def _raise_page(page) -> None:
+    """Bring a page (especially CTkScrollableFrame) to the front."""
+    if hasattr(page, "lift"):
+        page.lift()
+    elif hasattr(page, "_parent_frame"):
+        page._parent_frame.tkraise()
+    else:
+        page.tkraise()
+
+
 class WaterDemandApp(ctk.CTk):
     NAV = [
-        ("Project", "Project Details"), ("Residential", "Residential"), ("Commercial", "Commercial"),
-        ("Landscape", "Landscape"), ("Swimming", "Swimming Pool"), ("HVAC", "HVAC"),
-        ("UGT", "UGT / Fire Tank"), ("OHT", "OHT Details"), ("STP", "STP Summary"),
-        ("Preview", "Preview"), ("Report", "Generate Report"),
+        ("Project", "Project Details"),
+        ("Residential", "Residential"),
+        ("Commercial", "Commercial"),
+        ("Landscape", "Landscape"),
+        ("Swimming", "Swimming Pool"),
+        ("HVAC", "HVAC"),
+        ("UGT", "UGT / Fire Tank"),
+        ("OHT", "OHT Details"),
+        ("STP", "STP Summary"),
+        ("Preview", "Preview"),
+        ("Report", "Generate Report"),
         ("RWH", "Rain Water Harvesting"),
         ("Settings", "Settings"),
     ]
@@ -4381,115 +5501,198 @@ class WaterDemandApp(ctk.CTk):
         init_db()
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
-        self._sidebar()
+        self.sidebar = self._build_sidebar()
         self.container = ctk.CTkFrame(self, fg_color="#F0F2F5", corner_radius=0)
         self.container.grid(row=0, column=1, sticky="nsew", padx=8, pady=8)
         self.container.grid_rowconfigure(0, weight=1)
         self.container.grid_columnconfigure(0, weight=1)
-        self.pages = {}
-        self._pages()
+        self.pages: dict = {}
+        self._build_pages()
         self.show("Project")
 
     def _plots(self) -> list[str]:
         return plot_choices(self.app_state.project.plot_mode)
 
-    def _sidebar(self):
+    def _nav_visible(self, key: str) -> bool:
+        ptype = self.app_state.project.project_type
+        if key == "Residential":
+            return show_residential_section(ptype)
+        if key == "Commercial":
+            return show_commercial_section(ptype)
+        if key == "HVAC":
+            return hvac_applicable(ptype)
+        return True
+
+    def _build_sidebar(self):
         sb = ctk.CTkFrame(self, width=230, fg_color=BRAND_NAVY, corner_radius=0)
         sb.grid(row=0, column=0, sticky="ns")
         sb.grid_propagate(False)
-        ctk.CTkLabel(sb, text="AMERICAN EDGE\nENGINEERS", font=("Arial", 14, "bold"), text_color=BRAND_ORANGE, justify="center").pack(pady=(20, 5))
+        ctk.CTkLabel(
+            sb,
+            text="AMERICAN EDGE\nENGINEERS",
+            font=("Arial", 14, "bold"),
+            text_color=BRAND_ORANGE,
+            justify="center",
+        ).pack(pady=(20, 5))
         ctk.CTkLabel(sb, text="Water Demand Generator", font=("Arial", 10), text_color="white").pack(pady=(0, 15))
         self.nav_btns = {}
-        for k, lbl in self.NAV:
-            if k == "Residential" and not show_residential_section(self.app_state.project.project_type):
+        for key, label in self.NAV:
+            if not self._nav_visible(key):
                 continue
-            if k == "Commercial" and not show_commercial_section(self.app_state.project.project_type):
-                continue
-            if k == "HVAC" and not hvac_applicable(self.app_state.project.project_type):
-                continue
-            b = ctk.CTkButton(sb, text=lbl, height=36, anchor="w", fg_color="transparent", hover_color=BRAND_ORANGE,
-                              text_color="white", font=("Arial", 12), command=lambda x=k: self.show(x))
-            b.pack(fill="x", padx=8, pady=2)
-            self.nav_btns[k] = b
-        ctk.CTkButton(sb, text="Save Project", fg_color=BRAND_ORANGE, command=self._save_db).pack(side="bottom", fill="x", padx=10, pady=4)
-        ctk.CTkButton(sb, text="Open Project", fg_color="#2980B9", command=self._open_db).pack(side="bottom", fill="x", padx=10, pady=4)
-        ctk.CTkButton(sb, text="New Project", fg_color="#27AE60", command=self._new).pack(side="bottom", fill="x", padx=10, pady=(4, 15))
+            btn = ctk.CTkButton(
+                sb,
+                text=label,
+                height=36,
+                anchor="w",
+                fg_color="transparent",
+                hover_color=BRAND_ORANGE,
+                text_color="white",
+                font=("Arial", 12),
+                command=lambda k=key: self.show(k),
+            )
+            btn.pack(fill="x", padx=8, pady=2)
+            self.nav_btns[key] = btn
+        ctk.CTkButton(sb, text="Save Project", fg_color=BRAND_ORANGE, command=self._save_db).pack(
+            side="bottom", fill="x", padx=10, pady=4
+        )
+        ctk.CTkButton(sb, text="Open Project", fg_color="#2980B9", command=self._open_db).pack(
+            side="bottom", fill="x", padx=10, pady=4
+        )
+        ctk.CTkButton(sb, text="New Project", fg_color="#27AE60", command=self._new).pack(
+            side="bottom", fill="x", padx=10, pady=(4, 15)
+        )
+        return sb
 
-    def _pages(self):
+    def _rebuild_sidebar(self) -> None:
+        self.sidebar.destroy()
+        self.sidebar = self._build_sidebar()
+
+    def _build_pages(self) -> None:
         self.pages["Project"] = ProjectPage(self.container, self.app_state, on_next=self._next_from_project)
-        self.pages["Residential"] = ResidentialPage(self.container, self.app_state, on_next=self._next_from_residential, on_back=lambda: self.show("Project"))
-        self.pages["Commercial"] = CommercialPage(self.container, self.app_state, on_next=lambda: self.show("Landscape"), on_back=self._back_from_commercial)
+        self.pages["Residential"] = ResidentialPage(
+            self.container,
+            self.app_state,
+            on_next=self._next_from_residential,
+            on_back=lambda: self.show("Project"),
+        )
+        self.pages["Commercial"] = CommercialPage(
+            self.container,
+            self.app_state,
+            on_next=lambda: self.show("Landscape"),
+            on_back=self._back_from_commercial,
+        )
         self.pages["Landscape"] = self._form_page("Landscape (NBC-2026)", self._landscape_ui)
         self.pages["Swimming"] = self._form_page("Swimming Pool", self._pool_ui)
         if hvac_applicable(self.app_state.project.project_type):
             self.pages["HVAC"] = self._form_page("HVAC Water", self._hvac_ui)
         self.pages["UGT"] = self._form_page("UGT / Fire Tank", self._ugt_ui)
-        self.pages["Report"] = FinalPage(self.container, self.app_state, on_back=lambda: self.show("Preview"))
+        self.pages["OHT"] = self._oht_page()
         self.pages["STP"] = self._stp_page()
         self.pages["Preview"] = self._preview_page()
+        self.pages["Report"] = FinalPage(self.container, self.app_state, on_back=lambda: self.show("Preview"))
+        self.pages["RWH"] = self._create_rwh_page()
+        self.pages["Settings"] = self._settings_page()
+        for page in self.pages.values():
+            page.grid(row=0, column=0, sticky="nsew")
+
+    def _create_rwh_page(self):
         try:
-            init_rwh_db()
-            self.pages["RWH"] = RWHPage(
+            init_rwh_db(DB_PATH)
+            return RWHPage(
                 self.container,
+                logo_path=LOGO_PATH if os.path.exists(LOGO_PATH) else None,
+                db_path=DB_PATH,
                 seed_project=self.app_state.project,
                 on_back=lambda: self.show("Report"),
             )
-        except Exception:
-            pass
-        self.pages["Settings"] = self._settings_page()
-        for p in self.pages.values():
-            p.grid(row=0, column=0, sticky="nsew")
+        except Exception as exc:
+            return self._rwh_placeholder_page(str(exc))
+
+    def _rwh_placeholder_page(self, reason: str = ""):
+        frame = ScrollablePage(self.container)
+        header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
+        header.pack(fill="x", padx=5, pady=5)
+        ctk.CTkLabel(
+            header,
+            text="Rain Water Harvesting",
+            font=("Arial", 18, "bold"),
+            text_color="white",
+        ).pack(pady=10)
+        message = (
+            "The Rain Water Harvesting module is not available in this build.\n\n"
+            "Use the modular application entry point or rebuild main.py with RWH modules included."
+        )
+        if reason:
+            message += f"\n\nDetails: {reason}"
+        ctk.CTkLabel(frame, text=message, font=("Arial", 12), justify="left", wraplength=900).pack(
+            anchor="w", padx=20, pady=20
+        )
+        ctk.CTkButton(frame, text="Back to Generate Report", fg_color=BRAND_ORANGE, command=lambda: self.show("Report")).pack(
+            pady=12
+        )
+        return frame
 
     def _form_page(self, title, builder):
-        f = ScrollablePage(self.container)
-        h = ctk.CTkFrame(f, fg_color=BRAND_NAVY, corner_radius=8)
-        h.pack(fill="x", padx=5, pady=5)
-        ctk.CTkLabel(h, text=title, font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
-        builder(f)
-        return f
+        frame = ScrollablePage(self.container)
+        header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
+        header.pack(fill="x", padx=5, pady=5)
+        ctk.CTkLabel(header, text=title, font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
+        builder(frame)
+        return frame
 
-    def _landscape_ui(self, p):
+    def _landscape_ui(self, parent):
         self._le = {}
-        form = ctk.CTkFrame(p)
-        form.pack(padx=20, pady=10)
+        form = ctk.CTkFrame(parent)
+        form.pack(fill="x", padx=20, pady=10)
         for i, plot in enumerate(self._plots()):
-            ctk.CTkLabel(form, text=f"Landscape Area {plot} (sq.m)", font=("Arial", 13)).grid(row=i, column=0, padx=10, pady=8, sticky="w")
-            e = ctk.CTkEntry(form, width=180)
-            e.insert(0, str(self.app_state.other.landscape_area.get(plot, 765 if plot == "Plot-A" else 762)))
-            e.grid(row=i, column=1, padx=10, pady=8)
-            self._le[plot] = e
-        ctk.CTkLabel(p, text="Auto: 6 L/sq.m/day per NBC-2026", font=("Arial", 11, "italic")).pack()
-        ctk.CTkButton(p, text="Save & Next", fg_color=BRAND_ORANGE, command=self._save_landscape).pack(pady=12)
+            ctk.CTkLabel(form, text=f"Landscape Area {plot} (sq.m)", font=("Arial", 13)).grid(
+                row=i, column=0, padx=10, pady=8, sticky="w"
+            )
+            entry = ctk.CTkEntry(form, width=220)
+            entry.insert(0, str(self.app_state.other.landscape_area.get(plot, 765 if plot == "Plot-A" else 762)))
+            entry.grid(row=i, column=1, padx=10, pady=8, sticky="w")
+            entry.bind("<KeyRelease>", lambda *_: self._calc())
+            self._le[plot] = entry
+        ctk.CTkLabel(parent, text="Auto: 6 L/sq.m/day per NBC-2026", font=("Arial", 11, "italic")).pack(anchor="w", padx=20)
+        ctk.CTkButton(parent, text="Save & Next", fg_color=BRAND_ORANGE, command=self._save_landscape).pack(pady=12)
 
     def _save_landscape(self):
         try:
-            for plot, e in self._le.items():
-                self.app_state.other.landscape_area[plot] = validate_positive_float(e.get(), f"Landscape {plot}")
+            for plot, entry in self._le.items():
+                self.app_state.other.landscape_area[plot] = validate_positive_float(entry.get(), f"Landscape {plot}")
+            self._calc()
             self.show("Swimming")
-        except ValidationError as ex:
-            messagebox.showerror("Error", ex.message)
+        except ValidationError as exc:
+            messagebox.showerror("Error", exc.message)
 
-    def _pool_ui(self, p):
+    def _pool_ui(self, parent):
         self._pe = {}
         self._pool_status = {}
-        form = ctk.CTkFrame(p)
-        form.pack(padx=20, pady=10)
+        form = ctk.CTkFrame(parent)
+        form.pack(fill="x", padx=20, pady=10)
         for i, plot in enumerate(self._plots()):
-            ctk.CTkLabel(form, text=f"Swimming Pool {plot}", font=("Arial", 13)).grid(row=i, column=0, padx=10, pady=8, sticky="w")
+            ctk.CTkLabel(form, text=f"Swimming Pool {plot}", font=("Arial", 13)).grid(
+                row=i, column=0, padx=10, pady=8, sticky="w"
+            )
             status = self.app_state.other.swimming_pool_status.get(plot, POOL_NOT_APPLICABLE)
             if self.app_state.other.swimming_pool_na.get(plot, False):
                 status = POOL_NOT_APPLICABLE
             label = next((k for k, v in POOL_STATUS_LABELS.items() if v == status), "Not Applicable")
             status_var = ctk.StringVar(value=label)
-            ctk.CTkComboBox(form, values=list(POOL_STATUS_LABELS.keys()), variable=status_var, width=160).grid(
-                row=i, column=1, padx=10, pady=8, sticky="w"
-            )
+            ctk.CTkComboBox(
+                form,
+                values=list(POOL_STATUS_LABELS.keys()),
+                variable=status_var,
+                width=180,
+                command=lambda *_: self._calc(),
+            ).grid(row=i, column=1, padx=10, pady=8, sticky="w")
             self._pool_status[plot] = status_var
-            e = ctk.CTkEntry(form, width=180)
-            e.insert(0, str(int(self.app_state.other.swimming_pool.get(plot, 0))))
-            e.grid(row=i, column=2, padx=10, pady=8)
-            self._pe[plot] = e
-        ctk.CTkButton(p, text="Save & Next", fg_color=BRAND_ORANGE, command=self._save_pool).pack(pady=12)
+            entry = ctk.CTkEntry(form, width=180)
+            entry.insert(0, str(int(self.app_state.other.swimming_pool.get(plot, 0))))
+            entry.grid(row=i, column=2, padx=10, pady=8, sticky="w")
+            entry.bind("<KeyRelease>", lambda *_: self._calc())
+            self._pe[plot] = entry
+        ctk.CTkButton(parent, text="Save & Next", fg_color=BRAND_ORANGE, command=self._save_pool).pack(pady=12)
 
     def _save_pool(self):
         for plot in self._plots():
@@ -4500,82 +5703,216 @@ class WaterDemandApp(ctk.CTk):
                 self.app_state.other.swimming_pool[plot] = 0.0
             else:
                 self.app_state.other.swimming_pool[plot] = float(self._pe[plot].get() or 0)
-        self.app_state.auto_calculate()
+        self._calc()
         next_page = "HVAC" if hvac_applicable(self.app_state.project.project_type) else "UGT"
         self.show(next_page)
 
-    def _hvac_ui(self, p):
+    def _hvac_ui(self, parent):
         self._he = {}
-        form = ctk.CTkFrame(p)
-        form.pack(padx=20, pady=10)
+        form = ctk.CTkFrame(parent)
+        form.pack(fill="x", padx=20, pady=10)
         for i, plot in enumerate(self._plots()):
-            ctk.CTkLabel(form, text=f"HVAC {plot} (L/day)", font=("Arial", 13)).grid(row=i, column=0, padx=10, pady=8, sticky="w")
-            e = ctk.CTkEntry(form, width=180)
-            e.insert(0, str(int(self.app_state.other.hvac_water.get(plot, 0))))
-            e.grid(row=i, column=1, padx=10, pady=8)
-            self._he[plot] = e
-        ctk.CTkButton(p, text="Save & Next", fg_color=BRAND_ORANGE, command=lambda: (self._save_dict(self._he, self.app_state.other.hvac_water), self.show("UGT"))).pack(pady=12)
-
-    def _ugt_ui(self, p):
-        form = ctk.CTkFrame(p)
-        form.pack(padx=20, pady=10)
-        for i, plot in enumerate(self._plots()):
-            ctk.CTkLabel(form, text=f"Fire Tank {plot} (litres)", font=("Arial", 13)).grid(row=i, column=0, padx=10, pady=8, sticky="w")
-            auto_val = self._auto_fire_tank(plot)
-            ctk.CTkLabel(form, text=f"{auto_val:,} (auto from NBC height table)", font=("Arial", 12)).grid(
-                row=i, column=1, padx=10, pady=8, sticky="w"
+            ctk.CTkLabel(form, text=f"HVAC {plot} (L/day)", font=("Arial", 13)).grid(
+                row=i, column=0, padx=10, pady=8, sticky="w"
             )
+            entry = ctk.CTkEntry(form, width=220)
+            entry.insert(0, str(int(self.app_state.other.hvac_water.get(plot, 0))))
+            entry.grid(row=i, column=1, padx=10, pady=8, sticky="w")
+            entry.bind("<KeyRelease>", lambda *_: self._calc())
+            self._he[plot] = entry
+        ctk.CTkButton(
+            parent,
+            text="Save & Next",
+            fg_color=BRAND_ORANGE,
+            command=lambda: (self._save_dict(self._he, self.app_state.other.hvac_water), self._calc(), self.show("UGT")),
+        ).pack(pady=12)
+
+    def _plot_building_info(self, plot: str) -> tuple[float, str]:
+        heights_types = [
+            (w.building_height_m, w.building_type)
+            for w in self.app_state.residential
+            if w.plot == plot and w.building_height_m > 0
+        ]
+        if heights_types:
+            max_height = max(h for h, _ in heights_types)
+            btype = next((t for h, t in heights_types if h == max_height), "")
+            return max_height, btype
+        return 0.0, ""
+
+    def _ugt_ui(self, parent):
+        self._ugt_labels = {}
+        form = ctk.CTkFrame(parent)
+        form.pack(fill="x", padx=20, pady=10)
+        row = 0
+        for plot in self._plots():
+            height, btype = self._plot_building_info(plot)
+            ctk.CTkLabel(form, text=f"{plot} — Building Height (m)", font=("Arial", 13, "bold")).grid(
+                row=row, column=0, padx=10, pady=8, sticky="w"
+            )
+            ctk.CTkLabel(
+                form,
+                text=f"{height:.1f}" if height else "Set on Residential page",
+                font=("Arial", 12),
+            ).grid(row=row, column=1, padx=10, pady=8, sticky="w")
+            row += 1
+            ctk.CTkLabel(form, text=f"{plot} — Building Type", font=("Arial", 13, "bold")).grid(
+                row=row, column=0, padx=10, pady=8, sticky="w"
+            )
+            ctk.CTkLabel(form, text=btype or "Set on Residential page", font=("Arial", 12)).grid(
+                row=row, column=1, padx=10, pady=8, sticky="w"
+            )
+            row += 1
+            auto_val = self._auto_fire_tank(plot)
             self.app_state.other.fire_tank[plot] = float(auto_val)
-        ctk.CTkLabel(p, text="UGT: Domestic 2-day, Flushing 1-day storage (auto-calculated)", font=("Arial", 11, "italic")).pack(pady=5)
-        ctk.CTkButton(p, text="Save & Go to OHT", fg_color=BRAND_ORANGE, command=lambda: self.show("OHT")).pack(pady=12)
+            ctk.CTkLabel(form, text=f"{plot} — Fire Tank Capacity (litres)", font=("Arial", 13, "bold")).grid(
+                row=row, column=0, padx=10, pady=8, sticky="w"
+            )
+            lbl = ctk.CTkLabel(form, text=f"{auto_val:,} (auto — NBC Table 7)", font=("Arial", 12))
+            lbl.grid(row=row, column=1, padx=10, pady=8, sticky="w")
+            self._ugt_labels[plot] = lbl
+            row += 1
+        ctk.CTkLabel(
+            parent,
+            text="UGT storage: Domestic 2-day, Flushing 1-day, Fire 1-day (auto-calculated in report)",
+            font=("Arial", 11, "italic"),
+        ).pack(anchor="w", padx=20, pady=5)
+        ctk.CTkButton(parent, text="Save & Go to OHT", fg_color=BRAND_ORANGE, command=lambda: self.show("OHT")).pack(pady=12)
+
+    def _refresh_ugt(self) -> None:
+        for plot, lbl in getattr(self, "_ugt_labels", {}).items():
+            auto_val = self._auto_fire_tank(plot)
+            self.app_state.other.fire_tank[plot] = float(auto_val)
+            lbl.configure(text=f"{auto_val:,} (auto — NBC Table 7)")
+
+    def _oht_page(self):
+        frame = ScrollablePage(self.container)
+        header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
+        header.pack(fill="x", padx=5, pady=5)
+        ctk.CTkLabel(header, text="OHT Details", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
+        ctk.CTkLabel(
+            frame,
+            text="Overhead tank capacities auto-calculate from residential/commercial demand.",
+            font=("Arial", 11, "italic"),
+        ).pack(anchor="w", padx=20, pady=(0, 5))
+        self.oht_box = ctk.CTkTextbox(frame, height=420, font=("Courier", 11))
+        self.oht_box.pack(fill="both", expand=True, padx=15, pady=10)
+        ctk.CTkButton(frame, text="Refresh OHT", fg_color=BRAND_ORANGE, command=self._refresh_oht).pack(pady=10)
+        return frame
+
+    def _refresh_oht(self) -> None:
+        self._calc()
+        lines = ["OHT DETAILS (auto-calculated)", "=" * 60, ""]
+        if not self.app_state.results:
+            lines.append("Enter residential/commercial data first.")
+        else:
+            for plot_name in self._plots():
+                plot = self.app_state.results.plots[plot_name]
+                lines.append(plot_name)
+                if not plot.oht_rows:
+                    lines.append("  No OHT rows")
+                for row in plot.oht_rows:
+                    lines.append(
+                        f"  {row['wing']}: Dom {row['domestic_kld']} KLD | "
+                        f"Flush {row['flushing_kld']} KLD | "
+                        f"Fire Break {row['fire_break_kld']} KLD | "
+                        f"Fire OHT {row['fire_oht_kld']} KLD"
+                    )
+                lines.append("")
+        self.oht_box.delete("1.0", "end")
+        self.oht_box.insert("1.0", "\n".join(lines))
 
     def _save_dict(self, entries, target):
-        for plot, e in entries.items():
-            target[plot] = float(e.get() or 0)
+        for plot, entry in entries.items():
+            target[plot] = float(entry.get() or 0)
 
     def _stp_page(self):
-        f = ScrollablePage(self.container)
-        h = ctk.CTkFrame(f, fg_color=BRAND_NAVY, corner_radius=8)
-        h.pack(fill="x", padx=5, pady=5)
-        ctk.CTkLabel(h, text="STP Summary", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
-        self.stp_box = ctk.CTkTextbox(f, height=400, font=("Courier", 11))
+        frame = ScrollablePage(self.container)
+        header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
+        header.pack(fill="x", padx=5, pady=5)
+        ctk.CTkLabel(header, text="STP Summary", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
+        self.stp_box = ctk.CTkTextbox(frame, height=420, font=("Courier", 11))
         self.stp_box.pack(fill="both", expand=True, padx=15, pady=10)
-        ctk.CTkButton(f, text="Calculate STP", fg_color=BRAND_ORANGE, command=self._refresh_stp).pack(pady=10)
-        return f
+        ctk.CTkButton(frame, text="Refresh STP", fg_color=BRAND_ORANGE, command=self._refresh_stp).pack(pady=10)
+        return frame
 
     def _refresh_stp(self):
         self._calc()
         if not self.app_state.results:
+            self.stp_box.delete("1.0", "end")
+            self.stp_box.insert("1.0", "Enter project data to calculate STP.")
             return
         lines = []
-        for pn in self._plots():
-            pl = self.app_state.results.plots[pn]
-            lines.append(f"=== {pn} ===")
-            for s in pl.stp_sections:
+        for plot_name in self._plots():
+            plot = self.app_state.results.plots[plot_name]
+            lines.append(f"=== {plot_name} ===")
+            for section in plot.stp_sections:
                 lines.append(
-                    f"  {s.scope}: Water {s.total_water_lpd:,} | Sewage {s.sewage_lpd:,} | "
-                    f"Say {s.say_stp_kld} KLD | Treated {s.treated_water_lpd:,} | Excess {s.excess_treated_lpd:,}"
+                    f"  {section.scope}: Water {section.total_water_lpd:,} | Sewage {section.sewage_lpd:,} | "
+                    f"Say {section.say_stp_kld} KLD | Treated {section.treated_water_lpd:,} | "
+                    f"Excess {section.excess_treated_lpd:,}"
                 )
-            lines.append(f"  Total STP: {pl.stp_capacity_kld} KLD\n")
+            lines.append(f"  Total STP: {plot.stp_capacity_kld} KLD\n")
         self.stp_box.delete("1.0", "end")
         self.stp_box.insert("1.0", "\n".join(lines))
 
     def _preview_page(self):
-        f = ScrollablePage(self.container)
-        h = ctk.CTkFrame(f, fg_color=BRAND_NAVY, corner_radius=8)
-        h.pack(fill="x", padx=5, pady=5)
-        ctk.CTkLabel(h, text="Report Preview (8 Pages)", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
-        ctk.CTkButton(f, text="Calculate & Open Preview", fg_color="#8E44AD", height=42, command=self._open_preview).pack(pady=20)
-        ctk.CTkButton(f, text="Go to Generate Report", fg_color=BRAND_ORANGE, height=38, command=lambda: (self._calc(), self.show("Report"))).pack(pady=8)
-        return f
+        frame = ScrollablePage(self.container)
+        header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
+        header.pack(fill="x", padx=5, pady=5)
+        ctk.CTkLabel(header, text="Report Preview", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
+        self.preview_box = ctk.CTkTextbox(frame, height=360, font=("Courier", 11))
+        self.preview_box.pack(fill="both", expand=True, padx=15, pady=10)
+        ctk.CTkButton(frame, text="Calculate & Refresh Summary", fg_color="#8E44AD", height=42, command=self._refresh_preview).pack(
+            pady=10
+        )
+        ctk.CTkButton(frame, text="Open Full Preview", fg_color="#2980B9", height=38, command=self._open_preview).pack(pady=6)
+        ctk.CTkButton(
+            frame,
+            text="Go to Generate Report",
+            fg_color=BRAND_ORANGE,
+            height=38,
+            command=lambda: (self._calc(), self.show("Report")),
+        ).pack(pady=6)
+        return frame
+
+    def _refresh_preview(self) -> None:
+        self._calc()
+        lines = ["WATER DEMAND REPORT SUMMARY", "=" * 60, ""]
+        if not self.app_state.results:
+            lines.append("Complete Project, Residential, and Commercial pages first.")
+        else:
+            project = self.app_state.project
+            lines.extend(
+                [
+                    f"Project: {project.project_name}",
+                    f"Client: {project.client_name}",
+                    f"Location: {project.project_location}",
+                    f"Engineer: {project.engineer_name}",
+                    "",
+                ]
+            )
+            total = self.app_state.results.total
+            lines.append(f"Total Water Demand: {total.get('Total Water (LPD)', 0):,} LPD")
+            lines.append(f"Total STP Capacity: {total.get('Total STP Capacity (KLD)', 0)} KLD")
+            lines.append(f"Total Population: {total.get('Total Population', 0):,}")
+            lines.append("")
+            for plot_name in self._plots():
+                plot = self.app_state.results.plots[plot_name]
+                lines.append(
+                    f"{plot_name}: Res {plot.res_population} pop / {plot.res_total_lpd:,} LPD | "
+                    f"Comm {plot.com_population} pop / {plot.com_total_lpd:,} LPD | "
+                    f"Grand Total {plot.dry_total_water_lpd:,} LPD"
+                )
+        self.preview_box.delete("1.0", "end")
+        self.preview_box.insert("1.0", "\n".join(lines))
 
     def _settings_page(self):
-        f = ScrollablePage(self.container)
-        h = ctk.CTkFrame(f, fg_color=BRAND_NAVY, corner_radius=8)
-        h.pack(fill="x", padx=5, pady=5)
-        ctk.CTkLabel(h, text="Settings", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
+        frame = ScrollablePage(self.container)
+        header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
+        header.pack(fill="x", padx=5, pady=5)
+        ctk.CTkLabel(header, text="Settings", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
         ctk.CTkLabel(
-            f,
+            frame,
             text=(
                 f"Database:\n{DB_PATH}\n\n"
                 f"Logo:\n{LOGO_PATH}\n\n"
@@ -4589,20 +5926,14 @@ class WaterDemandApp(ctk.CTk):
             anchor="w",
             wraplength=900,
         ).pack(fill="x", anchor="w", padx=20, pady=10)
-        ctk.CTkButton(f, text="Export JSON", fg_color="#2980B9", command=self._exp_json).pack(pady=8)
-        ctk.CTkButton(f, text="Import JSON", fg_color="#2980B9", command=self._imp_json).pack(pady=8)
-        return f
+        ctk.CTkButton(frame, text="Export JSON", fg_color="#2980B9", command=self._exp_json).pack(pady=8)
+        ctk.CTkButton(frame, text="Import JSON", fg_color="#2980B9", command=self._imp_json).pack(pady=8)
+        return frame
 
     def _auto_fire_tank(self, plot: str) -> int:
-        heights_types = [
-            (w.building_height_m, w.building_type)
-            for w in self.app_state.residential
-            if w.plot == plot and w.building_height_m > 0
-        ]
-        if heights_types:
-            max_height = max(h for h, _ in heights_types)
-            btype = next((t for h, t in heights_types if h == max_height), "")
-            return fire_tank_capacity_liters(max_height, btype)
+        height, btype = self._plot_building_info(plot)
+        if height > 0:
+            return fire_tank_capacity_liters(height, btype)
         return int(self.app_state.other.fire_tank.get(plot, 0))
 
     def _next_from_project(self):
@@ -4626,39 +5957,65 @@ class WaterDemandApp(ctk.CTk):
         else:
             self.show("Project")
 
-    def show(self, name):
+    def _resolve_page_name(self, name: str) -> str:
         if name == "HVAC" and not hvac_applicable(self.app_state.project.project_type):
-            self.show("UGT")
-            return
+            return "UGT"
         if name == "Residential" and not show_residential_section(self.app_state.project.project_type):
-            self.show("Commercial" if show_commercial_section(self.app_state.project.project_type) else "Landscape")
-            return
+            return "Commercial" if show_commercial_section(self.app_state.project.project_type) else "Landscape"
         if name == "Commercial" and not show_commercial_section(self.app_state.project.project_type):
-            self.show("Residential" if show_residential_section(self.app_state.project.project_type) else "Landscape")
+            return "Residential" if show_residential_section(self.app_state.project.project_type) else "Landscape"
+        return name
+
+    def show(self, name: str) -> None:
+        name = self._resolve_page_name(name)
+        if name not in self.pages:
+            messagebox.showwarning(
+                "Navigation",
+                f"The '{name}' page is not available.\n"
+                "It may be hidden for the current project type or not yet loaded.",
+            )
             return
-        self.pages[name].tkraise()
-        if hasattr(self.pages[name], "refresh"):
-            self.pages[name].refresh()
-        for k, b in self.nav_btns.items():
-            b.configure(fg_color=BRAND_ORANGE if k == name else "transparent")
+        page = self.pages[name]
+        _raise_page(page)
+        if hasattr(page, "refresh"):
+            page.refresh()
+        if name == "STP":
+            self._refresh_stp()
+        elif name == "OHT":
+            self._refresh_oht()
+        elif name == "Preview":
+            self._refresh_preview()
+        elif name == "UGT":
+            self._refresh_ugt()
+        elif name == "Report" and hasattr(page, "refresh"):
+            page.refresh()
+        for key, btn in self.nav_btns.items():
+            btn.configure(fg_color=BRAND_ORANGE if key == name else "transparent")
 
     def _calc(self):
         try:
             self.app_state.auto_calculate()
-        except Exception as ex:
-            messagebox.showerror("Error", str(ex))
+        except Exception as exc:
+            messagebox.showerror("Error", str(exc))
 
     def _open_preview(self):
         self._calc()
         if self.app_state.results:
-            PreviewDialog(self, self.app_state.project, self.app_state.results, on_export_pdf=lambda: self.pages["Report"]._export_pdf())
+            PreviewDialog(
+                self,
+                self.app_state.project,
+                self.app_state.results,
+                on_export_pdf=lambda: self.pages["Report"]._export_pdf(),
+            )
 
     def _new(self):
         if messagebox.askyesno("New", "Start new project?"):
             self.app_state = AppState()
-            for p in self.pages.values():
-                p.destroy()
-            self._pages()
+            for page in self.pages.values():
+                page.destroy()
+            self.pages.clear()
+            self._rebuild_sidebar()
+            self._build_pages()
             self.show("Project")
 
     def _save_db(self):
@@ -4672,33 +6029,33 @@ class WaterDemandApp(ctk.CTk):
                 self.app_state.results.to_dict() if self.app_state.results else None,
             )
             messagebox.showinfo("Saved", "Project saved to database.")
-        except Exception as ex:
-            messagebox.showerror("Error", str(ex))
+        except Exception as exc:
+            messagebox.showerror("Error", str(exc))
 
     def _open_db(self):
         projs = list_projects()
         if not projs:
             messagebox.showinfo("DB", "No projects.")
             return
-        d = ctk.CTkToplevel(self)
-        d.title("Recent Projects")
-        d.geometry("520x420")
-        d.transient(self)
-        d.grab_set()
-        ctk.CTkLabel(d, text="Select Project", font=("Arial", 15, "bold")).pack(pady=8)
-        sf = ctk.CTkScrollableFrame(d, width=480, height=300)
-        sf.pack(padx=10)
-        sel = ctk.StringVar()
-        for p in projs:
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Recent Projects")
+        dialog.geometry("520x420")
+        dialog.transient(self)
+        dialog.grab_set()
+        ctk.CTkLabel(dialog, text="Select Project", font=("Arial", 15, "bold")).pack(pady=8)
+        scroll = ctk.CTkScrollableFrame(dialog, width=480, height=300)
+        scroll.pack(padx=10)
+        selected = ctk.StringVar()
+        for proj in projs:
             ctk.CTkRadioButton(
-                sf,
-                text=f"{p['project_name']} | {p['client_name']} | {p['date']}",
-                variable=sel,
-                value=p["project_id"],
+                scroll,
+                text=f"{proj['project_name']} | {proj['client_name']} | {proj['date']}",
+                variable=selected,
+                value=proj["project_id"],
             ).pack(anchor="w", padx=8, pady=3)
 
-        def go():
-            pid = sel.get()
+        def load_selected():
+            pid = selected.get()
             if not pid:
                 return
             data = load_project_from_db(pid)
@@ -4708,10 +6065,10 @@ class WaterDemandApp(ctk.CTk):
             self.app_state.commercial = com
             self.app_state.other = oth
             self.app_state.run_calculations()
-            d.destroy()
+            dialog.destroy()
             messagebox.showinfo("Loaded", "Project loaded.")
 
-        ctk.CTkButton(d, text="Load", fg_color=BRAND_ORANGE, command=go).pack(pady=10)
+        ctk.CTkButton(dialog, text="Load", fg_color=BRAND_ORANGE, command=load_selected).pack(pady=10)
 
     def _exp_json(self):
         fp = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON", "*.json")])

@@ -57,6 +57,7 @@ def remove_imports(source: str) -> str:
 
 def patch_source(src: str) -> str:
     src = src.replace('os.path.dirname(os.path.dirname(__file__))', "APP_DIR")
+    src = src.replace('os.path.dirname(os.path.dirname(os.path.abspath(__file__)))', "APP_DIR")
     src = src.replace('os.path.join(base, "assets", name)', 'os.path.join(base, name)')
     src = src.replace(
         'os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "water_demand.db")',
@@ -93,6 +94,12 @@ FILES = [
     "ui/pages/commercial_page.py",
     "ui/pages/other_page.py",
     "ui/pages/final_page.py",
+    "rwh/config.py",
+    "rwh/models.py",
+    "rwh/calculator.py",
+    "rwh/database.py",
+    "rwh/pdf_exporter.py",
+    "ui/pages/rwh_page.py",
     "_app_sidebar.py",
 ]
 

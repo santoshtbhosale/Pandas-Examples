@@ -160,8 +160,16 @@ class WaterDemandApp(ctk.CTk):
             page_name = "Commercial" if show_commercial_section(ptype) else "Other"
         if page_name == "Commercial" and not show_commercial_section(ptype):
             page_name = "Residential" if show_residential_section(ptype) else "Other"
+        if page_name not in self.frames:
+            messagebox.showwarning("Navigation", f"The '{page_name}' page is not available.")
+            return
         frame = self.frames[page_name]
-        frame.tkraise()
+        if hasattr(frame, "lift"):
+            frame.lift()
+        elif hasattr(frame, "_parent_frame"):
+            frame._parent_frame.tkraise()
+        else:
+            frame.tkraise()
         if hasattr(frame, "refresh"):
             frame.refresh()
         self._update_nav_visibility()
