@@ -15,9 +15,16 @@ from services.database import (
     parse_project_snapshot,
     project_exists,
     save_project,
-    search_projects,
 )
+from services.audit_service import ACTION_PROJECT_CREATED, ACTION_PROJECT_UPDATED, log_audit
 from services.lookup_db import next_project_number
+from services.project_workflow_service import (
+    get_project_workflow,
+    record_project_opened,
+    search_project_records,
+    update_project_workflow,
+    user_can_access_project_record,
+)
 from ui.app_state import AppState
 
 
@@ -63,12 +70,21 @@ def load_project_state(
     user: Optional[UserSession] = None,
 ) -> AppState:
     """Load an existing project into AppState."""
-    summary = get_project_summary(project_id, db_path)
-    if summary and user and not user.can_access_project(
-        summary.get("created_by", ""),
-        summary.get("engineer_name", ""),
-    ):
+    records = search_project_records(query=project_id, limit=1, db_path=db_path, user=user)
+    record = next((r for r in records if r["project_id"] == project_id), None)
+    if not record:
+        summary = get_project_summary(project_id, db_path)
+        if not summary:
+            raise ValueError(f"Project not found: {project_id}")
+        if user and not user.can_access_project(
+            summary.get("created_by", ""),
+            summary.get("engineer_name", ""),
+        ):
+            raise ValueError("You do not have permission to open this project.")
+    elif user and not user_can_access_project_record(user, record, db_path):
         raise ValueError("You do not have permission to open this project.")
+    if user:
+        record_project_opened(project_id, user, db_path)
     data = load_project_from_db(project_id, db_path)
     project, residential, commercial, other, calculated = parse_project_snapshot(data)
     state = AppState()
@@ -90,7 +106,8 @@ def persist_project_state(
 ) -> bool:
     """Save project; returns True if updated existing, False if new."""
     username = user.username if user else ""
-    return save_project(
+    is_update = project_exists(state.project.project_id, db_path)
+    result = save_project(
         state.project,
         state.residential,
         state.commercial,
@@ -100,6 +117,14 @@ def persist_project_state(
         created_by=username,
         updated_by=username,
     )
+    wf = get_project_workflow(state.project.project_id, db_path)
+    if not wf.project_type:
+        wf.project_type = state.project.project_type
+        update_project_workflow(state.project.project_id, wf, db_path)
+    if user:
+        action = ACTION_PROJECT_UPDATED if is_update else ACTION_PROJECT_CREATED
+        log_audit(action, user.username, user.user_id, state.project.project_id, db_path=db_path)
+    return result
 
 
 def find_projects(
@@ -107,10 +132,16 @@ def find_projects(
     limit: int = 50,
     db_path: str = DB_PATH,
     user: Optional[UserSession] = None,
+    status_filter: str = "",
+    date_from: str = "",
+    date_to: str = "",
 ):
-    username = user.username if user else ""
-    role = user.role if user else ""
-    full_name = user.full_name if user else ""
-    return search_projects(
-        query, limit=limit, db_path=db_path, username=username, role=role, full_name=full_name
+    return search_project_records(
+        query=query,
+        limit=limit,
+        db_path=db_path,
+        user=user,
+        status_filter=status_filter,
+        date_from=date_from,
+        date_to=date_to,
     )

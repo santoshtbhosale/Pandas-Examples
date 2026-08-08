@@ -65,7 +65,7 @@ class LoginScreen(ctk.CTkFrame):
 
         ctk.CTkLabel(
             form,
-            text="Default: admin / Admin@123  |  Engineer: akash / Akash@123",
+            text="Default: superadmin / Super@123  |  leader / Leader@123  |  akash / Akash@123",
             font=("Arial", 9),
             text_color="#888888",
             wraplength=340,

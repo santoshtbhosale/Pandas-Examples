@@ -49,6 +49,8 @@ class WaterDemandApp(ctk.CTk):
         init_db()
         init_lookup_tables(DB_PATH)
         self._autosave_job = None
+        self._timer_job = None
+        self._timer_label = None
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
         self.sidebar = self._build_sidebar()
@@ -170,6 +172,18 @@ class WaterDemandApp(ctk.CTk):
             )
             btn.pack(fill="x", padx=8, pady=2)
             self.nav_btns[key] = btn
+        timer_frame = ctk.CTkFrame(sb, fg_color="#1A252F", corner_radius=6)
+        timer_frame.pack(side="bottom", fill="x", padx=8, pady=4)
+        self._timer_label = ctk.CTkLabel(
+            timer_frame, text="Project Timer\n—", font=("Arial", 9), text_color="white", justify="left"
+        )
+        self._timer_label.pack(padx=8, pady=4)
+        ctk.CTkButton(timer_frame, text="Complete Project", height=26, fg_color="#27AE60", command=self._complete_project).pack(fill="x", padx=6, pady=2)
+        pr = ctk.CTkFrame(timer_frame, fg_color="transparent")
+        pr.pack(fill="x", padx=6, pady=(0, 4))
+        ctk.CTkButton(pr, text="Pause", width=70, height=24, command=self._pause_project).pack(side="left", padx=2)
+        ctk.CTkButton(pr, text="Resume", width=70, height=24, command=self._resume_project).pack(side="left", padx=2)
+        self._schedule_timer_refresh()
         ctk.CTkButton(sb, text="Save Project", fg_color=BRAND_ORANGE, command=self._save_db).pack(
             side="bottom", fill="x", padx=10, pady=4
         )
@@ -188,6 +202,56 @@ class WaterDemandApp(ctk.CTk):
     def _logout(self) -> None:
         if self.on_logout and messagebox.askyesno("Logout", "Return to login screen?"):
             self.on_logout()
+
+    def _schedule_timer_refresh(self) -> None:
+        if self._timer_job is not None:
+            self.after_cancel(self._timer_job)
+        self._refresh_timer_display()
+        self._timer_job = self.after(30_000, self._schedule_timer_refresh)
+
+    def _refresh_timer_display(self) -> None:
+        if not self._timer_label:
+            return
+        try:
+            from services.project_workflow_service import get_project_workflow
+            from services.project_timer import timer_snapshot
+            wf = get_project_workflow(self.app_state.project.project_id)
+            snap = timer_snapshot(wf)
+            self._timer_label.configure(
+                text=(
+                    f"Status: {snap['status']}\n"
+                    f"Elapsed: {snap['elapsed_display']}\n"
+                    f"Remaining: {snap['remaining_display']}\n"
+                    f"Expected: {(snap['expected_completion_at'] or '—')[:16]}"
+                )
+            )
+        except Exception:
+            self._timer_label.configure(text="Project Timer\n—")
+
+    def _complete_project(self) -> None:
+        if not self.current_user:
+            return
+        from services.project_workflow_service import complete_project
+        wf = complete_project(self.app_state.project.project_id, self.current_user)
+        self._calc()
+        from services.project_service import persist_project_state
+        persist_project_state(self.app_state, self.current_user)
+        self._refresh_timer_display()
+        messagebox.showinfo("Completed", f"Project completed ({wf.completion_outcome or wf.status}).")
+
+    def _pause_project(self) -> None:
+        if not self.current_user:
+            return
+        from services.project_workflow_service import pause_project
+        pause_project(self.app_state.project.project_id, self.current_user)
+        self._refresh_timer_display()
+
+    def _resume_project(self) -> None:
+        if not self.current_user:
+            return
+        from services.project_workflow_service import resume_project
+        resume_project(self.app_state.project.project_id, self.current_user)
+        self._refresh_timer_display()
 
     def _rebuild_sidebar(self) -> None:
         self.sidebar.destroy()
@@ -212,22 +276,27 @@ class WaterDemandApp(ctk.CTk):
             on_next=lambda: self._wizard_show_next("Commercial"),
             on_back=self._back_from_commercial,
         )
-        self.pages["Hospital"] = self._placeholder_page(
+        self.pages["Hospital"] = self._structured_guidance_page(
             "Hospital Details",
-            "Enter hospital bed counts and medical water requirements.\n"
-            "Use Commercial page with Hospital occupancy for NBC calculations.",
+            "Hospital water demand uses NBC commercial occupancy rules.\n"
+            "Add Hospital-type units on the Commercial page with bed count / area as applicable.\n\n"
+            "Supported in calculator: Hospital occupancy type on Commercial page.\n"
+            "Dedicated bed-count UI: structure only — enter data via Commercial until reference rules are confirmed.",
             lambda: self._wizard_show_next("Hospital"),
         )
-        self.pages["Hotel"] = self._placeholder_page(
+        self.pages["Hotel"] = self._structured_guidance_page(
             "Hotel / Kitchen / Laundry",
-            "Hotel kitchen and laundry water demands are calculated from commercial occupancy rules.\n"
-            "Add Hotel-type units on the Commercial page.",
+            "Hotel kitchen and laundry demands are calculated from commercial occupancy rules.\n"
+            "Add Hotel, Restaurant, or Kitchen-type units on the Commercial page.\n\n"
+            "Kitchen water for residential wings is auto-calculated from BHK mix.\n"
+            "Dedicated hotel UI: structure only — use Commercial page for hotel units.",
             lambda: self._wizard_show_next("Hotel"),
         )
-        self.pages["FoodCourt"] = self._placeholder_page(
+        self.pages["FoodCourt"] = self._structured_guidance_page(
             "Food Court",
             "Food court water demand uses Restaurant occupancy (÷1.4 population density).\n"
-            "Add Restaurant units on the Commercial page.",
+            "Add Restaurant units on the Commercial page.\n\n"
+            "No separate food-court formula is implemented without reference documentation.",
             lambda: self._wizard_show_next("FoodCourt"),
         )
         self.pages["Landscape"] = self._form_page("Landscape (NBC-2026)", self._landscape_ui)
@@ -247,6 +316,24 @@ class WaterDemandApp(ctk.CTk):
         self.pages["Settings"] = self._settings_page()
         for page in self.pages.values():
             page.grid(row=0, column=0, sticky="nsew")
+
+    def _structured_guidance_page(self, title: str, body: str, on_next):
+        frame = ScrollablePage(self.container)
+        header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
+        header.pack(fill="x", padx=5, pady=5)
+        ctk.CTkLabel(header, text=title, font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
+        ctk.CTkLabel(
+            frame, text=body, font=("Arial", 12), justify="left", wraplength=900,
+            text_color="#333333",
+        ).pack(anchor="w", padx=20, pady=20)
+        ctk.CTkLabel(
+            frame,
+            text="Note: No additional engineering calculations are shown here without approved reference rules.",
+            font=("Arial", 10, "italic"),
+            text_color="#C0392B",
+        ).pack(anchor="w", padx=20, pady=(0, 12))
+        ctk.CTkButton(frame, text="Next ->", fg_color=BRAND_ORANGE, command=on_next).pack(pady=12)
+        return frame
 
     def _placeholder_page(self, title: str, body: str, on_next):
         frame = ScrollablePage(self.container)

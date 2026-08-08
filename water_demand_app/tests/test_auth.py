@@ -46,12 +46,15 @@ class TestAuthDatabase(unittest.TestCase):
 
     def test_seed_default_users(self) -> None:
         init_users_table(self.db_path)
-        self.assertGreaterEqual(count_active_users(self.db_path), 5)
+        self.assertGreaterEqual(count_active_users(self.db_path), 7)
         users = list_users(self.db_path)
         roles = {u.role for u in users}
         self.assertIn(ROLE_ADMIN, roles)
         self.assertIn(ROLE_ENGINEER, roles)
         self.assertIn(ROLE_VIEWER, roles)
+        from models.user import ROLE_SUPER_ADMIN, ROLE_TEAM_LEADER
+        self.assertIn(ROLE_SUPER_ADMIN, roles)
+        self.assertIn(ROLE_TEAM_LEADER, roles)
 
     def test_authenticate_admin(self) -> None:
         init_users_table(self.db_path)

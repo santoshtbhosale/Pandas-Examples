@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Union
 
 import customtkinter as ctk
 
@@ -13,8 +13,12 @@ from services.lookup_db import init_lookup_tables
 from services.project_service import create_new_project_state, load_project_state, persist_project_state
 from ui.app_state import AppState
 from ui.dashboard import DashboardScreen
+from ui.dashboard_router import create_dashboard
+from ui.engineer_dashboard import EngineerDashboard
 from ui.login_screen import LoginScreen
 from ui.splash_screen import SplashScreen
+from ui.super_admin_dashboard import SuperAdminDashboard
+from ui.team_leader_dashboard import TeamLeaderDashboard
 
 
 class Application(ctk.CTk):
@@ -64,7 +68,7 @@ class Application(ctk.CTk):
 
     def _show_dashboard(self) -> None:
         self._clear_screen()
-        self._active_screen = DashboardScreen(
+        self._active_screen = create_dashboard(
             self,
             user=self.current_user,
             on_new_project=self._start_new_project,
@@ -112,7 +116,7 @@ class Application(ctk.CTk):
         self._water_app.protocol("WM_DELETE_WINDOW", self._on_water_app_close)
 
     def _on_project_autosaved(self) -> None:
-        if isinstance(self._active_screen, DashboardScreen):
+        if hasattr(self._active_screen, "refresh_stats"):
             self._active_screen.refresh_stats()
 
     def _on_water_app_close(self) -> None:
@@ -126,7 +130,7 @@ class Application(ctk.CTk):
             self._water_app.destroy()
             self._water_app = None
         self.deiconify()
-        if isinstance(self._active_screen, DashboardScreen):
+        if hasattr(self._active_screen, "refresh_stats"):
             self._active_screen.refresh_stats()
 
     def _on_water_app_logout(self) -> None:

@@ -94,6 +94,28 @@ def _migrate_projects_table(cursor: sqlite3.Cursor) -> None:
         cursor.execute("ALTER TABLE projects ADD COLUMN created_by TEXT DEFAULT ''")
     if "updated_by" not in cols:
         cursor.execute("ALTER TABLE projects ADD COLUMN updated_by TEXT DEFAULT ''")
+    additions = {
+        "project_type": "TEXT DEFAULT ''",
+        "assigned_to_username": "TEXT DEFAULT ''",
+        "assigned_by_username": "TEXT DEFAULT ''",
+        "team_leader_id": "INTEGER DEFAULT 0",
+        "assigned_at": "TEXT DEFAULT ''",
+        "expected_completion_at": "TEXT DEFAULT ''",
+        "project_opened_at": "TEXT DEFAULT ''",
+        "completed_at": "TEXT DEFAULT ''",
+        "paused_at": "TEXT DEFAULT ''",
+        "total_paused_seconds": "INTEGER DEFAULT 0",
+        "priority": "TEXT DEFAULT 'Normal'",
+        "status": "TEXT DEFAULT 'not_started'",
+        "progress_pct": "INTEGER DEFAULT 0",
+        "delay_seconds": "INTEGER DEFAULT 0",
+        "total_time_taken_seconds": "INTEGER DEFAULT 0",
+        "completion_outcome": "TEXT DEFAULT ''",
+        "assigned_duration_minutes": "INTEGER DEFAULT 0",
+    }
+    for col, typedef in additions.items():
+        if col not in cols:
+            cursor.execute(f"ALTER TABLE projects ADD COLUMN {col} {typedef}")
 
 
 def project_exists(project_id: str, db_path: str = DB_PATH) -> bool:
