@@ -1555,6 +1555,12 @@ def perform_calculations(
 DB_PATH = os.path.join(APP_DIR, "data", "water_demand.db")
 JSON_SCHEMA_VERSION = "1.0"
 
+_HISTORY_SQL = """
+    SELECT project_id, project_name, client_name, project_location, project_no,
+           date, updated_at, total_water_demand, engineer_name, created_by
+    FROM projects
+"""
+
 
 def init_db(db_path: str = DB_PATH) -> None:
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
@@ -1580,10 +1586,13 @@ def init_db(db_path: str = DB_PATH) -> None:
             stp_capacity_b REAL,
             json_snapshot TEXT,
             created_at TEXT,
-            updated_at TEXT
+            updated_at TEXT,
+            created_by TEXT DEFAULT '',
+            updated_by TEXT DEFAULT ''
         )
         """
     )
+    _migrate_projects_table(cursor)
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS residential_wings (
@@ -1618,6 +1627,25 @@ def init_db(db_path: str = DB_PATH) -> None:
     conn.close()
 
 
+def _migrate_projects_table(cursor: sqlite3.Cursor) -> None:
+    cursor.execute("PRAGMA table_info(projects)")
+    cols = {row[1] for row in cursor.fetchall()}
+    if "created_by" not in cols:
+        cursor.execute("ALTER TABLE projects ADD COLUMN created_by TEXT DEFAULT ''")
+    if "updated_by" not in cols:
+        cursor.execute("ALTER TABLE projects ADD COLUMN updated_by TEXT DEFAULT ''")
+
+
+def project_exists(project_id: str, db_path: str = DB_PATH) -> bool:
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM projects WHERE project_id = ?", (project_id,))
+    found = cursor.fetchone() is not None
+    conn.close()
+    return found
+
+
 def save_project(
     project: ProjectData,
     residential: List[ResidentialWing],
@@ -1625,8 +1653,11 @@ def save_project(
     other: OtherDetails,
     calculated: Optional[Dict[str, Any]] = None,
     db_path: str = DB_PATH,
-) -> None:
+    created_by: str = "",
+    updated_by: str = "",
+) -> bool:
     init_db(db_path)
+    is_update = project_exists(project.project_id, db_path)
     snapshot = build_project_snapshot(project, residential, commercial, other, calculated)
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
@@ -1645,9 +1676,11 @@ def save_project(
             project_id, project_name, client_name, project_location, engineer_name,
             project_no, date, revision_no, description, prepared_by, checked_by,
             approved_by, total_water_demand, stp_capacity_a, stp_capacity_b,
-            json_snapshot, created_at, updated_at
+            json_snapshot, created_at, updated_at, created_by, updated_by
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(
             (SELECT created_at FROM projects WHERE project_id = ?), ?
+        ), ?, COALESCE(
+            (SELECT created_by FROM projects WHERE project_id = ?), ?
         ), ?)
         """,
         (
@@ -1670,6 +1703,9 @@ def save_project(
             project.project_id,
             now,
             now,
+            project.project_id,
+            created_by or updated_by,
+            updated_by or created_by,
         ),
     )
     cursor.execute("DELETE FROM residential_wings WHERE project_id = ?", (project.project_id,))
@@ -1703,21 +1739,99 @@ def save_project(
         )
     conn.commit()
     conn.close()
+    return is_update
 
 
-def list_projects(db_path: str = DB_PATH) -> List[Dict[str, str]]:
+def _row_to_summary(row: tuple) -> Dict[str, str]:
+    return {
+        "project_id": row[0] or "",
+        "project_name": row[1] or "",
+        "client_name": row[2] or "",
+        "project_location": row[3] or "",
+        "project_no": row[4] or "",
+        "date": row[5] or "",
+        "updated_at": row[6] or "",
+        "total_water_demand": str(row[7] or 0),
+        "engineer_name": row[8] or "" if len(row) > 8 else "",
+        "created_by": row[9] or "" if len(row) > 9 else "",
+    }
+
+
+def get_project_history(limit: int = 100, db_path: str = DB_PATH) -> List[Dict[str, str]]:
     init_db(db_path)
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT project_id, project_name, client_name, date FROM projects ORDER BY updated_at DESC"
+        _HISTORY_SQL + " ORDER BY updated_at DESC LIMIT ?",
+        (limit,),
     )
-    rows = [
-        {"project_id": r[0], "project_name": r[1], "client_name": r[2], "date": r[3]}
-        for r in cursor.fetchall()
-    ]
+    rows = [_row_to_summary(r) for r in cursor.fetchall()]
     conn.close()
     return rows
+
+
+def search_projects(query: str, limit: int = 50, db_path: str = DB_PATH) -> List[Dict[str, str]]:
+    init_db(db_path)
+    key = f"%{(query or '').strip()}%"
+    if key == "%%":
+        return get_project_history(limit, db_path)
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute(
+        _HISTORY_SQL
+        + """
+        WHERE project_id LIKE ? OR project_name LIKE ? OR client_name LIKE ?
+           OR project_location LIKE ? OR project_no LIKE ? OR engineer_name LIKE ?
+        ORDER BY updated_at DESC LIMIT ?
+        """,
+        (key, key, key, key, key, key, limit),
+    )
+    rows = [_row_to_summary(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
+def get_project_summary(project_id: str, db_path: str = DB_PATH) -> Optional[Dict[str, str]]:
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute(_HISTORY_SQL + " WHERE project_id = ?", (project_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return _row_to_summary(row) if row else None
+
+
+def list_projects(db_path: str = DB_PATH) -> List[Dict[str, str]]:
+    return get_project_history(200, db_path)
+
+
+def update_project_metadata(
+    project_id: str,
+    project_name: str,
+    client_name: str,
+    project_location: str,
+    engineer_name: str = "",
+    updated_by: str = "",
+    db_path: str = DB_PATH,
+) -> None:
+    """Update header fields on an existing project without touching calculation data."""
+    init_db(db_path)
+    data = load_project_from_db(project_id, db_path)
+    project, residential, commercial, other, calculated = parse_project_snapshot(data)
+    project.project_name = project_name
+    project.client_name = client_name
+    project.project_location = project_location
+    if engineer_name:
+        project.engineer_name = engineer_name
+    save_project(
+        project,
+        residential,
+        commercial,
+        other,
+        calculated,
+        db_path=db_path,
+        updated_by=updated_by,
+    )
 
 
 def load_project_from_db(project_id: str, db_path: str = DB_PATH) -> Dict[str, Any]:
@@ -2086,6 +2200,86 @@ def next_project_number(db_path: str = DB_PATH) -> str:
     else:
         seq = 1
     return f"AE-{year}-{seq:03d}"
+
+# ==================== services/project_service.py ====================
+"""Project lifecycle helpers — new, open, search, auto ID."""
+
+
+
+
+
+def generate_project_id(db_path: str = DB_PATH) -> str:
+    """Auto-generate unique project ID: WD-YYYYMMDD-NNN."""
+    today = datetime.now().strftime("%Y%m%d")
+    prefix = f"WD-{today}-"
+    seq = 1
+    while True:
+        candidate = f"{prefix}{seq:03d}"
+        if not project_exists(candidate, db_path):
+            return candidate
+        seq += 1
+        if seq > 999:
+            return f"WD-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+
+def create_new_project_state(user: Optional[UserSession] = None, db_path: str = DB_PATH) -> AppState:
+    """Fresh project with auto-generated IDs."""
+    state = AppState()
+    state.project = ProjectData(
+        project_id=generate_project_id(db_path),
+        project_name="NEW PROJECT",
+        client_name="",
+        project_location="",
+        engineer_name=user.full_name if user else "Akash",
+        project_no=next_project_number(db_path),
+        date=datetime.now().strftime("%d-%m-%Y"),
+        revision=RevisionInfo(
+            date=datetime.now().strftime("%d-%m-%Y"),
+            prepared_by=user.full_name if user else "",
+        ),
+    )
+    state.residential = []
+    state.commercial = []
+    return state
+
+
+def load_project_state(project_id: str, db_path: str = DB_PATH) -> AppState:
+    """Load an existing project into AppState."""
+    data = load_project_from_db(project_id, db_path)
+    project, residential, commercial, other, calculated = parse_project_snapshot(data)
+    state = AppState()
+    state.project = project
+    state.residential = residential
+    state.commercial = commercial
+    state.other = other
+    if calculated:
+        state.run_calculations()
+    else:
+        state.auto_calculate()
+    return state
+
+
+def persist_project_state(
+    state: AppState,
+    user: Optional[UserSession] = None,
+    db_path: str = DB_PATH,
+) -> bool:
+    """Save project; returns True if updated existing, False if new."""
+    username = user.username if user else ""
+    return save_project(
+        state.project,
+        state.residential,
+        state.commercial,
+        state.other,
+        state.results.to_dict() if state.results else None,
+        db_path=db_path,
+        created_by=username,
+        updated_by=username,
+    )
+
+
+def find_projects(query: str = "", limit: int = 50, db_path: str = DB_PATH):
+    return search_projects(query, limit=limit, db_path=db_path)
 
 # ==================== services/pdf_exporter.py ====================
 
@@ -4042,19 +4236,24 @@ class LoginScreen(ctk.CTkFrame):
 
 
 class DashboardScreen(ctk.CTkFrame):
-    """Post-login dashboard with module launcher and logout."""
+    """Post-login dashboard with project management and module launcher."""
 
     def __init__(
         self,
         master,
         user: UserSession,
+        on_new_project: Callable[[], None],
+        on_open_project: Callable[[str], None],
         on_launch_water_demand: Callable[[], None],
         on_logout: Callable[[], None],
     ) -> None:
         super().__init__(master, fg_color="#F0F2F5")
         self.user = user
+        self.on_new_project = on_new_project
+        self.on_open_project = on_open_project
         self.on_launch_water_demand = on_launch_water_demand
         self.on_logout = on_logout
+        self.project_hub: Optional[ProjectHub] = None
         self._build()
 
     def _build(self) -> None:
@@ -4091,89 +4290,91 @@ class DashboardScreen(ctk.CTkFrame):
             height=32,
         ).pack(side="left")
 
-        body = ctk.CTkFrame(self, fg_color="transparent")
-        body.grid(row=1, column=0, sticky="nsew", padx=32, pady=24)
+        body = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        body.grid(row=1, column=0, sticky="nsew", padx=24, pady=16)
         body.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
             body,
             text=f"Welcome, {self.user.full_name}",
-            font=("Arial", 26, "bold"),
+            font=("Arial", 24, "bold"),
             text_color=BRAND_NAVY,
             anchor="w",
-        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
+        ).grid(row=0, column=0, sticky="ew", pady=(0, 4))
         ctk.CTkLabel(
             body,
-            text="Select a module to begin your engineering workflow.",
+            text="Manage projects or launch the Water Demand calculator.",
             font=("Arial", 13),
             text_color="#666666",
             anchor="w",
-        ).grid(row=1, column=0, sticky="w", pady=(0, 24))
+        ).grid(row=1, column=0, sticky="ew", pady=(0, 16))
 
-        cards = ctk.CTkFrame(body, fg_color="transparent")
-        cards.grid(row=2, column=0, sticky="ew")
-        cards.grid_columnconfigure((0, 1, 2), weight=1)
+        stats = ctk.CTkFrame(body, fg_color="transparent")
+        stats.grid(row=2, column=0, sticky="ew", pady=(0, 16))
+        stats.grid_columnconfigure((0, 1, 2), weight=1)
 
-        self._module_card(
-            cards,
-            0,
-            "Water Demand Calculator",
-            "NBC-2026 water demand, UGT/OHT/STP sizing,\nPDF & Excel report generation.",
-            "Launch Module",
-            self._launch_water_demand,
-            enabled=self.user.can_launch_water_demand(),
+        project_count = len(find_projects())
+        can_launch = self.user.can_launch_water_demand()
+        self._stat_card(stats, 0, "Saved Projects", str(project_count), "In database")
+        self._stat_card(stats, 1, "Active Users", str(count_active_users()), "Registered accounts")
+        self._stat_card(
+            stats, 2, "Your Role", self.user.role_label,
+            "Engineer access" if can_launch else "View only",
         )
-        project_count = len(list_projects())
-        self._stat_card(cards, 1, "Saved Projects", str(project_count), "Projects in database")
-        self._stat_card(cards, 2, "Active Users", str(count_active_users()), "Registered accounts")
 
-        if not self.user.can_launch_water_demand():
+        self.project_hub = ProjectHub(
+            body,
+            user=self.user,
+            on_new_project=self.on_new_project,
+            on_open_project=self.on_open_project,
+            enabled=can_launch,
+        )
+        self.project_hub.grid(row=3, column=0, sticky="ew", pady=(0, 16))
+
+        module_card = ctk.CTkFrame(body, fg_color="white", corner_radius=10, border_width=1, border_color="#DDDDDD")
+        module_card.grid(row=4, column=0, sticky="ew", pady=(0, 8))
+        ctk.CTkLabel(
+            module_card,
+            text="Water Demand Calculator",
+            font=("Arial", 15, "bold"),
+            text_color=BRAND_NAVY,
+        ).pack(anchor="w", padx=20, pady=(16, 4))
+        ctk.CTkLabel(
+            module_card,
+            text="Open the calculator with a blank session (use Project Management above to load a saved project).",
+            font=("Arial", 11),
+            text_color="#666666",
+            justify="left",
+        ).pack(anchor="w", padx=20, pady=(0, 12))
+        ctk.CTkButton(
+            module_card,
+            text="Launch Calculator (Blank)",
+            command=self._launch_water_demand,
+            fg_color=BRAND_ORANGE if can_launch else "#AAAAAA",
+            hover_color="#D06018" if can_launch else "#AAAAAA",
+            state="normal" if can_launch else "disabled",
+            height=36,
+        ).pack(anchor="w", padx=20, pady=(0, 16))
+
+        if not can_launch:
             ctk.CTkLabel(
                 body,
-                text="Your account has Viewer access. Contact an administrator for module access.",
+                text="Your account has Viewer access. Contact an administrator for project access.",
                 font=("Arial", 12),
                 text_color="#C0392B",
-            ).grid(row=3, column=0, sticky="w", pady=(20, 0))
-
-    def _module_card(
-        self,
-        parent,
-        column: int,
-        title: str,
-        description: str,
-        button_text: str,
-        command: Callable[[], None],
-        enabled: bool = True,
-    ) -> None:
-        card = ctk.CTkFrame(parent, corner_radius=10, fg_color="white", border_width=1, border_color="#DDDDDD")
-        card.grid(row=0, column=column, padx=8, pady=8, sticky="nsew")
-        ctk.CTkLabel(card, text=title, font=("Arial", 16, "bold"), text_color=BRAND_NAVY).pack(
-            anchor="w", padx=20, pady=(20, 8)
-        )
-        ctk.CTkLabel(card, text=description, font=("Arial", 12), text_color="#555555", justify="left").pack(
-            anchor="w", padx=20, pady=(0, 16)
-        )
-        ctk.CTkButton(
-            card,
-            text=button_text,
-            command=command,
-            fg_color=BRAND_ORANGE if enabled else "#AAAAAA",
-            hover_color="#D06018" if enabled else "#AAAAAA",
-            state="normal" if enabled else "disabled",
-            height=36,
-        ).pack(anchor="w", padx=20, pady=(0, 20))
+            ).grid(row=5, column=0, sticky="w", pady=(8, 0))
 
     def _stat_card(self, parent, column: int, title: str, value: str, subtitle: str) -> None:
         card = ctk.CTkFrame(parent, corner_radius=10, fg_color="white", border_width=1, border_color="#DDDDDD")
-        card.grid(row=0, column=column, padx=8, pady=8, sticky="nsew")
-        ctk.CTkLabel(card, text=title, font=("Arial", 14, "bold"), text_color=BRAND_NAVY).pack(
-            anchor="w", padx=20, pady=(20, 8)
+        card.grid(row=0, column=column, padx=6, pady=4, sticky="nsew")
+        ctk.CTkLabel(card, text=title, font=("Arial", 12, "bold"), text_color=BRAND_NAVY).pack(
+            anchor="w", padx=16, pady=(14, 4)
         )
-        ctk.CTkLabel(card, text=value, font=("Arial", 32, "bold"), text_color=BRAND_ORANGE).pack(
-            anchor="w", padx=20, pady=(0, 4)
+        ctk.CTkLabel(card, text=value, font=("Arial", 24, "bold"), text_color=BRAND_ORANGE).pack(
+            anchor="w", padx=16, pady=(0, 2)
         )
-        ctk.CTkLabel(card, text=subtitle, font=("Arial", 11), text_color="#888888").pack(
-            anchor="w", padx=20, pady=(0, 20)
+        ctk.CTkLabel(card, text=subtitle, font=("Arial", 10), text_color="#888888").pack(
+            anchor="w", padx=16, pady=(0, 14)
         )
 
     def _launch_water_demand(self) -> None:
@@ -4187,10 +4388,251 @@ class DashboardScreen(ctk.CTkFrame):
             self.on_logout()
 
     def refresh_stats(self) -> None:
-        """Rebuild dashboard to refresh project/user counts."""
-        for child in self.winfo_children():
-            child.destroy()
+        if self.project_hub:
+            self.project_hub.refresh()
+
+# ==================== ui/project_hub.py ====================
+
+
+
+
+
+class ProjectHub(ctk.CTkFrame):
+    """Dashboard project management: new, open, search, history, edit."""
+
+    def __init__(
+        self,
+        master,
+        user: UserSession,
+        on_new_project: Callable[[], None],
+        on_open_project: Callable[[str], None],
+        enabled: bool = True,
+    ) -> None:
+        super().__init__(master, fg_color="white", corner_radius=10, border_width=1, border_color="#DDDDDD")
+        self.user = user
+        self.on_new_project = on_new_project
+        self.on_open_project = on_open_project
+        self.enabled = enabled
+        self._selected_id: Optional[str] = None
+        self._row_widgets: dict[str, ctk.CTkFrame] = {}
         self._build()
+        self.refresh()
+
+    def _build(self) -> None:
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(2, weight=1)
+
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 8))
+        header.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            header,
+            text="Project Management",
+            font=("Arial", 16, "bold"),
+            text_color=BRAND_NAVY,
+        ).grid(row=0, column=0, sticky="w")
+
+        self.search_var = ctk.StringVar()
+        self.search_var.trace_add("write", lambda *_: self._on_search())
+        search_frame = ctk.CTkFrame(header, fg_color="transparent")
+        search_frame.grid(row=0, column=1, sticky="e")
+        ctk.CTkEntry(
+            search_frame,
+            textvariable=self.search_var,
+            placeholder_text="Search by name, client, location, ID...",
+            width=280,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(search_frame, text="Clear", width=60, command=self._clear_search).pack(side="left")
+
+        actions = ctk.CTkFrame(self, fg_color="transparent")
+        actions.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 8))
+
+        btn_state = "normal" if self.enabled else "disabled"
+        ctk.CTkButton(
+            actions, text="+ New Project", fg_color="#27AE60", command=self._new_project,
+            state=btn_state, width=120,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            actions, text="Open Project", fg_color=BRAND_ORANGE, command=self._open_selected,
+            state=btn_state, width=120,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            actions, text="Edit Project", fg_color="#2980B9", command=self._edit_selected,
+            state=btn_state, width=110,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            actions, text="Refresh", fg_color="#7F8C8D", command=self.refresh, width=80,
+        ).pack(side="left")
+
+        self.history_frame = ctk.CTkScrollableFrame(self, height=220, label_text="Project History")
+        self.history_frame.grid(row=2, column=0, sticky="nsew", padx=16, pady=(0, 16))
+
+        cols = ctk.CTkFrame(self.history_frame, fg_color="#E8ECF0", corner_radius=4)
+        cols.pack(fill="x", pady=(0, 4))
+        for i, (text, width) in enumerate([
+            ("Project ID", 130), ("Name", 180), ("Client", 120), ("Location", 120),
+            ("No.", 90), ("Updated", 140),
+        ]):
+            ctk.CTkLabel(cols, text=text, font=("Arial", 10, "bold"), width=width, anchor="w").grid(
+                row=0, column=i, padx=4, pady=4, sticky="w"
+            )
+
+        self.status_label = ctk.CTkLabel(
+            self, text="", font=("Arial", 10), text_color="#888888", anchor="w"
+        )
+        self.status_label.grid(row=3, column=0, sticky="w", padx=16, pady=(0, 12))
+
+    def _clear_search(self) -> None:
+        self.search_var.set("")
+
+    def _on_search(self) -> None:
+        self.refresh(self.search_var.get())
+
+    def refresh(self, query: str = "") -> None:
+        for w in list(self.history_frame.winfo_children())[1:]:
+            w.destroy()
+        self._row_widgets.clear()
+        self._selected_id = None
+
+        projects = find_projects(query)
+        if not projects:
+            ctk.CTkLabel(
+                self.history_frame,
+                text="No projects found. Click '+ New Project' to create one.",
+                font=("Arial", 11),
+                text_color="#888888",
+            ).pack(pady=20)
+            self.status_label.configure(text="0 projects")
+            return
+
+        for proj in projects:
+            self._add_row(proj)
+
+        self.status_label.configure(text=f"{len(projects)} project(s) — select a row, then Open or Edit")
+
+    def _add_row(self, proj: dict) -> None:
+        pid = proj["project_id"]
+        row = ctk.CTkFrame(self.history_frame, fg_color="transparent", corner_radius=4)
+        row.pack(fill="x", pady=1)
+        self._row_widgets[pid] = row
+
+        updated = (proj.get("updated_at") or "")[:16].replace("T", " ")
+        values = [
+            pid,
+            proj.get("project_name", ""),
+            proj.get("client_name", ""),
+            proj.get("project_location", ""),
+            proj.get("project_no", ""),
+            updated,
+        ]
+        widths = [130, 180, 120, 120, 90, 140]
+        for i, (val, width) in enumerate(zip(values, widths)):
+            lbl = ctk.CTkLabel(row, text=val[:28], font=("Arial", 10), width=width, anchor="w")
+            lbl.grid(row=0, column=i, padx=4, pady=3, sticky="w")
+            lbl.bind("<Button-1>", lambda e, p=pid: self._select_row(p))
+            row.bind("<Button-1>", lambda e, p=pid: self._select_row(p))
+        row.bind("<Double-Button-1>", lambda e, p=pid: self._open_project_id(p))
+
+    def _select_row(self, project_id: str) -> None:
+        self._selected_id = project_id
+        for pid, row in self._row_widgets.items():
+            row.configure(fg_color="#D6EAF8" if pid == project_id else "transparent")
+
+    def _open_project_id(self, project_id: str) -> None:
+        if not self.enabled:
+            messagebox.showwarning("Access Denied", "Your role cannot open projects.")
+            return
+        self.on_open_project(project_id)
+
+    def _new_project(self) -> None:
+        if not self.enabled:
+            return
+        self.on_new_project()
+
+    def _open_selected(self) -> None:
+        if not self._selected_id:
+            messagebox.showinfo("Select Project", "Select a project from the history list first.")
+            return
+        self._open_project_id(self._selected_id)
+
+    def _edit_selected(self) -> None:
+        if not self._selected_id:
+            messagebox.showinfo("Select Project", "Select a project to edit.")
+            return
+        ProjectEditDialog(self.winfo_toplevel(), self._selected_id, self.user, on_saved=self.refresh)
+
+# ==================== ui/project_edit_dialog.py ====================
+
+
+
+
+
+class ProjectEditDialog(ctk.CTkToplevel):
+    """Edit project header metadata without opening the calculator."""
+
+    def __init__(
+        self,
+        master,
+        project_id: str,
+        user: UserSession,
+        on_saved: Optional[Callable[[], None]] = None,
+    ) -> None:
+        super().__init__(master)
+        self.project_id = project_id
+        self.user = user
+        self.on_saved = on_saved
+        self.title("Edit Project")
+        self.geometry("480x360")
+        self.transient(master)
+        self.grab_set()
+
+        summary = get_project_summary(project_id)
+        if not summary:
+            messagebox.showerror("Error", "Project not found.")
+            self.destroy()
+            return
+
+        ctk.CTkLabel(self, text="Edit Project Details", font=("Arial", 16, "bold")).pack(pady=12)
+        ctk.CTkLabel(self, text=f"ID: {project_id}", font=("Arial", 10), text_color="#666666").pack()
+
+        form = ctk.CTkFrame(self, fg_color="transparent")
+        form.pack(fill="x", padx=24, pady=8)
+
+        self.entries = {}
+        for key, label, value in [
+            ("project_name", "Project Name", summary["project_name"]),
+            ("client_name", "Client Name", summary["client_name"]),
+            ("project_location", "Location", summary["project_location"]),
+            ("engineer_name", "Engineer", summary.get("engineer_name", "")),
+        ]:
+            ctk.CTkLabel(form, text=label, anchor="w").pack(fill="x", pady=(8, 2))
+            ent = ctk.CTkEntry(form, width=400)
+            ent.insert(0, value)
+            ent.pack(fill="x")
+            self.entries[key] = ent
+
+        btn_row = ctk.CTkFrame(self, fg_color="transparent")
+        btn_row.pack(pady=16)
+        ctk.CTkButton(btn_row, text="Save", fg_color=BRAND_ORANGE, command=self._save).pack(side="left", padx=8)
+        ctk.CTkButton(btn_row, text="Cancel", fg_color="gray", command=self.destroy).pack(side="left", padx=8)
+
+    def _save(self) -> None:
+        try:
+            update_project_metadata(
+                self.project_id,
+                validate_required(self.entries["project_name"].get(), "Project Name"),
+                validate_required(self.entries["client_name"].get(), "Client Name"),
+                validate_required(self.entries["project_location"].get(), "Location"),
+                self.entries["engineer_name"].get().strip(),
+                updated_by=self.user.username,
+            )
+            messagebox.showinfo("Saved", "Project updated successfully.")
+            if self.on_saved:
+                self.on_saved()
+            self.destroy()
+        except ValidationError as exc:
+            messagebox.showerror("Validation", exc.message)
 
 # ==================== ui/pages/project_page.py ====================
 
@@ -6565,14 +7007,16 @@ class WaterDemandApp(ctk.CTk):
         ("Settings", "Settings"),
     ]
 
-    def __init__(self, current_user=None, on_logout=None):
+    def __init__(self, current_user=None, on_logout=None, initial_state=None, on_autosave=None):
         super().__init__()
         ctk.set_appearance_mode("light")
         ctk.set_default_color_theme("blue")
         self.current_user = current_user
         self.on_logout = on_logout
-        self.app_state = AppState()
-        self.title("American Edge Engineers - Water Demand Report Generator")
+        self.on_autosave = on_autosave
+        self.app_state = initial_state if initial_state is not None else AppState()
+        self._last_autosave_at = ""
+        self.title(self._window_title())
         self.geometry("1280x850")
         self.minsize(1100, 700)
         self.configure(fg_color="#F0F2F5")
@@ -6592,6 +7036,27 @@ class WaterDemandApp(ctk.CTk):
         self.show("Project")
         self._schedule_autosave()
 
+    def _window_title(self) -> str:
+        pid = self.app_state.project.project_id
+        name = self.app_state.project.project_name or "Untitled"
+        return f"Water Demand — {name} [{pid}]"
+
+    def _reload_ui_from_state(self) -> None:
+        for page in self.pages.values():
+            page.destroy()
+        self.pages.clear()
+        self._rebuild_sidebar()
+        self._build_pages()
+        self.title(self._window_title())
+        self.show("Project")
+
+    def _autosave_before_close(self) -> None:
+        try:
+            self._calc()
+            persist_project_state(self.app_state, self.current_user, DB_PATH)
+        except Exception:
+            pass
+
     def _schedule_autosave(self) -> None:
         if self._autosave_job is not None:
             self.after_cancel(self._autosave_job)
@@ -6599,14 +7064,11 @@ class WaterDemandApp(ctk.CTk):
 
     def _auto_save_tick(self) -> None:
         try:
-            save_project(
-                self.app_state.project,
-                self.app_state.residential,
-                self.app_state.commercial,
-                self.app_state.other,
-                self.app_state.results.to_dict() if self.app_state.results else None,
-                DB_PATH,
-            )
+            self._calc()
+            persist_project_state(self.app_state, self.current_user, DB_PATH)
+            self._last_autosave_at = datetime.now().strftime("%H:%M:%S")
+            if self.on_autosave:
+                self.on_autosave()
         except Exception:
             pass
         self._schedule_autosave()
@@ -6636,7 +7098,15 @@ class WaterDemandApp(ctk.CTk):
                 font=("Arial", 9),
                 text_color="#CCCCCC",
                 justify="center",
-            ).pack(pady=(0, 10))
+            ).pack(pady=(0, 4))
+        pid = self.app_state.project.project_id
+        ctk.CTkLabel(
+            sb,
+            text=f"ID: {pid}",
+            font=("Arial", 8),
+            text_color="#999999",
+            wraplength=200,
+        ).pack(pady=(0, 8))
         self.nav_btns = {}
         for key, label in self.NAV:
             if not self._nav_visible(key):
@@ -7203,14 +7673,7 @@ class WaterDemandApp(ctk.CTk):
         xlsx_path = os.path.join(reports_dir, f"{safe_name}_Water_Demand.xlsx")
 
         try:
-            save_project(
-                self.app_state.project,
-                self.app_state.residential,
-                self.app_state.commercial,
-                self.app_state.other,
-                self.app_state.results.to_dict() if self.app_state.results else None,
-                DB_PATH,
-            )
+            persist_project_state(self.app_state, self.current_user, DB_PATH)
             logo = LOGO_PATH if os.path.exists(LOGO_PATH) else None
             export_pdf(pdf_path, self.app_state.project, self.app_state.results, logo)
             export_excel(xlsx_path, self.app_state.project, self.app_state.results)
@@ -7231,66 +7694,79 @@ class WaterDemandApp(ctk.CTk):
         )
 
     def _new(self):
-        if messagebox.askyesno("New", "Start new project?"):
-            self.app_state = AppState()
-            for page in self.pages.values():
-                page.destroy()
-            self.pages.clear()
-            self._rebuild_sidebar()
-            self._build_pages()
-            self.show("Project")
+        if not messagebox.askyesno("New Project", "Start a new project? Unsaved changes will be auto-saved first."):
+            return
+        try:
+            self._autosave_before_close()
+        except Exception:
+            pass
+        self.app_state = create_new_project_state(self.current_user, DB_PATH)
+        self._reload_ui_from_state()
 
     def _save_db(self):
         try:
             self._calc()
-            save_project(
-                self.app_state.project,
-                self.app_state.residential,
-                self.app_state.commercial,
-                self.app_state.other,
-                self.app_state.results.to_dict() if self.app_state.results else None,
-            )
-            messagebox.showinfo("Saved", "Project saved to database.")
+            is_update = persist_project_state(self.app_state, self.current_user, DB_PATH)
+            self.title(self._window_title())
+            action = "updated" if is_update else "saved"
+            messagebox.showinfo("Saved", f"Project {action}.\nID: {self.app_state.project.project_id}")
+            if self.on_autosave:
+                self.on_autosave()
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
 
     def _open_db(self):
-        projs = list_projects()
+        projs = find_projects()
         if not projs:
-            messagebox.showinfo("DB", "No projects.")
+            messagebox.showinfo("Open Project", "No saved projects.")
             return
         dialog = ctk.CTkToplevel(self)
-        dialog.title("Recent Projects")
-        dialog.geometry("520x420")
+        dialog.title("Open Project")
+        dialog.geometry("640x440")
         dialog.transient(self)
         dialog.grab_set()
         ctk.CTkLabel(dialog, text="Select Project", font=("Arial", 15, "bold")).pack(pady=8)
-        scroll = ctk.CTkScrollableFrame(dialog, width=480, height=300)
-        scroll.pack(padx=10)
+        search_var = ctk.StringVar()
+        ctk.CTkEntry(dialog, textvariable=search_var, placeholder_text="Search...", width=580).pack(padx=12, pady=4)
+        scroll = ctk.CTkScrollableFrame(dialog, width=600, height=300)
+        scroll.pack(padx=10, pady=4)
         selected = ctk.StringVar()
-        for proj in projs:
-            ctk.CTkRadioButton(
-                scroll,
-                text=f"{proj['project_name']} | {proj['client_name']} | {proj['date']}",
-                variable=selected,
-                value=proj["project_id"],
-            ).pack(anchor="w", padx=8, pady=3)
+        row_widgets: list = []
+
+        def populate(query: str = "") -> None:
+            for w in row_widgets:
+                w.destroy()
+            row_widgets.clear()
+            for proj in find_projects(query):
+                rb = ctk.CTkRadioButton(
+                    scroll,
+                    text=(
+                        f"{proj['project_id']} | {proj['project_name']} | "
+                        f"{proj['client_name']} | {proj.get('project_location', '')}"
+                    ),
+                    variable=selected,
+                    value=proj["project_id"],
+                )
+                rb.pack(anchor="w", padx=8, pady=3)
+                row_widgets.append(rb)
+
+        search_var.trace_add("write", lambda *_: populate(search_var.get()))
+        populate()
 
         def load_selected():
             pid = selected.get()
             if not pid:
+                messagebox.showwarning("Open Project", "Select a project.")
                 return
-            data = load_project_from_db(pid)
-            proj, res, com, oth, _ = parse_project_snapshot(data)
-            self.app_state.project = proj
-            self.app_state.residential = res
-            self.app_state.commercial = com
-            self.app_state.other = oth
-            self.app_state.run_calculations()
-            dialog.destroy()
-            messagebox.showinfo("Loaded", "Project loaded.")
+            try:
+                self.app_state = load_project_state(pid, DB_PATH)
+                self._reload_ui_from_state()
+                dialog.destroy()
+                messagebox.showinfo("Loaded", f"Project loaded.\nID: {pid}")
+            except ValueError as exc:
+                messagebox.showerror("Error", str(exc))
 
-        ctk.CTkButton(dialog, text="Load", fg_color=BRAND_ORANGE, command=load_selected).pack(pady=10)
+        ctk.CTkButton(dialog, text="Open", fg_color=BRAND_ORANGE, command=load_selected).pack(pady=10)
 
     def _exp_json(self):
         fp = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON", "*.json")])
@@ -7351,8 +7827,8 @@ class Application(ctk.CTk):
         ctk.set_appearance_mode("light")
         ctk.set_default_color_theme("blue")
         self.title("American Edge Engineers — Water Demand Software")
-        self.geometry("1100x700")
-        self.minsize(900, 600)
+        self.geometry("1100x780")
+        self.minsize(900, 650)
         self.configure(fg_color="#F0F2F5")
 
         init_db(DB_PATH)
@@ -7362,6 +7838,7 @@ class Application(ctk.CTk):
         self.current_user: Optional[UserSession] = None
         self._water_app = None
         self._active_screen = None
+        self._pending_state: Optional[AppState] = None
 
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
@@ -7392,24 +7869,55 @@ class Application(ctk.CTk):
         self._active_screen = DashboardScreen(
             self,
             user=self.current_user,
-            on_launch_water_demand=self._launch_water_demand,
+            on_new_project=self._start_new_project,
+            on_open_project=self._open_project,
+            on_launch_water_demand=self._launch_blank,
             on_logout=self._logout,
         )
         self._active_screen.grid(row=0, column=0, sticky="nsew")
 
-    def _launch_water_demand(self) -> None:
+    def _start_new_project(self) -> None:
+        if self.current_user is None:
+            return
+        self._pending_state = create_new_project_state(self.current_user, DB_PATH)
+        self._launch_water_demand(self._pending_state)
+
+    def _open_project(self, project_id: str) -> None:
+        if self.current_user is None:
+            return
+        try:
+            self._pending_state = load_project_state(project_id, DB_PATH)
+        except ValueError as exc:
+            messagebox.showerror("Open Project", str(exc))
+            return
+        self._launch_water_demand(self._pending_state)
+
+    def _launch_blank(self) -> None:
+        if self.current_user is None:
+            return
+        self._pending_state = None
+        self._launch_water_demand(None)
+
+    def _launch_water_demand(self, initial_state: Optional[AppState]) -> None:
         if self.current_user is None:
             return
         self.withdraw()
         self._water_app = WaterDemandApp(
             current_user=self.current_user,
             on_logout=self._on_water_app_logout,
+            initial_state=initial_state,
+            on_autosave=self._on_project_autosaved,
         )
         self._water_app.protocol("WM_DELETE_WINDOW", self._on_water_app_close)
+
+    def _on_project_autosaved(self) -> None:
+        if isinstance(self._active_screen, DashboardScreen):
+            self._active_screen.refresh_stats()
 
     def _on_water_app_close(self) -> None:
         if self._water_app is not None:
             try:
+                self._water_app._autosave_before_close()
                 if self._water_app._autosave_job is not None:
                     self._water_app.after_cancel(self._water_app._autosave_job)
             except Exception:
@@ -7426,6 +7934,7 @@ class Application(ctk.CTk):
 
     def _logout(self) -> None:
         self.current_user = None
+        self._pending_state = None
         self._show_login()
         if isinstance(self._active_screen, LoginScreen):
             self._active_screen.reset()

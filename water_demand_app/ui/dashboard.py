@@ -8,23 +8,29 @@ from tkinter import messagebox
 from config.nbc_2026 import BRAND_NAVY, BRAND_ORANGE
 from models.user import UserSession
 from services.auth_db import count_active_users
-from services.database import list_projects
+from services.project_service import find_projects
+from ui.project_hub import ProjectHub
 
 
 class DashboardScreen(ctk.CTkFrame):
-    """Post-login dashboard with module launcher and logout."""
+    """Post-login dashboard with project management and module launcher."""
 
     def __init__(
         self,
         master,
         user: UserSession,
+        on_new_project: Callable[[], None],
+        on_open_project: Callable[[str], None],
         on_launch_water_demand: Callable[[], None],
         on_logout: Callable[[], None],
     ) -> None:
         super().__init__(master, fg_color="#F0F2F5")
         self.user = user
+        self.on_new_project = on_new_project
+        self.on_open_project = on_open_project
         self.on_launch_water_demand = on_launch_water_demand
         self.on_logout = on_logout
+        self.project_hub: Optional[ProjectHub] = None
         self._build()
 
     def _build(self) -> None:
@@ -61,89 +67,91 @@ class DashboardScreen(ctk.CTkFrame):
             height=32,
         ).pack(side="left")
 
-        body = ctk.CTkFrame(self, fg_color="transparent")
-        body.grid(row=1, column=0, sticky="nsew", padx=32, pady=24)
+        body = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        body.grid(row=1, column=0, sticky="nsew", padx=24, pady=16)
         body.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
             body,
             text=f"Welcome, {self.user.full_name}",
-            font=("Arial", 26, "bold"),
+            font=("Arial", 24, "bold"),
             text_color=BRAND_NAVY,
             anchor="w",
-        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
+        ).grid(row=0, column=0, sticky="ew", pady=(0, 4))
         ctk.CTkLabel(
             body,
-            text="Select a module to begin your engineering workflow.",
+            text="Manage projects or launch the Water Demand calculator.",
             font=("Arial", 13),
             text_color="#666666",
             anchor="w",
-        ).grid(row=1, column=0, sticky="w", pady=(0, 24))
+        ).grid(row=1, column=0, sticky="ew", pady=(0, 16))
 
-        cards = ctk.CTkFrame(body, fg_color="transparent")
-        cards.grid(row=2, column=0, sticky="ew")
-        cards.grid_columnconfigure((0, 1, 2), weight=1)
+        stats = ctk.CTkFrame(body, fg_color="transparent")
+        stats.grid(row=2, column=0, sticky="ew", pady=(0, 16))
+        stats.grid_columnconfigure((0, 1, 2), weight=1)
 
-        self._module_card(
-            cards,
-            0,
-            "Water Demand Calculator",
-            "NBC-2026 water demand, UGT/OHT/STP sizing,\nPDF & Excel report generation.",
-            "Launch Module",
-            self._launch_water_demand,
-            enabled=self.user.can_launch_water_demand(),
+        project_count = len(find_projects())
+        can_launch = self.user.can_launch_water_demand()
+        self._stat_card(stats, 0, "Saved Projects", str(project_count), "In database")
+        self._stat_card(stats, 1, "Active Users", str(count_active_users()), "Registered accounts")
+        self._stat_card(
+            stats, 2, "Your Role", self.user.role_label,
+            "Engineer access" if can_launch else "View only",
         )
-        project_count = len(list_projects())
-        self._stat_card(cards, 1, "Saved Projects", str(project_count), "Projects in database")
-        self._stat_card(cards, 2, "Active Users", str(count_active_users()), "Registered accounts")
 
-        if not self.user.can_launch_water_demand():
+        self.project_hub = ProjectHub(
+            body,
+            user=self.user,
+            on_new_project=self.on_new_project,
+            on_open_project=self.on_open_project,
+            enabled=can_launch,
+        )
+        self.project_hub.grid(row=3, column=0, sticky="ew", pady=(0, 16))
+
+        module_card = ctk.CTkFrame(body, fg_color="white", corner_radius=10, border_width=1, border_color="#DDDDDD")
+        module_card.grid(row=4, column=0, sticky="ew", pady=(0, 8))
+        ctk.CTkLabel(
+            module_card,
+            text="Water Demand Calculator",
+            font=("Arial", 15, "bold"),
+            text_color=BRAND_NAVY,
+        ).pack(anchor="w", padx=20, pady=(16, 4))
+        ctk.CTkLabel(
+            module_card,
+            text="Open the calculator with a blank session (use Project Management above to load a saved project).",
+            font=("Arial", 11),
+            text_color="#666666",
+            justify="left",
+        ).pack(anchor="w", padx=20, pady=(0, 12))
+        ctk.CTkButton(
+            module_card,
+            text="Launch Calculator (Blank)",
+            command=self._launch_water_demand,
+            fg_color=BRAND_ORANGE if can_launch else "#AAAAAA",
+            hover_color="#D06018" if can_launch else "#AAAAAA",
+            state="normal" if can_launch else "disabled",
+            height=36,
+        ).pack(anchor="w", padx=20, pady=(0, 16))
+
+        if not can_launch:
             ctk.CTkLabel(
                 body,
-                text="Your account has Viewer access. Contact an administrator for module access.",
+                text="Your account has Viewer access. Contact an administrator for project access.",
                 font=("Arial", 12),
                 text_color="#C0392B",
-            ).grid(row=3, column=0, sticky="w", pady=(20, 0))
-
-    def _module_card(
-        self,
-        parent,
-        column: int,
-        title: str,
-        description: str,
-        button_text: str,
-        command: Callable[[], None],
-        enabled: bool = True,
-    ) -> None:
-        card = ctk.CTkFrame(parent, corner_radius=10, fg_color="white", border_width=1, border_color="#DDDDDD")
-        card.grid(row=0, column=column, padx=8, pady=8, sticky="nsew")
-        ctk.CTkLabel(card, text=title, font=("Arial", 16, "bold"), text_color=BRAND_NAVY).pack(
-            anchor="w", padx=20, pady=(20, 8)
-        )
-        ctk.CTkLabel(card, text=description, font=("Arial", 12), text_color="#555555", justify="left").pack(
-            anchor="w", padx=20, pady=(0, 16)
-        )
-        ctk.CTkButton(
-            card,
-            text=button_text,
-            command=command,
-            fg_color=BRAND_ORANGE if enabled else "#AAAAAA",
-            hover_color="#D06018" if enabled else "#AAAAAA",
-            state="normal" if enabled else "disabled",
-            height=36,
-        ).pack(anchor="w", padx=20, pady=(0, 20))
+            ).grid(row=5, column=0, sticky="w", pady=(8, 0))
 
     def _stat_card(self, parent, column: int, title: str, value: str, subtitle: str) -> None:
         card = ctk.CTkFrame(parent, corner_radius=10, fg_color="white", border_width=1, border_color="#DDDDDD")
-        card.grid(row=0, column=column, padx=8, pady=8, sticky="nsew")
-        ctk.CTkLabel(card, text=title, font=("Arial", 14, "bold"), text_color=BRAND_NAVY).pack(
-            anchor="w", padx=20, pady=(20, 8)
+        card.grid(row=0, column=column, padx=6, pady=4, sticky="nsew")
+        ctk.CTkLabel(card, text=title, font=("Arial", 12, "bold"), text_color=BRAND_NAVY).pack(
+            anchor="w", padx=16, pady=(14, 4)
         )
-        ctk.CTkLabel(card, text=value, font=("Arial", 32, "bold"), text_color=BRAND_ORANGE).pack(
-            anchor="w", padx=20, pady=(0, 4)
+        ctk.CTkLabel(card, text=value, font=("Arial", 24, "bold"), text_color=BRAND_ORANGE).pack(
+            anchor="w", padx=16, pady=(0, 2)
         )
-        ctk.CTkLabel(card, text=subtitle, font=("Arial", 11), text_color="#888888").pack(
-            anchor="w", padx=20, pady=(0, 20)
+        ctk.CTkLabel(card, text=subtitle, font=("Arial", 10), text_color="#888888").pack(
+            anchor="w", padx=16, pady=(0, 14)
         )
 
     def _launch_water_demand(self) -> None:
@@ -157,7 +165,5 @@ class DashboardScreen(ctk.CTkFrame):
             self.on_logout()
 
     def refresh_stats(self) -> None:
-        """Rebuild dashboard to refresh project/user counts."""
-        for child in self.winfo_children():
-            child.destroy()
-        self._build()
+        if self.project_hub:
+            self.project_hub.refresh()

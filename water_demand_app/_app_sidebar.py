@@ -33,14 +33,16 @@ class WaterDemandApp(ctk.CTk):
         ("Settings", "Settings"),
     ]
 
-    def __init__(self, current_user=None, on_logout=None):
+    def __init__(self, current_user=None, on_logout=None, initial_state=None, on_autosave=None):
         super().__init__()
         ctk.set_appearance_mode("light")
         ctk.set_default_color_theme("blue")
         self.current_user = current_user
         self.on_logout = on_logout
-        self.app_state = AppState()
-        self.title("American Edge Engineers - Water Demand Report Generator")
+        self.on_autosave = on_autosave
+        self.app_state = initial_state if initial_state is not None else AppState()
+        self._last_autosave_at = ""
+        self.title(self._window_title())
         self.geometry("1280x850")
         self.minsize(1100, 700)
         self.configure(fg_color="#F0F2F5")
@@ -60,6 +62,28 @@ class WaterDemandApp(ctk.CTk):
         self.show("Project")
         self._schedule_autosave()
 
+    def _window_title(self) -> str:
+        pid = self.app_state.project.project_id
+        name = self.app_state.project.project_name or "Untitled"
+        return f"Water Demand — {name} [{pid}]"
+
+    def _reload_ui_from_state(self) -> None:
+        for page in self.pages.values():
+            page.destroy()
+        self.pages.clear()
+        self._rebuild_sidebar()
+        self._build_pages()
+        self.title(self._window_title())
+        self.show("Project")
+
+    def _autosave_before_close(self) -> None:
+        try:
+            self._calc()
+            from services.project_service import persist_project_state
+            persist_project_state(self.app_state, self.current_user, DB_PATH)
+        except Exception:
+            pass
+
     def _schedule_autosave(self) -> None:
         if self._autosave_job is not None:
             self.after_cancel(self._autosave_job)
@@ -67,14 +91,12 @@ class WaterDemandApp(ctk.CTk):
 
     def _auto_save_tick(self) -> None:
         try:
-            save_project(
-                self.app_state.project,
-                self.app_state.residential,
-                self.app_state.commercial,
-                self.app_state.other,
-                self.app_state.results.to_dict() if self.app_state.results else None,
-                DB_PATH,
-            )
+            self._calc()
+            from services.project_service import persist_project_state
+            persist_project_state(self.app_state, self.current_user, DB_PATH)
+            self._last_autosave_at = datetime.now().strftime("%H:%M:%S")
+            if self.on_autosave:
+                self.on_autosave()
         except Exception:
             pass
         self._schedule_autosave()
@@ -105,7 +127,15 @@ class WaterDemandApp(ctk.CTk):
                 font=("Arial", 9),
                 text_color="#CCCCCC",
                 justify="center",
-            ).pack(pady=(0, 10))
+            ).pack(pady=(0, 4))
+        pid = self.app_state.project.project_id
+        ctk.CTkLabel(
+            sb,
+            text=f"ID: {pid}",
+            font=("Arial", 8),
+            text_color="#999999",
+            wraplength=200,
+        ).pack(pady=(0, 8))
         self.nav_btns = {}
         for key, label in self.NAV:
             if not self._nav_visible(key):
@@ -677,14 +707,8 @@ class WaterDemandApp(ctk.CTk):
         xlsx_path = os.path.join(reports_dir, f"{safe_name}_Water_Demand.xlsx")
 
         try:
-            save_project(
-                self.app_state.project,
-                self.app_state.residential,
-                self.app_state.commercial,
-                self.app_state.other,
-                self.app_state.results.to_dict() if self.app_state.results else None,
-                DB_PATH,
-            )
+            from services.project_service import persist_project_state
+            persist_project_state(self.app_state, self.current_user, DB_PATH)
             logo = LOGO_PATH if os.path.exists(LOGO_PATH) else None
             export_pdf(pdf_path, self.app_state.project, self.app_state.results, logo)
             export_excel(xlsx_path, self.app_state.project, self.app_state.results)
@@ -705,66 +729,82 @@ class WaterDemandApp(ctk.CTk):
         )
 
     def _new(self):
-        if messagebox.askyesno("New", "Start new project?"):
-            self.app_state = AppState()
-            for page in self.pages.values():
-                page.destroy()
-            self.pages.clear()
-            self._rebuild_sidebar()
-            self._build_pages()
-            self.show("Project")
+        if not messagebox.askyesno("New Project", "Start a new project? Unsaved changes will be auto-saved first."):
+            return
+        try:
+            self._autosave_before_close()
+        except Exception:
+            pass
+        from services.project_service import create_new_project_state
+        self.app_state = create_new_project_state(self.current_user, DB_PATH)
+        self._reload_ui_from_state()
 
     def _save_db(self):
         try:
             self._calc()
-            save_project(
-                self.app_state.project,
-                self.app_state.residential,
-                self.app_state.commercial,
-                self.app_state.other,
-                self.app_state.results.to_dict() if self.app_state.results else None,
-            )
-            messagebox.showinfo("Saved", "Project saved to database.")
+            from services.project_service import persist_project_state
+            is_update = persist_project_state(self.app_state, self.current_user, DB_PATH)
+            self.title(self._window_title())
+            action = "updated" if is_update else "saved"
+            messagebox.showinfo("Saved", f"Project {action}.\nID: {self.app_state.project.project_id}")
+            if self.on_autosave:
+                self.on_autosave()
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
 
     def _open_db(self):
-        projs = list_projects()
+        from services.project_service import find_projects, load_project_state
+        projs = find_projects()
         if not projs:
-            messagebox.showinfo("DB", "No projects.")
+            messagebox.showinfo("Open Project", "No saved projects.")
             return
         dialog = ctk.CTkToplevel(self)
-        dialog.title("Recent Projects")
-        dialog.geometry("520x420")
+        dialog.title("Open Project")
+        dialog.geometry("640x440")
         dialog.transient(self)
         dialog.grab_set()
         ctk.CTkLabel(dialog, text="Select Project", font=("Arial", 15, "bold")).pack(pady=8)
-        scroll = ctk.CTkScrollableFrame(dialog, width=480, height=300)
-        scroll.pack(padx=10)
+        search_var = ctk.StringVar()
+        ctk.CTkEntry(dialog, textvariable=search_var, placeholder_text="Search...", width=580).pack(padx=12, pady=4)
+        scroll = ctk.CTkScrollableFrame(dialog, width=600, height=300)
+        scroll.pack(padx=10, pady=4)
         selected = ctk.StringVar()
-        for proj in projs:
-            ctk.CTkRadioButton(
-                scroll,
-                text=f"{proj['project_name']} | {proj['client_name']} | {proj['date']}",
-                variable=selected,
-                value=proj["project_id"],
-            ).pack(anchor="w", padx=8, pady=3)
+        row_widgets: list = []
+
+        def populate(query: str = "") -> None:
+            for w in row_widgets:
+                w.destroy()
+            row_widgets.clear()
+            for proj in find_projects(query):
+                rb = ctk.CTkRadioButton(
+                    scroll,
+                    text=(
+                        f"{proj['project_id']} | {proj['project_name']} | "
+                        f"{proj['client_name']} | {proj.get('project_location', '')}"
+                    ),
+                    variable=selected,
+                    value=proj["project_id"],
+                )
+                rb.pack(anchor="w", padx=8, pady=3)
+                row_widgets.append(rb)
+
+        search_var.trace_add("write", lambda *_: populate(search_var.get()))
+        populate()
 
         def load_selected():
             pid = selected.get()
             if not pid:
+                messagebox.showwarning("Open Project", "Select a project.")
                 return
-            data = load_project_from_db(pid)
-            proj, res, com, oth, _ = parse_project_snapshot(data)
-            self.app_state.project = proj
-            self.app_state.residential = res
-            self.app_state.commercial = com
-            self.app_state.other = oth
-            self.app_state.run_calculations()
-            dialog.destroy()
-            messagebox.showinfo("Loaded", "Project loaded.")
+            try:
+                self.app_state = load_project_state(pid, DB_PATH)
+                self._reload_ui_from_state()
+                dialog.destroy()
+                messagebox.showinfo("Loaded", f"Project loaded.\nID: {pid}")
+            except ValueError as exc:
+                messagebox.showerror("Error", str(exc))
 
-        ctk.CTkButton(dialog, text="Load", fg_color=BRAND_ORANGE, command=load_selected).pack(pady=10)
+        ctk.CTkButton(dialog, text="Open", fg_color=BRAND_ORANGE, command=load_selected).pack(pady=10)
 
     def _exp_json(self):
         fp = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON", "*.json")])
