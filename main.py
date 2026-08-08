@@ -2332,6 +2332,334 @@ def sync_pages_to_state(app: Any) -> None:
 
     prepare_live_calculation(state)
 
+# ==================== services/result_tables.py ====================
+"""Shared table row builders for OHT, STP, and Preview — single source of truth for GUI/PDF/Excel."""
+
+
+
+
+TableRow = Tuple[str, str, str]  # description, value, unit
+
+
+@dataclass(frozen=True)
+class TableSection:
+    title: str
+    rows: Tuple[TableRow, ...]
+
+
+def _fmt_int(value: Any) -> str:
+    try:
+        return f"{int(value):,}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _fmt_float(value: Any, decimals: int = 2) -> str:
+    try:
+        return f"{float(value):,.{decimals}f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _stp_section_rows(stp) -> Tuple[TableRow, ...]:
+    """Mirror excel_exporter._build_stp data rows."""
+    return (
+        ("Total Water Requirement", _fmt_int(stp.total_water_lpd), "LITERS/DAY"),
+        ("Sewage Generation @90%", _fmt_int(stp.sewage_lpd), "LITERS/DAY"),
+        ("Capacity of Sewage Generation", _fmt_float(stp.sewage_kld), "KLD"),
+        ("Say STP Capacity", _fmt_float(stp.say_stp_kld), "KLD"),
+        ("Treated Water After Filtration", _fmt_int(stp.treated_water_lpd), "LITERS/DAY"),
+        ("Reuse Water for Flushing", _fmt_int(stp.reuse_flushing_lpd), "LITERS/DAY"),
+        ("Reuse Water for Landscape", _fmt_int(stp.reuse_landscape_lpd), "LITERS/DAY"),
+        ("Reuse Water for HVAC", _fmt_int(stp.reuse_hvac_lpd), "LITERS/DAY"),
+        ("Excess Treated Water", _fmt_int(stp.excess_treated_lpd), "LITERS/DAY"),
+    )
+
+
+def build_oht_table_sections(
+    results: CalculationResults,
+    plot_names: Sequence[str],
+) -> List[TableSection]:
+    sections: List[TableSection] = []
+    for plot_name in plot_names:
+        plot = results.plots.get(plot_name)
+        if plot is None:
+            continue
+        rows: List[TableRow] = []
+        if not plot.oht_rows:
+            rows.append(("No OHT data", "—", ""))
+        else:
+            total_dom = total_flu = total_fb = total_fo = 0.0
+            for row in plot.oht_rows:
+                wing = str(row.get("wing", ""))
+                dom = float(row.get("domestic_kld", 0) or 0)
+                flu = float(row.get("flushing_kld", 0) or 0)
+                fb = float(row.get("fire_break_kld", 0) or 0)
+                fo = float(row.get("fire_oht_kld", 0) or 0)
+                total_dom += dom
+                total_flu += flu
+                total_fb += fb
+                total_fo += fo
+                rows.extend(
+                    [
+                        (f"{wing} — Domestic OHT", _fmt_float(dom), "KLD"),
+                        (f"{wing} — Flushing OHT", _fmt_float(flu), "KLD"),
+                        (f"{wing} — Fire Break Tank", _fmt_float(fb), "KLD"),
+                        (f"{wing} — Fire OHT Tank", _fmt_float(fo), "KLD"),
+                    ]
+                )
+            rows.extend(
+                [
+                    ("No. of OHTs", str(len(plot.oht_rows)), "Nos"),
+                    ("Total Domestic OHT Capacity", _fmt_float(total_dom), "KLD"),
+                    ("Total Flushing OHT Capacity", _fmt_float(total_flu), "KLD"),
+                    ("Total Fire Break Tank Capacity", _fmt_float(total_fb), "KLD"),
+                    ("Total Fire OHT Tank Capacity", _fmt_float(total_fo), "KLD"),
+                ]
+            )
+        sections.append(TableSection(title=f"OHT Details — {plot_name}", rows=tuple(rows)))
+    return sections
+
+
+def build_stp_table_sections(
+    results: CalculationResults,
+    plot_names: Sequence[str],
+) -> List[TableSection]:
+    sections: List[TableSection] = []
+    for plot_name in plot_names:
+        plot = results.plots.get(plot_name)
+        if plot is None:
+            continue
+        if not plot.stp_sections:
+            sections.append(TableSection(title=f"STP Summary — {plot_name}", rows=(("No STP data", "—", ""),)))
+            continue
+        for stp in plot.stp_sections:
+            scope_rows = list(_stp_section_rows(stp))
+            sections.append(
+                TableSection(
+                    title=f"STP for {stp.scope} — {plot_name}",
+                    rows=tuple(scope_rows),
+                )
+            )
+        sections.append(
+            TableSection(
+                title=f"Total STP — {plot_name}",
+                rows=(("Proposed STP Capacity", _fmt_float(plot.stp_capacity_kld), "KLD"),),
+            )
+        )
+    return sections
+
+
+def _plot_water_rows(plot: PlotResults, project_type: str = "") -> Tuple[TableRow, ...]:
+    rows: List[TableRow] = [
+        ("Residential Population", _fmt_int(plot.res_population), "Nos"),
+        ("Commercial Population", _fmt_int(plot.com_population), "Nos"),
+        ("Total Population", _fmt_int(plot.total_population), "Nos"),
+        ("Residential Water Demand", _fmt_int(plot.res_total_lpd), "LPD"),
+        ("Commercial Water Demand", _fmt_int(plot.com_total_lpd), "LPD"),
+    ]
+    if plot.landscape_dry_lpd > 0:
+        rows.append(("Landscape (Dry Season)", _fmt_int(plot.landscape_dry_lpd), "LPD"))
+    if show_swimming_section(project_type) and plot.swimming_pool_lpd > 0:
+        rows.append(("Swimming Pool", _fmt_int(plot.swimming_pool_lpd), "LPD"))
+    if hvac_applicable(project_type) and plot.hvac_lpd > 0:
+        rows.append(("HVAC Makeup Water", _fmt_int(plot.hvac_lpd), "LPD"))
+    rows.append(("Grand Total Water Demand", _fmt_int(plot.dry_total_water_lpd), "LPD"))
+    return tuple(rows)
+
+
+def _plot_sewage_rows(plot: PlotResults) -> Tuple[TableRow, ...]:
+    return (
+        ("Total Sewage Generated", _fmt_int(plot.sewage_lpd), "LPD"),
+        ("Proposed STP Capacity", _fmt_float(plot.stp_capacity_kld), "KLD"),
+    )
+
+
+def _plot_ugt_rows(plot: PlotResults) -> Tuple[TableRow, ...]:
+    if not plot.ugt_sections:
+        return ()
+    rows: List[TableRow] = []
+    for sec in plot.ugt_sections:
+        rows.append(
+            (
+                sec.description,
+                _fmt_int(sec.total_storage_liters),
+                "Litres",
+            )
+        )
+    rows.append(("Domestic UGT (summary)", _fmt_int(plot.ugt_domestic_liters), "Litres"))
+    rows.append(("Flushing UGT (summary)", _fmt_int(plot.ugt_flushing_liters), "Litres"))
+    return tuple(rows)
+
+
+def _plot_oht_summary_rows(plot: PlotResults) -> Tuple[TableRow, ...]:
+    if not plot.oht_rows:
+        return ()
+    total_dom = sum(float(r.get("domestic_kld", 0) or 0) for r in plot.oht_rows)
+    total_flu = sum(float(r.get("flushing_kld", 0) or 0) for r in plot.oht_rows)
+    total_fb = sum(float(r.get("fire_break_kld", 0) or 0) for r in plot.oht_rows)
+    total_fo = sum(float(r.get("fire_oht_kld", 0) or 0) for r in plot.oht_rows)
+    return (
+        ("No. of OHTs", str(len(plot.oht_rows)), "Nos"),
+        ("Total Domestic OHT Capacity", _fmt_float(total_dom), "KLD"),
+        ("Total Flushing OHT Capacity", _fmt_float(total_flu), "KLD"),
+        ("Total Fire Break Tank Capacity", _fmt_float(total_fb), "KLD"),
+        ("Total Fire OHT Tank Capacity", _fmt_float(total_fo), "KLD"),
+    )
+
+
+def _plot_stp_summary_rows(plot: PlotResults) -> Tuple[TableRow, ...]:
+    if not plot.stp_sections:
+        return ()
+    total_sewage = sum(s.sewage_lpd for s in plot.stp_sections)
+    return (
+        ("Total Sewage Generated", _fmt_int(total_sewage), "LPD"),
+        ("Proposed STP Capacity", _fmt_float(plot.stp_capacity_kld), "KLD"),
+    )
+
+
+def _fire_fighting_rows(plot: PlotResults) -> Tuple[TableRow, ...]:
+    if plot.fire_tank_liters <= 0:
+        return ()
+    return (("Fire Water Tank Capacity", _fmt_int(plot.fire_tank_liters), "Litres"),)
+
+
+def _other_calc_rows(
+    plot: PlotResults,
+    project_type: str,
+    other: Optional[OtherDetails],
+) -> Tuple[TableRow, ...]:
+    rows: List[TableRow] = []
+    if other and plot.plot in other.landscape_area and other.landscape_area.get(plot.plot, 0) > 0:
+        rows.append(("Landscape Area", _fmt_float(other.landscape_area[plot.plot], 0), "Sq.m"))
+    if show_swimming_section(project_type) and plot.swimming_pool_lpd > 0:
+        rows.append(("Swimming Pool Demand", _fmt_int(plot.swimming_pool_lpd), "LPD"))
+    if hvac_applicable(project_type) and plot.hvac_lpd > 0:
+        rows.append(("HVAC Makeup Water", _fmt_int(plot.hvac_lpd), "LPD"))
+    return tuple(rows)
+
+
+def build_preview_table_sections(
+    project: ProjectData,
+    results: CalculationResults,
+    plot_names: Sequence[str],
+    other: Optional[OtherDetails] = None,
+    rwh_summary: Optional[Sequence[TableRow]] = None,
+) -> List[TableSection]:
+    """Build preview sections; only includes modules applicable to project type."""
+    if not results or not results.plots:
+        return [TableSection(title="Preview", rows=(("Complete project data to see preview", "—", ""),))]
+
+    pages = visible_pages(project.project_type)
+    sections: List[TableSection] = []
+
+    project_rows: List[TableRow] = [
+        ("Project Name", project.project_name or "—", ""),
+        ("Reference No.", project.project_no or project.project_id or "—", ""),
+        ("Project Type", project_type_label(project.project_type), ""),
+        ("Client Name", project.client_name or "—", ""),
+        ("Location", project.project_location or "—", ""),
+        ("Engineer", project.engineer_name or "—", ""),
+        ("Date", project.date or "—", ""),
+    ]
+    sections.append(TableSection(title="Project Summary", rows=tuple(project_rows)))
+
+    tot = results.total
+    water_rows: List[TableRow] = [
+        ("Total Population", _fmt_int(tot.get("Total Population", 0)), "Nos"),
+        ("Total Water Demand", _fmt_int(tot.get("Total Water (LPD)", 0)), "LPD"),
+        ("Total Residential Population", _fmt_int(tot.get("Total Residential Population", 0)), "Nos"),
+        ("Total Commercial Population", _fmt_int(tot.get("Total Commercial Population", 0)), "Nos"),
+    ]
+    for plot_name in plot_names:
+        plot = results.plots.get(plot_name)
+        if plot and plot.dry_total_water_lpd > 0:
+            water_rows.extend(_plot_water_rows(plot))
+    if len(water_rows) > 4:
+        sections.append(TableSection(title="Water Demand Summary", rows=tuple(water_rows)))
+
+    if "STP" in pages:
+        sewage_rows: List[TableRow] = []
+        for plot_name in plot_names:
+            plot = results.plots.get(plot_name)
+            if plot and plot.sewage_lpd > 0:
+                sewage_rows.extend(_plot_sewage_rows(plot))
+        if sewage_rows:
+            sections.append(TableSection(title="Sewage Summary", rows=tuple(sewage_rows)))
+
+        stp_rows: List[TableRow] = []
+        for plot_name in plot_names:
+            plot = results.plots.get(plot_name)
+            if plot:
+                stp_rows.extend(_plot_stp_summary_rows(plot))
+                for stp in plot.stp_sections:
+                    stp_rows.extend(_stp_section_rows(stp))
+        if stp_rows:
+            sections.append(TableSection(title="STP Summary", rows=tuple(stp_rows)))
+
+    if "OHT" in pages:
+        oht_rows: List[TableRow] = []
+        for plot_name in plot_names:
+            plot = results.plots.get(plot_name)
+            if plot:
+                summary = _plot_oht_summary_rows(plot)
+                if summary:
+                    oht_rows.extend(summary)
+        if oht_rows:
+            sections.append(TableSection(title="OHT Summary", rows=tuple(oht_rows)))
+
+    if "UGT" in pages:
+        ugt_rows: List[TableRow] = []
+        for plot_name in plot_names:
+            plot = results.plots.get(plot_name)
+            if plot:
+                ugt_rows.extend(_plot_ugt_rows(plot))
+        if ugt_rows:
+            sections.append(TableSection(title="UGT Summary", rows=tuple(ugt_rows)))
+
+        fire_rows: List[TableRow] = []
+        for plot_name in plot_names:
+            plot = results.plots.get(plot_name)
+            if plot:
+                fire_rows.extend(_fire_fighting_rows(plot))
+        if fire_rows:
+            sections.append(TableSection(title="Fire Fighting Summary", rows=tuple(fire_rows)))
+
+    if "RWH" in pages and rwh_summary:
+        sections.append(TableSection(title="RWH Summary", rows=tuple(rwh_summary)))
+
+    other_rows: List[TableRow] = []
+    for plot_name in plot_names:
+        plot = results.plots.get(plot_name)
+        if plot:
+            other_rows.extend(_other_calc_rows(plot, project.project_type, other))
+    if other_rows:
+        sections.append(TableSection(title="Other Applicable Calculations", rows=tuple(other_rows)))
+
+    return sections
+
+
+def stp_rows_for_excel_check(results: CalculationResults, plot_name: str) -> List[TableRow]:
+    """Flat STP rows used to verify Excel/PDF alignment in tests."""
+    plot = results.plots.get(plot_name)
+    if not plot:
+        return []
+    rows: List[TableRow] = []
+    for stp in plot.stp_sections:
+        rows.extend(_stp_section_rows(stp))
+    return rows
+
+
+def oht_totals_for_check(results: CalculationResults, plot_name: str) -> Tuple[float, float, float, float]:
+    plot = results.plots.get(plot_name)
+    if not plot or not plot.oht_rows:
+        return 0.0, 0.0, 0.0, 0.0
+    total_dom = sum(float(r.get("domestic_kld", 0) or 0) for r in plot.oht_rows)
+    total_flu = sum(float(r.get("flushing_kld", 0) or 0) for r in plot.oht_rows)
+    total_fb = sum(float(r.get("fire_break_kld", 0) or 0) for r in plot.oht_rows)
+    total_fo = sum(float(r.get("fire_oht_kld", 0) or 0) for r in plot.oht_rows)
+    return total_dom, total_flu, total_fb, total_fo
+
 # ==================== services/pdf_exporter.py ====================
 
 
@@ -3989,6 +4317,108 @@ class ScrollablePage(ctk.CTkScrollableFrame):
         height = parent.winfo_height()
         if width > 20 and height > 20:
             self.configure(width=width, height=height)
+
+# ==================== ui/components/result_table.py ====================
+"""Professional Description | Value | Unit tables for engineering report screens."""
+
+
+
+
+
+TableRow = Tuple[str, str, str]
+
+_HEADER_BG = BRAND_NAVY
+_HEADER_FG = "white"
+_BORDER = "#C5CED8"
+_ROW_EVEN = "#FFFFFF"
+_ROW_ODD = "#F4F6F8"
+_VALUE_FG = "#1A5276"
+
+
+class ResultTableView(ctk.CTkFrame):
+    """Renders one or more titled result tables inside a scrollable host."""
+
+    def __init__(self, master, **kwargs) -> None:
+        kwargs.setdefault("fg_color", "transparent")
+        super().__init__(master, **kwargs)
+        self._host = ctk.CTkScrollableFrame(self, fg_color="transparent", label_text="")
+        self._host.pack(fill="both", expand=True)
+
+    def set_sections(self, sections: Sequence[TableSection]) -> None:
+        for child in self._host.winfo_children():
+            child.destroy()
+        if not sections:
+            self._add_empty_message("No data available.")
+            return
+        for section in sections:
+            self._render_section(section.title, section.rows)
+
+    def set_rows(self, title: str, rows: Iterable[TableRow]) -> None:
+        for child in self._host.winfo_children():
+            child.destroy()
+        self._render_section(title, tuple(rows))
+
+    def _add_empty_message(self, text: str) -> None:
+        ctk.CTkLabel(
+            self._host,
+            text=text,
+            font=("Arial", 12),
+            text_color="#666666",
+            anchor="w",
+        ).pack(fill="x", padx=12, pady=8)
+
+    def _render_section(self, title: str, rows: Sequence[TableRow]) -> None:
+        wrapper = ctk.CTkFrame(self._host, fg_color="transparent")
+        wrapper.pack(fill="x", padx=8, pady=(10, 4))
+
+        ctk.CTkLabel(
+            wrapper,
+            text=title,
+            font=("Arial", 13, "bold"),
+            text_color=BRAND_NAVY,
+            anchor="w",
+        ).pack(fill="x", padx=4, pady=(0, 6))
+
+        table = ctk.CTkFrame(wrapper, fg_color="white", corner_radius=6, border_width=1, border_color=_BORDER)
+        table.pack(fill="x", padx=2, pady=2)
+        table.columnconfigure(0, weight=3, uniform="cols")
+        table.columnconfigure(1, weight=1, uniform="cols")
+        table.columnconfigure(2, weight=1, uniform="cols")
+
+        headers = ("Description", "Value", "Unit")
+        for col, label in enumerate(headers):
+            cell = ctk.CTkFrame(table, fg_color=_HEADER_BG, corner_radius=0)
+            cell.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else 1, 0), pady=(0, 1))
+            ctk.CTkLabel(
+                cell,
+                text=label,
+                font=("Arial", 11, "bold"),
+                text_color=_HEADER_FG,
+                anchor="w" if col == 0 else "e" if col == 1 else "w",
+            ).pack(fill="x", padx=10, pady=6)
+
+        if not rows:
+            empty = ctk.CTkFrame(table, fg_color=_ROW_EVEN, corner_radius=0)
+            empty.grid(row=1, column=0, columnspan=3, sticky="nsew")
+            ctk.CTkLabel(empty, text="No rows", font=("Arial", 11), text_color="#888888").pack(padx=10, pady=8)
+            return
+
+        for ridx, (desc, value, unit) in enumerate(rows, start=1):
+            bg = _ROW_EVEN if ridx % 2 == 1 else _ROW_ODD
+            values = (desc, value, unit)
+            anchors = ("w", "e", "w")
+            for col, (text, anchor) in enumerate(zip(values, anchors)):
+                cell = ctk.CTkFrame(table, fg_color=bg, corner_radius=0)
+                cell.grid(row=ridx, column=col, sticky="nsew", padx=(0 if col == 0 else 1, 0), pady=(0, 1))
+                font = ("Arial", 11, "bold") if desc.startswith("Total") else ("Arial", 11)
+                fg = _VALUE_FG if col == 1 else "#222222"
+                ctk.CTkLabel(
+                    cell,
+                    text=text,
+                    font=font,
+                    text_color=fg,
+                    anchor=anchor,
+                ).pack(fill="x", padx=10, pady=5)
 
 # ==================== ui/components/preview_dialog.py ====================
 
@@ -7496,8 +7926,8 @@ class WaterDemandApp(ctk.CTkToplevel):
             text="Overhead tank capacities auto-calculate from residential/commercial demand.",
             font=("Arial", 11, "italic"),
         ).pack(anchor="w", padx=20, pady=(0, 5))
-        self.oht_box = ctk.CTkTextbox(frame, height=420, font=("Courier", 11))
-        self.oht_box.pack(fill="both", expand=True, padx=15, pady=10)
+        self.oht_table = ResultTableView(frame)
+        self.oht_table.pack(fill="both", expand=True, padx=15, pady=10)
         ctk.CTkLabel(
             frame,
             text="Updates automatically as you enter data on other pages.",
@@ -7507,25 +7937,13 @@ class WaterDemandApp(ctk.CTkToplevel):
         return frame
 
     def _refresh_oht(self, silent: bool = False) -> None:
-        lines = ["OHT DETAILS (auto-calculated)", "=" * 60, ""]
+        if not hasattr(self, "oht_table"):
+            return
         if not self.app_state.results:
-            lines.append("Enter residential/commercial data first.")
-        else:
-            for plot_name in self._plots():
-                plot = self.app_state.results.plots[plot_name]
-                lines.append(plot_name)
-                if not plot.oht_rows:
-                    lines.append("  No OHT rows")
-                for row in plot.oht_rows:
-                    lines.append(
-                        f"  {row['wing']}: Dom {row['domestic_kld']} KLD | "
-                        f"Flush {row['flushing_kld']} KLD | "
-                        f"Fire Break {row['fire_break_kld']} KLD | "
-                        f"Fire OHT {row['fire_oht_kld']} KLD"
-                    )
-                lines.append("")
-        self.oht_box.delete("1.0", "end")
-        self.oht_box.insert("1.0", "\n".join(lines))
+            self.oht_table.set_rows("OHT Details", [("Enter residential/commercial data first", "—", "")])
+            return
+        sections = build_oht_table_sections(self.app_state.results, self._plots())
+        self.oht_table.set_sections(sections)
 
     def _save_dict(self, entries, target):
         for plot, entry in entries.items():
@@ -7536,8 +7954,8 @@ class WaterDemandApp(ctk.CTkToplevel):
         header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
         header.pack(fill="x", padx=5, pady=5)
         ctk.CTkLabel(header, text="STP Summary", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
-        self.stp_box = ctk.CTkTextbox(frame, height=420, font=("Courier", 11))
-        self.stp_box.pack(fill="both", expand=True, padx=15, pady=10)
+        self.stp_table = ResultTableView(frame)
+        self.stp_table.pack(fill="both", expand=True, padx=15, pady=10)
         ctk.CTkLabel(
             frame,
             text="Updates automatically as you enter data on other pages.",
@@ -7547,31 +7965,21 @@ class WaterDemandApp(ctk.CTkToplevel):
         return frame
 
     def _refresh_stp(self, silent: bool = False):
-        if not self.app_state.results:
-            self.stp_box.delete("1.0", "end")
-            self.stp_box.insert("1.0", "Enter project data to calculate STP.")
+        if not hasattr(self, "stp_table"):
             return
-        lines = []
-        for plot_name in self._plots():
-            plot = self.app_state.results.plots[plot_name]
-            lines.append(f"=== {plot_name} ===")
-            for section in plot.stp_sections:
-                lines.append(
-                    f"  {section.scope}: Water {section.total_water_lpd:,} | Sewage {section.sewage_lpd:,} | "
-                    f"Say {section.say_stp_kld} KLD | Treated {section.treated_water_lpd:,} | "
-                    f"Excess {section.excess_treated_lpd:,}"
-                )
-            lines.append(f"  Total STP: {plot.stp_capacity_kld} KLD\n")
-        self.stp_box.delete("1.0", "end")
-        self.stp_box.insert("1.0", "\n".join(lines))
+        if not self.app_state.results:
+            self.stp_table.set_rows("STP Summary", [("Enter project data to calculate STP", "—", "")])
+            return
+        sections = build_stp_table_sections(self.app_state.results, self._plots())
+        self.stp_table.set_sections(sections)
 
     def _preview_page(self):
         frame = ScrollablePage(self.container)
         header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
         header.pack(fill="x", padx=5, pady=5)
         ctk.CTkLabel(header, text="Report Preview", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
-        self.preview_box = ctk.CTkTextbox(frame, height=360, font=("Courier", 11))
-        self.preview_box.pack(fill="both", expand=True, padx=15, pady=10)
+        self.preview_table = ResultTableView(frame)
+        self.preview_table.pack(fill="both", expand=True, padx=15, pady=10)
         ctk.CTkLabel(
             frame,
             text="Summary updates live — no Calculate button required.",
@@ -7588,35 +7996,34 @@ class WaterDemandApp(ctk.CTkToplevel):
         ).pack(pady=6)
         return frame
 
+    def _rwh_preview_rows(self):
+        rwh_page = self.pages.get("RWH")
+        if rwh_page is None or not getattr(rwh_page, "results", None):
+            return None
+        res = rwh_page.results
+        return [
+            ("Annual Harvestable Rainwater", f"{res.annual_harvest_liters:,.0f}", "Litres"),
+            ("Recommended Storage Tank", f"{res.recommended_tank_liters:,.0f}", "Litres"),
+            ("Design Tank Capacity", f"{res.design_tank_liters:,.0f}", "Litres"),
+        ]
+
     def _refresh_preview(self, silent: bool = False) -> None:
-        lines = ["WATER DEMAND REPORT SUMMARY", "=" * 60, ""]
+        if not hasattr(self, "preview_table"):
+            return
         if not self.app_state.results:
-            lines.append("Complete Project, Residential, and Commercial pages first.")
-        else:
-            project = self.app_state.project
-            lines.extend(
-                [
-                    f"Project: {project.project_name}",
-                    f"Client: {project.client_name}",
-                    f"Location: {project.project_location}",
-                    f"Engineer: {project.engineer_name}",
-                    "",
-                ]
+            self.preview_table.set_rows(
+                "Preview",
+                [("Complete Project, Residential, and Commercial pages first", "—", "")],
             )
-            total = self.app_state.results.total
-            lines.append(f"Total Water Demand: {total.get('Total Water (LPD)', 0):,} LPD")
-            lines.append(f"Total STP Capacity: {total.get('Total STP Capacity (KLD)', 0)} KLD")
-            lines.append(f"Total Population: {total.get('Total Population', 0):,}")
-            lines.append("")
-            for plot_name in self._plots():
-                plot = self.app_state.results.plots[plot_name]
-                lines.append(
-                    f"{plot_name}: Res {plot.res_population} pop / {plot.res_total_lpd:,} LPD | "
-                    f"Comm {plot.com_population} pop / {plot.com_total_lpd:,} LPD | "
-                    f"Grand Total {plot.dry_total_water_lpd:,} LPD"
-                )
-        self.preview_box.delete("1.0", "end")
-        self.preview_box.insert("1.0", "\n".join(lines))
+            return
+        sections = build_preview_table_sections(
+            self.app_state.project,
+            self.app_state.results,
+            self._plots(),
+            other=self.app_state.other,
+            rwh_summary=self._rwh_preview_rows(),
+        )
+        self.preview_table.set_sections(sections)
 
     def _settings_page(self):
         frame = ScrollablePage(self.container)
@@ -7708,11 +8115,11 @@ class WaterDemandApp(ctk.CTkToplevel):
         """Update auto-calculated panels without manual refresh buttons."""
         if hasattr(self, "_ugt_labels"):
             self._refresh_ugt()
-        if self._current_page == "OHT" and hasattr(self, "oht_box"):
+        if hasattr(self, "oht_table"):
             self._refresh_oht(silent=True)
-        elif self._current_page == "STP" and hasattr(self, "stp_box"):
+        if hasattr(self, "stp_table"):
             self._refresh_stp(silent=True)
-        elif self._current_page == "Preview" and hasattr(self, "preview_box"):
+        if hasattr(self, "preview_table"):
             self._refresh_preview(silent=True)
 
     def _open_preview(self):

@@ -19,8 +19,14 @@ from services.database import DB_PATH, build_project_snapshot, init_db, parse_pr
 from services.excel_exporter import export_excel
 from services.lookup_db import init_lookup_tables
 from services.pdf_exporter import export_pdf
+from services.result_tables import (
+    build_oht_table_sections,
+    build_preview_table_sections,
+    build_stp_table_sections,
+)
 from ui.app_state import AppState
 from ui.components.preview_dialog import PreviewDialog
+from ui.components.result_table import ResultTableView
 from ui.components.scrollable_frame import ScrollablePage
 from ui.pages.commercial_page import CommercialPage
 from ui.pages.final_page import FinalPage
@@ -569,8 +575,8 @@ class WaterDemandApp(ctk.CTkToplevel):
             text="Overhead tank capacities auto-calculate from residential/commercial demand.",
             font=("Arial", 11, "italic"),
         ).pack(anchor="w", padx=20, pady=(0, 5))
-        self.oht_box = ctk.CTkTextbox(frame, height=420, font=("Courier", 11))
-        self.oht_box.pack(fill="both", expand=True, padx=15, pady=10)
+        self.oht_table = ResultTableView(frame)
+        self.oht_table.pack(fill="both", expand=True, padx=15, pady=10)
         ctk.CTkLabel(
             frame,
             text="Updates automatically as you enter data on other pages.",
@@ -580,25 +586,13 @@ class WaterDemandApp(ctk.CTkToplevel):
         return frame
 
     def _refresh_oht(self, silent: bool = False) -> None:
-        lines = ["OHT DETAILS (auto-calculated)", "=" * 60, ""]
+        if not hasattr(self, "oht_table"):
+            return
         if not self.app_state.results:
-            lines.append("Enter residential/commercial data first.")
-        else:
-            for plot_name in self._plots():
-                plot = self.app_state.results.plots[plot_name]
-                lines.append(plot_name)
-                if not plot.oht_rows:
-                    lines.append("  No OHT rows")
-                for row in plot.oht_rows:
-                    lines.append(
-                        f"  {row['wing']}: Dom {row['domestic_kld']} KLD | "
-                        f"Flush {row['flushing_kld']} KLD | "
-                        f"Fire Break {row['fire_break_kld']} KLD | "
-                        f"Fire OHT {row['fire_oht_kld']} KLD"
-                    )
-                lines.append("")
-        self.oht_box.delete("1.0", "end")
-        self.oht_box.insert("1.0", "\n".join(lines))
+            self.oht_table.set_rows("OHT Details", [("Enter residential/commercial data first", "—", "")])
+            return
+        sections = build_oht_table_sections(self.app_state.results, self._plots())
+        self.oht_table.set_sections(sections)
 
     def _save_dict(self, entries, target):
         for plot, entry in entries.items():
@@ -609,8 +603,8 @@ class WaterDemandApp(ctk.CTkToplevel):
         header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
         header.pack(fill="x", padx=5, pady=5)
         ctk.CTkLabel(header, text="STP Summary", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
-        self.stp_box = ctk.CTkTextbox(frame, height=420, font=("Courier", 11))
-        self.stp_box.pack(fill="both", expand=True, padx=15, pady=10)
+        self.stp_table = ResultTableView(frame)
+        self.stp_table.pack(fill="both", expand=True, padx=15, pady=10)
         ctk.CTkLabel(
             frame,
             text="Updates automatically as you enter data on other pages.",
@@ -620,31 +614,21 @@ class WaterDemandApp(ctk.CTkToplevel):
         return frame
 
     def _refresh_stp(self, silent: bool = False):
-        if not self.app_state.results:
-            self.stp_box.delete("1.0", "end")
-            self.stp_box.insert("1.0", "Enter project data to calculate STP.")
+        if not hasattr(self, "stp_table"):
             return
-        lines = []
-        for plot_name in self._plots():
-            plot = self.app_state.results.plots[plot_name]
-            lines.append(f"=== {plot_name} ===")
-            for section in plot.stp_sections:
-                lines.append(
-                    f"  {section.scope}: Water {section.total_water_lpd:,} | Sewage {section.sewage_lpd:,} | "
-                    f"Say {section.say_stp_kld} KLD | Treated {section.treated_water_lpd:,} | "
-                    f"Excess {section.excess_treated_lpd:,}"
-                )
-            lines.append(f"  Total STP: {plot.stp_capacity_kld} KLD\n")
-        self.stp_box.delete("1.0", "end")
-        self.stp_box.insert("1.0", "\n".join(lines))
+        if not self.app_state.results:
+            self.stp_table.set_rows("STP Summary", [("Enter project data to calculate STP", "—", "")])
+            return
+        sections = build_stp_table_sections(self.app_state.results, self._plots())
+        self.stp_table.set_sections(sections)
 
     def _preview_page(self):
         frame = ScrollablePage(self.container)
         header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
         header.pack(fill="x", padx=5, pady=5)
         ctk.CTkLabel(header, text="Report Preview", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
-        self.preview_box = ctk.CTkTextbox(frame, height=360, font=("Courier", 11))
-        self.preview_box.pack(fill="both", expand=True, padx=15, pady=10)
+        self.preview_table = ResultTableView(frame)
+        self.preview_table.pack(fill="both", expand=True, padx=15, pady=10)
         ctk.CTkLabel(
             frame,
             text="Summary updates live — no Calculate button required.",
@@ -661,35 +645,34 @@ class WaterDemandApp(ctk.CTkToplevel):
         ).pack(pady=6)
         return frame
 
+    def _rwh_preview_rows(self):
+        rwh_page = self.pages.get("RWH")
+        if rwh_page is None or not getattr(rwh_page, "results", None):
+            return None
+        res = rwh_page.results
+        return [
+            ("Annual Harvestable Rainwater", f"{res.annual_harvest_liters:,.0f}", "Litres"),
+            ("Recommended Storage Tank", f"{res.recommended_tank_liters:,.0f}", "Litres"),
+            ("Design Tank Capacity", f"{res.design_tank_liters:,.0f}", "Litres"),
+        ]
+
     def _refresh_preview(self, silent: bool = False) -> None:
-        lines = ["WATER DEMAND REPORT SUMMARY", "=" * 60, ""]
+        if not hasattr(self, "preview_table"):
+            return
         if not self.app_state.results:
-            lines.append("Complete Project, Residential, and Commercial pages first.")
-        else:
-            project = self.app_state.project
-            lines.extend(
-                [
-                    f"Project: {project.project_name}",
-                    f"Client: {project.client_name}",
-                    f"Location: {project.project_location}",
-                    f"Engineer: {project.engineer_name}",
-                    "",
-                ]
+            self.preview_table.set_rows(
+                "Preview",
+                [("Complete Project, Residential, and Commercial pages first", "—", "")],
             )
-            total = self.app_state.results.total
-            lines.append(f"Total Water Demand: {total.get('Total Water (LPD)', 0):,} LPD")
-            lines.append(f"Total STP Capacity: {total.get('Total STP Capacity (KLD)', 0)} KLD")
-            lines.append(f"Total Population: {total.get('Total Population', 0):,}")
-            lines.append("")
-            for plot_name in self._plots():
-                plot = self.app_state.results.plots[plot_name]
-                lines.append(
-                    f"{plot_name}: Res {plot.res_population} pop / {plot.res_total_lpd:,} LPD | "
-                    f"Comm {plot.com_population} pop / {plot.com_total_lpd:,} LPD | "
-                    f"Grand Total {plot.dry_total_water_lpd:,} LPD"
-                )
-        self.preview_box.delete("1.0", "end")
-        self.preview_box.insert("1.0", "\n".join(lines))
+            return
+        sections = build_preview_table_sections(
+            self.app_state.project,
+            self.app_state.results,
+            self._plots(),
+            other=self.app_state.other,
+            rwh_summary=self._rwh_preview_rows(),
+        )
+        self.preview_table.set_sections(sections)
 
     def _settings_page(self):
         frame = ScrollablePage(self.container)
@@ -785,11 +768,11 @@ class WaterDemandApp(ctk.CTkToplevel):
         """Update auto-calculated panels without manual refresh buttons."""
         if hasattr(self, "_ugt_labels"):
             self._refresh_ugt()
-        if self._current_page == "OHT" and hasattr(self, "oht_box"):
+        if hasattr(self, "oht_table"):
             self._refresh_oht(silent=True)
-        elif self._current_page == "STP" and hasattr(self, "stp_box"):
+        if hasattr(self, "stp_table"):
             self._refresh_stp(silent=True)
-        elif self._current_page == "Preview" and hasattr(self, "preview_box"):
+        if hasattr(self, "preview_table"):
             self._refresh_preview(silent=True)
 
     def _open_preview(self):
