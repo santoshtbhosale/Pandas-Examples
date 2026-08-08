@@ -21,6 +21,10 @@ ACTION_PROJECT_DELETED = "project_deleted"
 ACTION_USER_CREATED = "user_created"
 ACTION_USER_UPDATED = "user_updated"
 ACTION_USER_DEACTIVATED = "user_deactivated"
+ACTION_LOGIN_SUCCESS = "login_success"
+ACTION_LOGIN_FAILED = "login_failed"
+ACTION_LOGOUT = "logout"
+ACTION_SESSION_TIMEOUT = "session_timeout"
 
 
 def init_audit_table(db_path: str = DB_PATH) -> None:

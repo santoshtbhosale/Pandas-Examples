@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from models.project_workflow import (
     DURATION_PRESETS_MINUTES,
+    STATUS_DELAYED,
     STATUS_IN_PROGRESS,
     STATUS_NOT_STARTED,
     STATUS_PAUSED,
@@ -18,6 +19,7 @@ from models.user import UserSession
 from services.audit_service import (
     ACTION_PROJECT_ASSIGNED,
     ACTION_PROJECT_COMPLETED,
+    ACTION_PROJECT_CREATED,
     ACTION_PROJECT_OPENED,
     ACTION_PROJECT_PAUSED,
     ACTION_PROJECT_RESUMED,
@@ -90,6 +92,7 @@ PROJECT_LIST_SQL = """
 
 def _row_to_project_record(row: tuple) -> Dict[str, Any]:
     wf = _wf_from_row(row, 10)
+    wf = sync_delayed_status(row[0], wf)
     snap = timer_snapshot(wf)
     return {
         "project_id": row[0] or "",
@@ -214,9 +217,11 @@ def search_project_records(
             if engineers:
                 placeholders = ",".join("?" * len(engineers))
                 conditions.append(
-                    f"(team_leader_id = ? OR assigned_to_username IN ({placeholders}))"
+                    f"(team_leader_id = ? OR assigned_to_username IN ({placeholders}) "
+                    f"OR created_by IN ({placeholders}))"
                 )
                 params.append(user.user_id)
+                params.extend(engineers)
                 params.extend(engineers)
             else:
                 conditions.append("team_leader_id = ?")
@@ -230,8 +235,11 @@ def search_project_records(
         )
         params.extend([like, like, like, like, like, like])
     if status_filter:
-        conditions.append("status = ?")
-        params.append(status_filter)
+        if status_filter == STATUS_DELAYED:
+            pass  # filter after computed status
+        else:
+            conditions.append("status = ?")
+            params.append(status_filter)
     if date_from:
         conditions.append("date(assigned_at) >= date(?)")
         params.append(date_from)
@@ -244,9 +252,57 @@ def search_project_records(
     cur.execute(PROJECT_LIST_SQL + where + " ORDER BY updated_at DESC LIMIT ?", tuple(params) + (limit,))
     rows = [_row_to_project_record(r) for r in cur.fetchall()]
     conn.close()
+    if status_filter == STATUS_DELAYED:
+        rows = [r for r in rows if r.get("status") == STATUS_DELAYED]
     if user and not user.is_admin_level() and not user.is_team_leader() and not user.is_engineer():
         return [r for r in rows if user_can_access_project_record(user, r, db_path)]
     return rows
+
+
+def sync_delayed_status(project_id: str, wf: ProjectWorkflow, db_path: str = DB_PATH) -> ProjectWorkflow:
+    """Persist delayed status when expected completion time is exceeded."""
+    snap = timer_snapshot(wf)
+    if snap["status"] == STATUS_DELAYED and wf.status in (STATUS_IN_PROGRESS, STATUS_NOT_STARTED, STATUS_PAUSED):
+        wf.status = STATUS_DELAYED
+        wf.delay_seconds = int(snap.get("delay_seconds", 0))
+        update_project_workflow(project_id, wf, db_path)
+    return wf
+
+
+def init_engineer_owned_project(
+    project_id: str,
+    engineer: UserSession,
+    db_path: str = DB_PATH,
+    duration_label: str = "2 Hours",
+    custom_minutes: int = 0,
+) -> None:
+    """Set project ownership when an engineer creates a project directly."""
+    minutes = custom_minutes if duration_label == "Custom" else DURATION_PRESETS_MINUTES.get(duration_label, 120)
+    now = datetime.now()
+    expected = now + timedelta(minutes=minutes)
+    wf = get_project_workflow(project_id, db_path)
+    wf.assigned_to_username = engineer.username
+    wf.assigned_by_username = engineer.username
+    wf.team_leader_id = int(engineer.team_leader_id or 0)
+    wf.assigned_at = now.isoformat()
+    wf.expected_completion_at = expected.isoformat()
+    wf.assigned_duration_minutes = minutes
+    wf.status = STATUS_NOT_STARTED
+    wf.progress_pct = 0
+    if project_exists(project_id, db_path):
+        data = load_project_from_db(project_id, db_path)
+        project, residential, commercial, other, calculated = parse_project_snapshot(data)
+        project.engineer_name = engineer.full_name
+        save_project(
+            project, residential, commercial, other, calculated,
+            db_path=db_path, created_by=engineer.username, updated_by=engineer.username,
+        )
+    update_project_workflow(project_id, wf, db_path)
+    log_audit(
+        ACTION_PROJECT_CREATED, engineer.username, engineer.user_id, project_id,
+        reason=f"Engineer-owned project; team={engineer.team}",
+        db_path=db_path,
+    )
 
 
 def assign_project(

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Callable, Optional
 
 import customtkinter as ctk
 
 from models.user import UserSession
+from services.session_service import SessionContext
 from ui.dashboard import DashboardScreen
 from ui.engineer_dashboard import EngineerDashboard
 from ui.super_admin_dashboard import SuperAdminDashboard
@@ -21,9 +22,10 @@ def create_dashboard(
     on_launch_water_demand: Callable[[], None],
     on_logout: Callable[[], None],
     on_assign_and_open: Callable[[str], None] | None = None,
+    session: Optional[SessionContext] = None,
 ) -> ctk.CTkFrame:
     if user.is_super_admin():
-        return SuperAdminDashboard(master, user=user, on_logout=on_logout)
+        return SuperAdminDashboard(master, user=user, on_logout=on_logout, session=session)
     if user.is_team_leader():
         return TeamLeaderDashboard(
             master,
@@ -31,6 +33,7 @@ def create_dashboard(
             on_open_project=on_open_project,
             on_logout=on_logout,
             on_assign_and_open=on_assign_and_open or on_open_project,
+            session=session,
         )
     if user.is_engineer():
         return EngineerDashboard(
@@ -40,6 +43,7 @@ def create_dashboard(
             on_open_project=on_open_project,
             on_launch_water_demand=on_launch_water_demand,
             on_logout=on_logout,
+            session=session,
         )
     return DashboardScreen(
         master,
@@ -48,4 +52,5 @@ def create_dashboard(
         on_open_project=on_open_project,
         on_launch_water_demand=on_launch_water_demand,
         on_logout=on_logout,
+        session=session,
     )

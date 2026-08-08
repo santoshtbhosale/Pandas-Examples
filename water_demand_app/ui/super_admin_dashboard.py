@@ -17,13 +17,22 @@ from services.auth_db import (
 )
 from services.project_workflow_service import dashboard_stats
 from ui.create_user_dialog import CreateUserDialog, ResetPasswordDialog, ViewUserDialog
+from services.session_service import SessionContext
+from ui.dashboard_header import build_dashboard_header
 from ui.gui_safe import safe_command
 
 
 class SuperAdminDashboard(ctk.CTkFrame):
-    def __init__(self, master, user: UserSession, on_logout: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        master,
+        user: UserSession,
+        on_logout: Callable[[], None],
+        session=None,
+    ) -> None:
         super().__init__(master, fg_color="#F0F2F5")
         self.user = user
+        self.session = session
         self.on_logout = on_logout
         self._user_list: Optional[ctk.CTkScrollableFrame] = None
         self._audit_list: Optional[ctk.CTkScrollableFrame] = None
@@ -33,11 +42,11 @@ class SuperAdminDashboard(ctk.CTkFrame):
     def _build(self) -> None:
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
-        top = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=0, height=72)
-        top.grid(row=0, column=0, sticky="ew")
-        top.grid_propagate(False)
-        ctk.CTkLabel(top, text="SUPER ADMIN", font=("Arial", 16, "bold"), text_color=BRAND_ORANGE).grid(row=0, column=0, padx=24, pady=20, sticky="w")
-        ctk.CTkButton(top, text="Logout", command=self._logout, fg_color="#C0392B", width=90).grid(row=0, column=1, padx=24, sticky="e")
+        header = build_dashboard_header(
+            self, "SUPER ADMIN", self.user,
+            safe_command(self._logout, parent=self), session=self.session,
+        )
+        header.grid(row=0, column=0, sticky="ew")
 
         body = ctk.CTkScrollableFrame(self, fg_color="transparent")
         body.grid(row=1, column=0, sticky="nsew", padx=16, pady=12)

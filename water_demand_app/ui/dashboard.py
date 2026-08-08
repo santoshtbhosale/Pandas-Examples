@@ -9,6 +9,9 @@ from config.nbc_2026 import BRAND_NAVY, BRAND_ORANGE
 from models.user import UserSession
 from services.auth_db import count_active_users
 from services.project_service import find_projects
+from services.session_service import SessionContext
+from ui.dashboard_header import build_dashboard_header
+from ui.gui_safe import safe_command
 from ui.project_hub import ProjectHub
 
 
@@ -23,9 +26,11 @@ class DashboardScreen(ctk.CTkFrame):
         on_open_project: Callable[[str], None],
         on_launch_water_demand: Callable[[], None],
         on_logout: Callable[[], None],
+        session: Optional[SessionContext] = None,
     ) -> None:
         super().__init__(master, fg_color="#F0F2F5")
         self.user = user
+        self.session = session
         self.on_new_project = on_new_project
         self.on_open_project = on_open_project
         self.on_launch_water_demand = on_launch_water_demand
@@ -37,35 +42,11 @@ class DashboardScreen(ctk.CTkFrame):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
-        top = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=0, height=72)
+        top = build_dashboard_header(
+            self, "DASHBOARD", self.user,
+            safe_command(self._confirm_logout, parent=self), session=self.session,
+        )
         top.grid(row=0, column=0, sticky="ew")
-        top.grid_propagate(False)
-        top.grid_columnconfigure(1, weight=1)
-
-        ctk.CTkLabel(
-            top,
-            text="AMERICAN EDGE ENGINEERS",
-            font=("Arial", 16, "bold"),
-            text_color=BRAND_ORANGE,
-        ).grid(row=0, column=0, padx=24, pady=20, sticky="w")
-
-        user_frame = ctk.CTkFrame(top, fg_color="transparent")
-        user_frame.grid(row=0, column=1, padx=16, sticky="e")
-        ctk.CTkLabel(
-            user_frame,
-            text=f"{self.user.full_name}  •  {self.user.role_label}",
-            font=("Arial", 12),
-            text_color="white",
-        ).pack(side="left", padx=(0, 12))
-        ctk.CTkButton(
-            user_frame,
-            text="Logout",
-            command=self._confirm_logout,
-            fg_color="#C0392B",
-            hover_color="#A93226",
-            width=90,
-            height=32,
-        ).pack(side="left")
 
         body = ctk.CTkScrollableFrame(self, fg_color="transparent")
         body.grid(row=1, column=0, sticky="nsew", padx=24, pady=16)

@@ -189,18 +189,21 @@ class TestLoginScreen(unittest.TestCase):
         self.assertTrue(screen.username_entry.winfo_exists())
         self.assertTrue(screen.password_entry.winfo_exists())
         self.assertIn("LOGIN", screen.login_btn.cget("text"))
+        self.assertEqual(screen.role_var.get(), "Select Role")
         screen.destroy()
 
     def test_invalid_login_shows_error_without_closing(self) -> None:
+        from models.user import ROLE_LABELS, ROLE_ENGINEER
         from ui.login_screen import LoginScreen
 
         screen = LoginScreen(self.root, on_login_success=lambda _u: None)
         screen.grid(row=0, column=0)
         screen.username_entry.insert(0, "baduser")
         screen.password_entry.insert(0, "badpass")
+        screen.role_var.set(ROLE_LABELS[ROLE_ENGINEER])
         screen._attempt_login()
         screen.update_idletasks()
-        self.assertIn("Invalid username or password", screen.error_label.cget("text"))
+        self.assertIn("Invalid", screen.error_label.cget("text"))
         self.assertTrue(self.root.winfo_exists())
         screen.destroy()
 

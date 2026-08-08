@@ -2873,6 +2873,10 @@ ACTION_PROJECT_DELETED = "project_deleted"
 ACTION_USER_CREATED = "user_created"
 ACTION_USER_UPDATED = "user_updated"
 ACTION_USER_DEACTIVATED = "user_deactivated"
+ACTION_LOGIN_SUCCESS = "login_success"
+ACTION_LOGIN_FAILED = "login_failed"
+ACTION_LOGOUT = "logout"
+ACTION_SESSION_TIMEOUT = "session_timeout"
 
 
 def init_audit_table(db_path: str = DB_PATH) -> None:
@@ -2976,6 +2980,190 @@ def list_audit_logs(
     ]
     conn.close()
     return rows
+
+# ==================== services/login_service.py ====================
+"""Login validation with role matching and employee-ID lookup."""
+
+
+
+
+ROLE_LABEL_TO_KEY = {label: key for key, label in ROLE_LABELS.items()}
+ROLE_KEY_TO_LABEL = ROLE_LABELS
+
+
+def lookup_user_row(identifier: str, db_path: str = DB_PATH) -> Optional[tuple]:
+    """Find user by username or employee ID (case-insensitive)."""
+    init_users_table(db_path)
+    key = (identifier or "").strip()
+    if not key:
+        return None
+    conn = _conn(db_path)
+    cur = conn.cursor()
+    cur.execute(
+        _USER_SELECT + " WHERE LOWER(username) = ? OR UPPER(employee_id) = ?",
+        (key.lower(), key.upper()),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def authenticate_with_role(
+    identifier: str,
+    password: str,
+    selected_role_label: str,
+    db_path: str = DB_PATH,
+) -> Tuple[Optional[UserSession], str]:
+    """
+    Validate credentials and ensure selected role matches database role.
+    Returns (UserSession, error_message). error_message is empty on success.
+    """
+
+    identifier = (identifier or "").strip()
+    password = password or ""
+    role_label = (selected_role_label or "").strip()
+
+    if not identifier:
+        return None, "Please enter username."
+    if not password:
+        return None, "Please enter password."
+    if not role_label or role_label == "Select Role":
+        return None, "Please select your role."
+
+    expected_role = ROLE_LABEL_TO_KEY.get(role_label)
+    if not expected_role:
+        return None, "Please select your role."
+
+    row = lookup_user_row(identifier, db_path)
+    if not row or not row[5]:
+        log_audit(
+            ACTION_LOGIN_FAILED,
+            username=identifier,
+            reason=f"role={role_label}",
+            db_path=db_path,
+        )
+        return None, "Invalid username, password, or role."
+
+    conn = _conn(db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT salt, password_hash FROM users WHERE user_id = ?", (row[0],))
+    cred = cur.fetchone()
+    if not cred or not verify_password(password, cred[0], cred[1]):
+        conn.close()
+        log_audit(
+            ACTION_LOGIN_FAILED,
+            username=row[1],
+            user_id=row[0],
+            reason=f"role={role_label}",
+            db_path=db_path,
+        )
+        return None, "Invalid username, password, or role."
+    conn.close()
+
+    user = _row_to_session(row)
+    if user.role != expected_role:
+        log_audit(
+            ACTION_LOGIN_FAILED,
+            username=user.username,
+            user_id=user.user_id,
+            reason=f"role_mismatch selected={role_label} actual={ROLE_KEY_TO_LABEL.get(user.role, user.role)}",
+            db_path=db_path,
+        )
+        return None, "Invalid username, password, or role."
+
+    now = datetime.now().isoformat()
+    conn = _conn(db_path)
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET last_login = ? WHERE user_id = ?", (now, user.user_id))
+    conn.commit()
+    conn.close()
+
+    log_audit(
+        ACTION_LOGIN_SUCCESS,
+        username=user.username,
+        user_id=user.user_id,
+        reason=ROLE_KEY_TO_LABEL.get(user.role, user.role),
+        db_path=db_path,
+    )
+    return user, ""
+
+# ==================== services/session_service.py ====================
+"""Session context, remember-me, and inactivity timeout settings."""
+
+
+
+
+DEFAULT_TIMEOUT_MINUTES = 30
+WARNING_BEFORE_SECONDS = 120
+
+APP_DIR = APP_DIR
+REMEMBER_FILE = os.path.join(APP_DIR, ".remember_login.json")
+SESSION_CONFIG_FILE = os.path.join(APP_DIR, ".session_config.json")
+
+
+@dataclass
+class SessionContext:
+    user: UserSession
+    login_at: str = ""
+    last_activity_at: str = ""
+    login_date: str = ""
+    login_time: str = ""
+
+    def touch(self) -> None:
+        self.last_activity_at = datetime.now().isoformat()
+
+    @classmethod
+    def from_user(cls, user: UserSession) -> "SessionContext":
+        now = datetime.now()
+        return cls(
+            user=user,
+            login_at=now.isoformat(),
+            last_activity_at=now.isoformat(),
+            login_date=now.strftime("%Y-%m-%d"),
+            login_time=now.strftime("%H:%M:%S"),
+        )
+
+
+def load_remembered_username() -> str:
+    try:
+        if os.path.exists(REMEMBER_FILE):
+            with open(REMEMBER_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+            return str(data.get("username", "")).strip()
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+    return ""
+
+
+def save_remembered_username(username: str) -> None:
+    username = (username or "").strip()
+    if not username:
+        clear_remembered_username()
+        return
+    try:
+        with open(REMEMBER_FILE, "w", encoding="utf-8") as f:
+            json.dump({"username": username}, f)
+    except OSError:
+        pass
+
+
+def clear_remembered_username() -> None:
+    try:
+        if os.path.exists(REMEMBER_FILE):
+            os.remove(REMEMBER_FILE)
+    except OSError:
+        pass
+
+
+def get_timeout_minutes() -> int:
+    try:
+        if os.path.exists(SESSION_CONFIG_FILE):
+            with open(SESSION_CONFIG_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+            return max(5, int(data.get("timeout_minutes", DEFAULT_TIMEOUT_MINUTES)))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        pass
+    return DEFAULT_TIMEOUT_MINUTES
 
 # ==================== services/project_timer.py ====================
 """Project timer calculations — elapsed, remaining, delay, status."""
@@ -3174,6 +3362,7 @@ PROJECT_LIST_SQL = """
 
 def _row_to_project_record(row: tuple) -> Dict[str, Any]:
     wf = _wf_from_row(row, 10)
+    wf = sync_delayed_status(row[0], wf)
     snap = timer_snapshot(wf)
     return {
         "project_id": row[0] or "",
@@ -3298,9 +3487,11 @@ def search_project_records(
             if engineers:
                 placeholders = ",".join("?" * len(engineers))
                 conditions.append(
-                    f"(team_leader_id = ? OR assigned_to_username IN ({placeholders}))"
+                    f"(team_leader_id = ? OR assigned_to_username IN ({placeholders}) "
+                    f"OR created_by IN ({placeholders}))"
                 )
                 params.append(user.user_id)
+                params.extend(engineers)
                 params.extend(engineers)
             else:
                 conditions.append("team_leader_id = ?")
@@ -3314,8 +3505,11 @@ def search_project_records(
         )
         params.extend([like, like, like, like, like, like])
     if status_filter:
-        conditions.append("status = ?")
-        params.append(status_filter)
+        if status_filter == STATUS_DELAYED:
+            pass  # filter after computed status
+        else:
+            conditions.append("status = ?")
+            params.append(status_filter)
     if date_from:
         conditions.append("date(assigned_at) >= date(?)")
         params.append(date_from)
@@ -3328,9 +3522,57 @@ def search_project_records(
     cur.execute(PROJECT_LIST_SQL + where + " ORDER BY updated_at DESC LIMIT ?", tuple(params) + (limit,))
     rows = [_row_to_project_record(r) for r in cur.fetchall()]
     conn.close()
+    if status_filter == STATUS_DELAYED:
+        rows = [r for r in rows if r.get("status") == STATUS_DELAYED]
     if user and not user.is_admin_level() and not user.is_team_leader() and not user.is_engineer():
         return [r for r in rows if user_can_access_project_record(user, r, db_path)]
     return rows
+
+
+def sync_delayed_status(project_id: str, wf: ProjectWorkflow, db_path: str = DB_PATH) -> ProjectWorkflow:
+    """Persist delayed status when expected completion time is exceeded."""
+    snap = timer_snapshot(wf)
+    if snap["status"] == STATUS_DELAYED and wf.status in (STATUS_IN_PROGRESS, STATUS_NOT_STARTED, STATUS_PAUSED):
+        wf.status = STATUS_DELAYED
+        wf.delay_seconds = int(snap.get("delay_seconds", 0))
+        update_project_workflow(project_id, wf, db_path)
+    return wf
+
+
+def init_engineer_owned_project(
+    project_id: str,
+    engineer: UserSession,
+    db_path: str = DB_PATH,
+    duration_label: str = "2 Hours",
+    custom_minutes: int = 0,
+) -> None:
+    """Set project ownership when an engineer creates a project directly."""
+    minutes = custom_minutes if duration_label == "Custom" else DURATION_PRESETS_MINUTES.get(duration_label, 120)
+    now = datetime.now()
+    expected = now + timedelta(minutes=minutes)
+    wf = get_project_workflow(project_id, db_path)
+    wf.assigned_to_username = engineer.username
+    wf.assigned_by_username = engineer.username
+    wf.team_leader_id = int(engineer.team_leader_id or 0)
+    wf.assigned_at = now.isoformat()
+    wf.expected_completion_at = expected.isoformat()
+    wf.assigned_duration_minutes = minutes
+    wf.status = STATUS_NOT_STARTED
+    wf.progress_pct = 0
+    if project_exists(project_id, db_path):
+        data = load_project_from_db(project_id, db_path)
+        project, residential, commercial, other, calculated = parse_project_snapshot(data)
+        project.engineer_name = engineer.full_name
+        save_project(
+            project, residential, commercial, other, calculated,
+            db_path=db_path, created_by=engineer.username, updated_by=engineer.username,
+        )
+    update_project_workflow(project_id, wf, db_path)
+    log_audit(
+        ACTION_PROJECT_CREATED, engineer.username, engineer.user_id, project_id,
+        reason=f"Engineer-owned project; team={engineer.team}",
+        db_path=db_path,
+    )
 
 
 def assign_project(
@@ -5064,6 +5306,247 @@ def safe_command(callback: F, parent: Optional[Any] = None, title: str = "Error"
     wrapper.__name__ = getattr(callback, "__name__", "safe_command")
     return wrapper  # type: ignore[return-value]
 
+# ==================== ui/session_manager.py ====================
+"""Inactivity session timeout with warning dialog."""
+
+
+
+
+
+
+class SessionManager:
+    """Tracks user activity and triggers logout after configurable inactivity."""
+
+    def __init__(
+        self,
+        root: ctk.CTk,
+        get_user: Callable[[], Optional[object]],
+        on_logout: Callable[[], None],
+        on_continue: Optional[Callable[[], None]] = None,
+    ) -> None:
+        self.root = root
+        self.get_user = get_user
+        self.on_logout = on_logout
+        self.on_continue = on_continue
+        self._timeout_job: Optional[str] = None
+        self._warning_job: Optional[str] = None
+        self._warning_dialog: Optional[ctk.CTkToplevel] = None
+        self._active = False
+        self._timeout_ms = get_timeout_minutes() * 60 * 1000
+        self._warning_ms = max(0, self._timeout_ms - WARNING_BEFORE_SECONDS * 1000)
+
+    def start(self) -> None:
+        self._active = True
+        self._bind_activity()
+        self._schedule()
+
+    def stop(self) -> None:
+        self._active = False
+        self._cancel_jobs()
+        self._close_warning()
+        for seq in ("<Key>", "<Button>", "<Motion>"):
+            try:
+                self.root.unbind_all(seq)
+            except Exception:
+                pass
+
+    def touch(self) -> None:
+        if self._active:
+            self._close_warning()
+            self._schedule()
+
+    def _bind_activity(self) -> None:
+        for seq in ("<Key>", "<Button>", "<Motion>"):
+            self.root.bind_all(seq, self._on_activity, add="+")
+
+    def _on_activity(self, _event=None) -> None:
+        self.touch()
+
+    def _cancel_jobs(self) -> None:
+        for job in (self._timeout_job, self._warning_job):
+            if job is not None:
+                try:
+                    self.root.after_cancel(job)
+                except Exception:
+                    pass
+        self._timeout_job = None
+        self._warning_job = None
+
+    def _schedule(self) -> None:
+        self._cancel_jobs()
+        if not self._active:
+            return
+        if self._warning_ms > 0:
+            self._warning_job = self.root.after(self._warning_ms, self._show_warning)
+        self._timeout_job = self.root.after(self._timeout_ms, self._expire_session)
+
+    def _show_warning(self) -> None:
+        if not self._active or self._warning_dialog is not None:
+            return
+        user = self.get_user()
+        if user is None:
+            return
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Session Expiring")
+        dialog.geometry("400x180")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        self._warning_dialog = dialog
+        ctk.CTkLabel(
+            dialog,
+            text="Your session is about to expire.",
+            font=("Arial", 14, "bold"),
+        ).pack(pady=(20, 8))
+        ctk.CTkLabel(
+            dialog,
+            text="Unsaved project data is preserved in the database.",
+            font=("Arial", 11),
+            text_color="#666666",
+        ).pack(pady=(0, 16))
+        row = ctk.CTkFrame(dialog, fg_color="transparent")
+        row.pack()
+        ctk.CTkButton(row, text="Continue Session", command=self._continue_session, width=140).pack(side="left", padx=8)
+        ctk.CTkButton(row, text="Logout", fg_color="#C0392B", command=self._logout_now, width=100).pack(side="left", padx=8)
+        dialog.protocol("WM_DELETE_WINDOW", self._continue_session)
+
+    def _close_warning(self) -> None:
+        if self._warning_dialog is not None:
+            try:
+                self._warning_dialog.destroy()
+            except Exception:
+                pass
+            self._warning_dialog = None
+
+    def _continue_session(self) -> None:
+        self._close_warning()
+        if self.on_continue:
+            self.on_continue()
+        self.touch()
+
+    def _logout_now(self) -> None:
+        self._close_warning()
+        self.on_logout()
+
+    def _expire_session(self) -> None:
+        if not self._active:
+            return
+        user = self.get_user()
+        if user is not None:
+            log_audit(
+                ACTION_SESSION_TIMEOUT,
+                username=getattr(user, "username", ""),
+                user_id=getattr(user, "user_id", 0),
+            )
+        self._close_warning()
+        messagebox.showinfo("Session Expired", "You have been logged out due to inactivity.", parent=self.root)
+        self.on_logout()
+
+# ==================== ui/dashboard_header.py ====================
+"""Shared dashboard header with user info and profile."""
+
+
+
+
+
+
+def build_dashboard_header(
+    parent,
+    title: str,
+    user: UserSession,
+    on_logout: Callable[[], None],
+    session: Optional[SessionContext] = None,
+) -> ctk.CTkFrame:
+    top = ctk.CTkFrame(parent, fg_color=BRAND_NAVY, corner_radius=0, height=72)
+    top.grid_propagate(False)
+    top.grid_columnconfigure(1, weight=1)
+
+    ctk.CTkLabel(
+        top, text=title, font=("Arial", 16, "bold"), text_color=BRAND_ORANGE,
+    ).grid(row=0, column=0, padx=24, pady=20, sticky="w")
+
+    uf = ctk.CTkFrame(top, fg_color="transparent")
+    uf.grid(row=0, column=1, sticky="e", padx=16)
+    ctk.CTkLabel(
+        uf,
+        text=f"Logged in as: {user.full_name}\n{user.role_label}",
+        font=("Arial", 11),
+        text_color="white",
+        justify="right",
+    ).pack(side="left", padx=(0, 12))
+    ctk.CTkButton(
+        uf, text="Profile", width=72, height=30, fg_color="#2980B9",
+        command=lambda: UserProfileDialog(parent.winfo_toplevel(), user, session),
+    ).pack(side="left", padx=(0, 8))
+    ctk.CTkButton(
+        uf, text="Logout", command=on_logout, fg_color="#C0392B", width=90, height=30,
+    ).pack(side="left")
+    return top
+
+# ==================== ui/user_profile_dialog.py ====================
+"""User profile dialog — read-only account details."""
+
+
+
+
+
+class UserProfileDialog(ctk.CTkToplevel):
+    def __init__(self, master, user: UserSession, session: SessionContext | None = None) -> None:
+        super().__init__(master)
+        self.title("User Profile")
+        self.geometry("420x400")
+        self.transient(master.winfo_toplevel())
+        self.grab_set()
+
+        record = get_user_by_id(user.user_id)
+        leader_name = "—"
+        if user.team_leader_id:
+            leader = next((u for u in list_users(include_inactive=True) if u.user_id == user.team_leader_id), None)
+            if leader:
+                leader_name = f"{leader.full_name} ({leader.username})"
+
+        last_login = (record.created_at or "")[:19].replace("T", " ") if record else "—"
+        if record and hasattr(record, "created_at"):
+            pass
+
+        conn = _conn(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT last_login FROM users WHERE user_id = ?", (user.user_id,))
+        row = cur.fetchone()
+        conn.close()
+        if row and row[0]:
+            last_login = row[0][:19].replace("T", " ")
+
+        ctk.CTkLabel(self, text="Profile", font=("Arial", 16, "bold"), text_color=BRAND_NAVY).pack(pady=12)
+        frame = ctk.CTkFrame(self, fg_color="transparent")
+        frame.pack(fill="both", expand=True, padx=24, pady=8)
+
+        rows = [
+            ("Name", user.full_name),
+            ("Username", user.username),
+            ("Employee ID", user.employee_id or "—"),
+            ("Role", ROLE_LABELS.get(user.role, user.role)),
+            ("Team", user.team or "—"),
+            ("Team Leader", leader_name),
+            ("Last Login", last_login),
+        ]
+        if session:
+            rows.extend([
+                ("Login Date", session.login_date),
+                ("Login Time", session.login_time),
+            ])
+
+        for i, (label, value) in enumerate(rows):
+            ctk.CTkLabel(frame, text=label, font=("Arial", 11, "bold"), anchor="w").grid(row=i, column=0, sticky="w", pady=4)
+            ctk.CTkLabel(frame, text=value, font=("Arial", 11), anchor="w").grid(row=i, column=1, sticky="w", padx=(12, 0), pady=4)
+
+        ctk.CTkLabel(
+            self,
+            text="Role changes must be made by a Super Admin.",
+            font=("Arial", 10, "italic"),
+            text_color="#888888",
+        ).pack(pady=(4, 8))
+        ctk.CTkButton(self, text="Close", fg_color=BRAND_ORANGE, command=self.destroy).pack(pady=12)
+
 # ==================== ui/app_state.py ====================
 
 
@@ -5443,6 +5926,7 @@ class SplashScreen(ctk.CTkFrame):
 
 
 APP_VERSION = "2.0.0"
+ROLE_OPTIONS = ["Select Role"] + [ROLE_LABELS[r] for r in USER_ROLES]
 
 
 def _logo_path() -> Optional[str]:
@@ -5457,108 +5941,116 @@ def _logo_path() -> Optional[str]:
 
 
 class LoginScreen(ctk.CTkFrame):
-    """Modern corporate login screen for PlanetCode Engineering Suite."""
+    """Professional login screen with role selection and security validation."""
 
-    def __init__(self, master, on_login_success: Callable[[UserSession], None]) -> None:
+    def __init__(
+        self,
+        master,
+        on_login_success: Callable[[UserSession], None],
+        on_exit: Optional[Callable[[], None]] = None,
+    ) -> None:
         super().__init__(master, fg_color="#E8EDF2")
         self.on_login_success = on_login_success
+        self.on_exit = on_exit
         self._logo_image: Optional[ctk.CTkImage] = None
         self._loading = False
+        self._pwd_visible = False
         self._build()
+        remembered = load_remembered_username()
+        if remembered:
+            self.username_entry.insert(0, remembered)
+            self.remember_var.set(True)
 
     def _build(self) -> None:
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        card = ctk.CTkFrame(self, width=460, corner_radius=16, fg_color="white", border_width=1, border_color="#D9DEE5")
+        card = ctk.CTkFrame(
+            self, width=480, corner_radius=16, fg_color="white",
+            border_width=1, border_color="#D9DEE5",
+        )
         card.grid(row=0, column=0, padx=24, pady=24)
         card.grid_propagate(False)
 
         content = ctk.CTkFrame(card, fg_color="transparent")
-        content.pack(fill="both", expand=True, padx=36, pady=32)
+        content.pack(fill="both", expand=True, padx=36, pady=28)
 
         logo_path = _logo_path()
         if logo_path:
             try:
                 img = Image.open(logo_path)
-                self._logo_image = ctk.CTkImage(light_image=img, dark_image=img, size=(96, 96))
-                ctk.CTkLabel(content, text="", image=self._logo_image).pack(pady=(0, 12))
+                self._logo_image = ctk.CTkImage(light_image=img, dark_image=img, size=(88, 88))
+                ctk.CTkLabel(content, text="", image=self._logo_image).pack(pady=(0, 10))
             except Exception:
                 pass
 
         ctk.CTkLabel(
-            content,
-            text="PLANETCODE ENGINEERING SUITE",
-            font=("Arial", 18, "bold"),
-            text_color=BRAND_NAVY,
+            content, text="PlanetCode Engineering Suite",
+            font=("Arial", 18, "bold"), text_color=BRAND_NAVY,
         ).pack(pady=(0, 4))
         ctk.CTkLabel(
-            content,
-            text="Engineering Software",
-            font=("Arial", 12),
-            text_color="#5C6B7A",
-        ).pack(pady=(0, 24))
+            content, text="Engineering Design & Project Management System",
+            font=("Arial", 11), text_color="#5C6B7A",
+        ).pack(pady=(0, 20))
 
-        ctk.CTkLabel(content, text="Username / Employee ID", font=("Arial", 12), anchor="w").pack(fill="x", pady=(0, 6))
-        self.username_entry = ctk.CTkEntry(
-            content, height=40, corner_radius=8, placeholder_text="Enter username or employee ID"
-        )
-        self.username_entry.pack(fill="x", pady=(0, 14))
+        self._label_field(content, "Username / Employee ID")
+        self.username_entry = ctk.CTkEntry(content, height=40, corner_radius=8, placeholder_text="Enter username or employee ID")
+        self.username_entry.pack(fill="x", pady=(0, 12))
         self.username_entry.bind("<Return>", lambda _e: self._attempt_login())
 
-        ctk.CTkLabel(content, text="Password", font=("Arial", 12), anchor="w").pack(fill="x", pady=(0, 6))
+        self._label_field(content, "Password")
         pwd_row = ctk.CTkFrame(content, fg_color="transparent")
-        pwd_row.pack(fill="x", pady=(0, 10))
+        pwd_row.pack(fill="x", pady=(0, 12))
         pwd_row.grid_columnconfigure(0, weight=1)
         self.password_entry = ctk.CTkEntry(pwd_row, height=40, corner_radius=8, show="•", placeholder_text="Enter password")
         self.password_entry.grid(row=0, column=0, sticky="ew")
-        self._pwd_visible = False
         self.show_pwd_btn = ctk.CTkButton(
-            pwd_row, text="Show", width=72, height=36, corner_radius=8, command=self._toggle_password
+            pwd_row, text="👁", width=44, height=36, corner_radius=8,
+            fg_color="#E8ECF0", text_color="#333333", hover_color="#D0D5DC",
+            command=self._toggle_password,
         )
         self.show_pwd_btn.grid(row=0, column=1, padx=(8, 0))
         self.password_entry.bind("<Return>", lambda _e: self._attempt_login())
 
+        self._label_field(content, "Role")
+        self.role_var = ctk.StringVar(value="Select Role")
+        self.role_menu = ctk.CTkOptionMenu(
+            content, variable=self.role_var, values=ROLE_OPTIONS, height=40, corner_radius=8,
+        )
+        self.role_menu.pack(fill="x", pady=(0, 12))
+
         self.remember_var = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(content, text="Remember Me", variable=self.remember_var, font=("Arial", 11)).pack(
-            anchor="w", pady=(4, 12)
+            anchor="w", pady=(0, 12),
         )
 
         self.error_label = ctk.CTkLabel(content, text="", font=("Arial", 11), text_color="#C0392B")
         self.error_label.pack(fill="x", pady=(0, 8))
 
+        btn_row = ctk.CTkFrame(content, fg_color="transparent")
+        btn_row.pack(fill="x", pady=(0, 12))
+        btn_row.grid_columnconfigure((0, 1), weight=1)
         self.login_btn = ctk.CTkButton(
-            content,
-            text="LOGIN",
-            command=self._attempt_login,
-            fg_color=BRAND_ORANGE,
-            hover_color="#D06018",
-            height=42,
-            corner_radius=8,
+            btn_row, text="LOGIN", command=self._attempt_login,
+            fg_color=BRAND_ORANGE, hover_color="#D06018", height=42, corner_radius=8,
             font=("Arial", 14, "bold"),
         )
-        self.login_btn.pack(fill="x", pady=(4, 12))
+        self.login_btn.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ctk.CTkButton(
+            btn_row, text="EXIT", command=self._exit_app,
+            fg_color="#7F8C8D", hover_color="#6C7A7B", height=42, corner_radius=8,
+            font=("Arial", 13, "bold"),
+        ).grid(row=0, column=1, sticky="ew", padx=(6, 0))
 
-        ctk.CTkLabel(
-            content,
-            text="Forgot Password?",
-            font=("Arial", 11),
-            text_color="#5C6B7A",
-        ).pack(pady=(0, 16))
-
-        ctk.CTkLabel(
-            content,
-            text=f"Version {APP_VERSION}",
-            font=("Arial", 10),
-            text_color="#8A96A3",
-        ).pack()
-
+        ctk.CTkLabel(content, text=f"Version {APP_VERSION}", font=("Arial", 10), text_color="#8A96A3").pack()
         self.username_entry.focus_set()
+
+    def _label_field(self, parent, text: str) -> None:
+        ctk.CTkLabel(parent, text=text, font=("Arial", 12), anchor="w").pack(fill="x", pady=(0, 6))
 
     def _toggle_password(self) -> None:
         self._pwd_visible = not self._pwd_visible
         self.password_entry.configure(show="" if self._pwd_visible else "•")
-        self.show_pwd_btn.configure(text="Hide" if self._pwd_visible else "Show")
 
     def _set_loading(self, loading: bool) -> None:
         self._loading = loading
@@ -5566,13 +6058,22 @@ class LoginScreen(ctk.CTkFrame):
         self.login_btn.configure(text="Logging in..." if loading else "LOGIN", state=state)
         self.username_entry.configure(state=state)
         self.password_entry.configure(state=state)
+        self.role_menu.configure(state=state)
         self.show_pwd_btn.configure(state=state)
 
+    def _exit_app(self) -> None:
+        if self.on_exit:
+            self.on_exit()
+        else:
+            self.winfo_toplevel().destroy()
+
     def reset(self) -> None:
-        self.username_entry.delete(0, "end")
         self.password_entry.delete(0, "end")
         self.error_label.configure(text="")
+        self.role_var.set("Select Role")
         self._set_loading(False)
+        if not self.remember_var.get():
+            self.username_entry.delete(0, "end")
         self.username_entry.focus_set()
 
     def _attempt_login(self) -> None:
@@ -5580,23 +6081,33 @@ class LoginScreen(ctk.CTkFrame):
             return
         username = self.username_entry.get().strip()
         password = self.password_entry.get()
+        role = self.role_var.get()
+
         if not username:
             self.error_label.configure(text="Please enter username.")
             return
         if not password:
             self.error_label.configure(text="Please enter password.")
             return
+        if not role or role == "Select Role":
+            self.error_label.configure(text="Please select your role.")
+            return
 
         self.error_label.configure(text="")
         self._set_loading(True)
         self.update_idletasks()
 
-        user = authenticate(username, password)
+        user, error = authenticate_with_role(username, password, role)
         self._set_loading(False)
         if user is None:
-            self.error_label.configure(text="Invalid username or password.")
+            self.error_label.configure(text=error or "Invalid username, password, or role.")
             self.password_entry.delete(0, "end")
             return
+
+        if self.remember_var.get():
+            save_remembered_username(user.username)
+        else:
+            clear_remembered_username()
         self.on_login_success(user)
 
 # ==================== ui/dashboard.py ====================
@@ -5616,9 +6127,11 @@ class DashboardScreen(ctk.CTkFrame):
         on_open_project: Callable[[str], None],
         on_launch_water_demand: Callable[[], None],
         on_logout: Callable[[], None],
+        session: Optional[SessionContext] = None,
     ) -> None:
         super().__init__(master, fg_color="#F0F2F5")
         self.user = user
+        self.session = session
         self.on_new_project = on_new_project
         self.on_open_project = on_open_project
         self.on_launch_water_demand = on_launch_water_demand
@@ -5630,35 +6143,11 @@ class DashboardScreen(ctk.CTkFrame):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
-        top = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=0, height=72)
+        top = build_dashboard_header(
+            self, "DASHBOARD", self.user,
+            safe_command(self._confirm_logout, parent=self), session=self.session,
+        )
         top.grid(row=0, column=0, sticky="ew")
-        top.grid_propagate(False)
-        top.grid_columnconfigure(1, weight=1)
-
-        ctk.CTkLabel(
-            top,
-            text="AMERICAN EDGE ENGINEERS",
-            font=("Arial", 16, "bold"),
-            text_color=BRAND_ORANGE,
-        ).grid(row=0, column=0, padx=24, pady=20, sticky="w")
-
-        user_frame = ctk.CTkFrame(top, fg_color="transparent")
-        user_frame.grid(row=0, column=1, padx=16, sticky="e")
-        ctk.CTkLabel(
-            user_frame,
-            text=f"{self.user.full_name}  •  {self.user.role_label}",
-            font=("Arial", 12),
-            text_color="white",
-        ).pack(side="left", padx=(0, 12))
-        ctk.CTkButton(
-            user_frame,
-            text="Logout",
-            command=self._confirm_logout,
-            fg_color="#C0392B",
-            hover_color="#A93226",
-            width=90,
-            height=32,
-        ).pack(side="left")
 
         body = ctk.CTkScrollableFrame(self, fg_color="transparent")
         body.grid(row=1, column=0, sticky="nsew", padx=24, pady=16)
@@ -6085,10 +6574,12 @@ class CreateUserDialog(ctk.CTkToplevel):
         row += 2
 
         self.team_entry = self._field(body, row, "Team")
+        self._team_label_row = row
         row += 1
 
         self.team_leader_label = ctk.CTkLabel(body, text="Team Leader", font=("Arial", 12), anchor="w")
         self.team_leader_label.grid(row=row, column=0, sticky="ew", pady=(10, 4))
+        self._team_leader_label_row = row
         self.team_leader_var = ctk.StringVar(value="")
         leaders = self._team_leader_options()
         self.team_leader_menu = ctk.CTkOptionMenu(
@@ -6097,6 +6588,7 @@ class CreateUserDialog(ctk.CTkToplevel):
             values=leaders or ["(No team leaders available)"],
         )
         self.team_leader_menu.grid(row=row + 1, column=0, sticky="ew", pady=(0, 4))
+        self._team_leader_menu_row = row + 1
         row += 2
 
         ctk.CTkLabel(body, text="Status", font=("Arial", 12), anchor="w").grid(
@@ -6162,11 +6654,17 @@ class CreateUserDialog(ctk.CTkToplevel):
         return ROLE_ENGINEER
 
     def _on_role_changed(self) -> None:
-        show_tl = self._role_key() == ROLE_ENGINEER
-        if show_tl:
+        role = self._role_key()
+        if role == ROLE_ENGINEER:
+            self.team_entry.grid()
             self.team_leader_label.grid()
             self.team_leader_menu.grid()
+        elif role == ROLE_TEAM_LEADER:
+            self.team_entry.grid()
+            self.team_leader_label.grid_remove()
+            self.team_leader_menu.grid_remove()
         else:
+            self.team_entry.grid()
             self.team_leader_label.grid_remove()
             self.team_leader_menu.grid_remove()
 
@@ -6415,7 +6913,7 @@ class ProjectAssignDialog(ctk.CTkToplevel):
         self.destroy()
 
 # ==================== ui/engineer_dashboard.py ====================
-"""Engineer dashboard — assigned projects, timer info, project hub."""
+"""Engineer dashboard — projects, quick actions, timer info."""
 
 
 
@@ -6431,96 +6929,144 @@ class EngineerDashboard(ctk.CTkFrame):
         on_open_project: Callable[[str], None],
         on_launch_water_demand: Callable[[], None],
         on_logout: Callable[[], None],
+        session: Optional[SessionContext] = None,
     ) -> None:
         super().__init__(master, fg_color="#F0F2F5")
         self.user = user
+        self.session = session
         self.on_new_project = on_new_project
         self.on_open_project = on_open_project
         self.on_launch_water_demand = on_launch_water_demand
         self.on_logout = on_logout
         self.project_hub: Optional[ProjectHub] = None
+        self._status_filter = ""
+        self._list_frame: Optional[ctk.CTkFrame] = None
+        self._stat_labels: dict[str, ctk.CTkLabel] = {}
         self._build()
 
     def _build(self) -> None:
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
-        self._header()
+        header = build_dashboard_header(
+            self, "ENGINEER DASHBOARD", self.user,
+            safe_command(self._logout, parent=self), session=self.session,
+        )
+        header.grid(row=0, column=0, sticky="ew")
+
         body = ctk.CTkScrollableFrame(self, fg_color="transparent")
         body.grid(row=1, column=0, sticky="nsew", padx=24, pady=16)
         body.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
-            body, text=f"Engineer Dashboard — {self.user.full_name}",
+            body, text="Engineer Workspace",
             font=("Arial", 22, "bold"), text_color=BRAND_NAVY, anchor="w",
         ).grid(row=0, column=0, sticky="ew", pady=(0, 12))
 
-        stats = dashboard_stats(self.user)
-        stat_row = ctk.CTkFrame(body, fg_color="transparent")
-        stat_row.grid(row=1, column=0, sticky="ew", pady=(0, 12))
-        for i, (label, key) in enumerate([
-            ("My Projects", "total"), ("In Progress", "in_progress"),
-            ("Completed", "completed"), ("Delayed", "delayed"),
-        ]):
-            card = ctk.CTkFrame(stat_row, fg_color="white", corner_radius=8, border_width=1, border_color="#DDDDDD")
-            card.grid(row=0, column=i, padx=4, sticky="nsew")
-            stat_row.grid_columnconfigure(i, weight=1)
-            ctk.CTkLabel(card, text=label, font=("Arial", 10, "bold")).pack(padx=10, pady=(8, 0))
-            ctk.CTkLabel(card, text=str(stats.get(key, 0)), font=("Arial", 20, "bold"), text_color=BRAND_ORANGE).pack(padx=10, pady=(0, 8))
-
-        assigned = find_projects(user=self.user)
-        if assigned:
-            info = ctk.CTkFrame(body, fg_color="white", corner_radius=8, border_width=1, border_color="#DDDDDD")
-            info.grid(row=2, column=0, sticky="ew", pady=(0, 12))
-            ctk.CTkLabel(info, text="Assigned Projects", font=("Arial", 13, "bold"), text_color=BRAND_NAVY).pack(anchor="w", padx=12, pady=(10, 4))
-            for p in assigned[:8]:
-                line = (
-                    f"{p['project_id']}  |  {p['project_name'][:30]}  |  "
-                    f"Status: {p.get('status', 'n/a')}  |  "
-                    f"Elapsed: {p.get('elapsed_display', '-')}  |  "
-                    f"Remaining: {p.get('remaining_display', '-')}"
-                )
-                ctk.CTkLabel(info, text=line, font=("Arial", 10), anchor="w").pack(anchor="w", padx=12, pady=2)
-            ctk.CTkLabel(info, text="").pack(pady=4)
+        self._quick_actions(body, row=1)
+        self._stats_row(body, row=2)
+        self._list_frame = ctk.CTkFrame(body, fg_color="transparent")
+        self._list_frame.grid(row=3, column=0, sticky="ew", pady=(0, 12))
 
         self.project_hub = ProjectHub(
             body, user=self.user, on_new_project=self.on_new_project,
             on_open_project=self.on_open_project, enabled=True,
         )
-        self.project_hub.grid(row=3, column=0, sticky="ew", pady=(0, 12))
+        self.project_hub.grid(row=4, column=0, sticky="ew", pady=(0, 12))
+        self._refresh_list()
 
-        ctk.CTkButton(
-            body, text="Launch Calculator (Blank)", fg_color=BRAND_ORANGE,
-            command=self._launch, height=36,
-        ).grid(row=4, column=0, sticky="w")
+    def _quick_actions(self, parent, row: int) -> None:
+        bar = ctk.CTkFrame(parent, fg_color="transparent")
+        bar.grid(row=row, column=0, sticky="ew", pady=(0, 12))
+        actions = [
+            ("+ New Project", "#27AE60", self.on_new_project),
+            ("📂 My Projects", "#2980B9", lambda: self._set_filter("")),
+            ("⏱ Active", BRAND_ORANGE, lambda: self._set_filter("in_progress")),
+            ("✓ Completed", "#27AE60", lambda: self._set_filter("completed")),
+            ("⚠ Delayed", "#C0392B", lambda: self._set_filter("delayed")),
+            ("🔍 Search", "#7F8C8D", self._focus_search),
+        ]
+        for i, (text, color, cmd) in enumerate(actions):
+            ctk.CTkButton(
+                bar, text=text, fg_color=color, height=36,
+                command=safe_command(cmd, parent=self),
+            ).grid(row=0, column=i, padx=4, sticky="ew")
+            bar.grid_columnconfigure(i, weight=1)
 
-    def _header(self) -> None:
-        top = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=0, height=72)
-        top.grid(row=0, column=0, sticky="ew")
-        top.grid_propagate(False)
-        top.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(top, text="AMERICAN EDGE ENGINEERS", font=("Arial", 16, "bold"), text_color=BRAND_ORANGE).grid(row=0, column=0, padx=24, pady=20, sticky="w")
-        uf = ctk.CTkFrame(top, fg_color="transparent")
-        uf.grid(row=0, column=1, sticky="e", padx=16)
-        ctk.CTkLabel(uf, text=f"{self.user.full_name} • Engineer", font=("Arial", 12), text_color="white").pack(side="left", padx=(0, 12))
-        ctk.CTkButton(uf, text="Logout", command=self._logout, fg_color="#C0392B", width=90).pack(side="left")
+    def _stats_row(self, parent, row: int) -> None:
+        stat_row = ctk.CTkFrame(parent, fg_color="transparent")
+        stat_row.grid(row=row, column=0, sticky="ew", pady=(0, 12))
+        stats = dashboard_stats(self.user)
+        for i, (label, key) in enumerate([
+            ("My Projects", "total"), ("In Progress", "in_progress"),
+            ("Completed", "completed"), ("Delayed", "delayed"),
+            ("Pending Approval", "pending_approval"),
+        ]):
+            card = ctk.CTkFrame(stat_row, fg_color="white", corner_radius=8, border_width=1, border_color="#DDDDDD")
+            card.grid(row=0, column=i, padx=4, sticky="nsew")
+            stat_row.grid_columnconfigure(i, weight=1)
+            ctk.CTkLabel(card, text=label, font=("Arial", 10, "bold")).pack(padx=10, pady=(8, 0))
+            val = ctk.CTkLabel(card, text=str(stats.get(key, 0)), font=("Arial", 20, "bold"), text_color=BRAND_ORANGE)
+            val.pack(padx=10, pady=(0, 8))
+            self._stat_labels[key] = val
 
-    def _launch(self) -> None:
-        self.on_launch_water_demand()
+    def _set_filter(self, status: str) -> None:
+        self._status_filter = status
+        self._refresh_list()
+
+    def _refresh_list(self) -> None:
+        if not self._list_frame:
+            return
+        for w in self._list_frame.winfo_children():
+            w.destroy()
+        stats = dashboard_stats(self.user)
+        for key, lbl in self._stat_labels.items():
+            lbl.configure(text=str(stats.get(key, 0)))
+
+        assigned = find_projects(user=self.user, status_filter=self._status_filter)
+        info = ctk.CTkFrame(self._list_frame, fg_color="white", corner_radius=8, border_width=1, border_color="#DDDDDD")
+        info.pack(fill="x")
+        title = "Project History" if not self._status_filter else f"Filtered — {self._status_filter.replace('_', ' ').title()}"
+        ctk.CTkLabel(info, text=title, font=("Arial", 13, "bold"), text_color=BRAND_NAVY).pack(anchor="w", padx=12, pady=(10, 4))
+        if not assigned:
+            ctk.CTkLabel(info, text="No projects found.", font=("Arial", 10), text_color="#888888").pack(anchor="w", padx=12, pady=8)
+        else:
+            for p in assigned[:10]:
+                line = (
+                    f"{p['project_id']}  |  {(p['project_name'] or '')[:28]}  |  "
+                    f"{p.get('project_type', '')}  |  Status: {p.get('status', 'n/a')}  |  "
+                    f"Elapsed: {p.get('elapsed_display', '-')}  |  Remaining: {p.get('remaining_display', '-')}"
+                )
+                ctk.CTkLabel(info, text=line, font=("Arial", 10), anchor="w").pack(anchor="w", padx=12, pady=2)
+        ctk.CTkLabel(info, text="").pack(pady=4)
+
+    def _focus_search(self) -> None:
+        if self.project_hub:
+            self.project_hub.refresh()
 
     def _logout(self) -> None:
-        if messagebox.askyesno("Logout", "Are you sure you want to logout?"):
+        if messagebox.askyesno("Logout", "Are you sure you want to logout?", parent=self.winfo_toplevel()):
             self.on_logout()
 
     def refresh_stats(self) -> None:
+        self._refresh_list()
         if self.project_hub:
             self.project_hub.refresh()
 
 # ==================== ui/team_leader_dashboard.py ====================
-"""Team Leader dashboard — team projects, assignment, performance."""
+"""Team Leader dashboard — live monitor, team projects, performance."""
 
 
 
 
+
+STATUS_COLORS = {
+    "in_progress": "#27AE60",
+    "delayed": "#C0392B",
+    "completed": "#2980B9",
+    "not_started": "#F39C12",
+    "paused": "#F39C12",
+    "pending_approval": "#8E44AD",
+}
 
 
 class TeamLeaderDashboard(ctk.CTkFrame):
@@ -6531,9 +7077,11 @@ class TeamLeaderDashboard(ctk.CTkFrame):
         on_open_project: Callable[[str], None],
         on_logout: Callable[[], None],
         on_assign_and_open: Callable[[str], None],
+        session: Optional[SessionContext] = None,
     ) -> None:
         super().__init__(master, fg_color="#F0F2F5")
         self.user = user
+        self.session = session
         self.on_open_project = on_open_project
         self.on_logout = on_logout
         self.on_assign_and_open = on_assign_and_open
@@ -6541,44 +7089,59 @@ class TeamLeaderDashboard(ctk.CTkFrame):
         self._date_filter = ""
         self._search_var = ctk.StringVar()
         self._table_frame: Optional[ctk.CTkScrollableFrame] = None
+        self._live_frame: Optional[ctk.CTkFrame] = None
+        self._perf_frame: Optional[ctk.CTkFrame] = None
+        self._refresh_job: Optional[str] = None
         self._build()
 
     def _build(self) -> None:
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
-        self._header()
+        header = build_dashboard_header(
+            self, "TEAM LEADER DASHBOARD", self.user,
+            safe_command(self._logout, parent=self), session=self.session,
+        )
+        header.grid(row=0, column=0, sticky="ew")
+
         body = ctk.CTkScrollableFrame(self, fg_color="transparent")
         body.grid(row=1, column=0, sticky="nsew", padx=16, pady=12)
         body.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(body, text="Team Leader Dashboard", font=("Arial", 22, "bold"), text_color=BRAND_NAVY).grid(row=0, column=0, sticky="w", pady=(0, 10))
+        ctk.CTkLabel(body, text="Team Leader Workspace", font=("Arial", 22, "bold"), text_color=BRAND_NAVY).grid(row=0, column=0, sticky="w", pady=(0, 10))
         self._stats_row(body)
+        self._live_monitor(body)
         self._toolbar(body)
-        self._table_frame = ctk.CTkScrollableFrame(body, height=260, label_text="Team Projects")
-        self._table_frame.grid(row=3, column=0, sticky="ew", pady=8)
+        self._table_frame = ctk.CTkScrollableFrame(body, height=220, label_text="Team Projects")
+        self._table_frame.grid(row=4, column=0, sticky="ew", pady=8)
         self._perf_frame = ctk.CTkFrame(body, fg_color="white", corner_radius=8, border_width=1, border_color="#DDDDDD")
-        self._perf_frame.grid(row=4, column=0, sticky="ew", pady=8)
+        self._perf_frame.grid(row=5, column=0, sticky="ew", pady=8)
         self.refresh()
+        self._schedule_refresh()
 
-    def _header(self) -> None:
-        top = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=0, height=72)
-        top.grid(row=0, column=0, sticky="ew")
-        top.grid_propagate(False)
-        top.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(top, text="TEAM LEADER", font=("Arial", 16, "bold"), text_color=BRAND_ORANGE).grid(row=0, column=0, padx=24, pady=20, sticky="w")
-        uf = ctk.CTkFrame(top, fg_color="transparent")
-        uf.grid(row=0, column=1, sticky="e", padx=16)
-        ctk.CTkLabel(uf, text=f"{self.user.full_name}", font=("Arial", 12), text_color="white").pack(side="left", padx=(0, 12))
-        ctk.CTkButton(uf, text="Logout", command=self._logout, fg_color="#C0392B", width=90).pack(side="left")
+    def _schedule_refresh(self) -> None:
+        if self._refresh_job is not None:
+            self.after_cancel(self._refresh_job)
+        self._refresh_job = self.after(30_000, self._auto_refresh)
+
+    def _auto_refresh(self) -> None:
+        self.refresh()
+        self._schedule_refresh()
+
+    def destroy(self) -> None:
+        if self._refresh_job is not None:
+            try:
+                self.after_cancel(self._refresh_job)
+            except Exception:
+                pass
+        super().destroy()
 
     def _stats_row(self, parent) -> None:
         stats = dashboard_stats(self.user)
         row = ctk.CTkFrame(parent, fg_color="transparent")
         row.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         labels = [
-            ("Total", "total"), ("Today", "today"), ("In Progress", "in_progress"),
-            ("Completed", "completed"), ("Pending", "pending"), ("Delayed", "delayed"),
-            ("Pending Approval", "pending_approval"),
+            ("Total Projects", "total"), ("Today's Projects", "today"), ("In Progress", "in_progress"),
+            ("Completed", "completed"), ("Delayed", "delayed"), ("Pending Approval", "pending_approval"),
         ]
         for i, (title, key) in enumerate(labels):
             card = ctk.CTkFrame(row, fg_color="white", corner_radius=8, border_width=1, border_color="#DDDDDD")
@@ -6587,17 +7150,52 @@ class TeamLeaderDashboard(ctk.CTkFrame):
             ctk.CTkLabel(card, text=title, font=("Arial", 9, "bold")).pack(padx=6, pady=(6, 0))
             ctk.CTkLabel(card, text=str(stats.get(key, 0)), font=("Arial", 16, "bold"), text_color=BRAND_ORANGE).pack(padx=6, pady=(0, 6))
 
+    def _live_monitor(self, parent) -> None:
+        self._live_frame = ctk.CTkFrame(parent, fg_color="white", corner_radius=8, border_width=1, border_color="#DDDDDD")
+        self._live_frame.grid(row=2, column=0, sticky="ew", pady=8)
+
+    def _render_live_monitor(self, projects: list) -> None:
+        if not self._live_frame:
+            return
+        for w in self._live_frame.winfo_children():
+            w.destroy()
+        ctk.CTkLabel(
+            self._live_frame, text="LIVE PROJECT MONITOR", font=("Arial", 13, "bold"), text_color=BRAND_NAVY,
+        ).pack(anchor="w", padx=12, pady=(10, 6))
+        hdr = ctk.CTkFrame(self._live_frame, fg_color="#E8ECF0")
+        hdr.pack(fill="x", padx=12, pady=(0, 4))
+        for i, h in enumerate(["Project", "Engineer", "Type", "Status", "Elapsed", "Remaining"]):
+            ctk.CTkLabel(hdr, text=h, font=("Arial", 9, "bold"), width=110, anchor="w").grid(row=0, column=i, padx=4, pady=4)
+        active = [p for p in projects if p.get("status") in ("in_progress", "delayed", "paused")][:8]
+        if not active:
+            ctk.CTkLabel(self._live_frame, text="No active team projects.", font=("Arial", 10), text_color="#888888").pack(anchor="w", padx=12, pady=8)
+            return
+        for p in active:
+            status = p.get("status", "")
+            color = STATUS_COLORS.get(status, "#333333")
+            row = ctk.CTkFrame(self._live_frame, fg_color="transparent")
+            row.pack(fill="x", padx=12, pady=1)
+            vals = [
+                (p["project_id"] or "")[:12],
+                (p.get("engineer_name") or p.get("assigned_to_username") or "")[:12],
+                (p.get("project_type") or "")[:12],
+                status.replace("_", " ").title(),
+                p.get("elapsed_display", "-"),
+                p.get("remaining_display", "-"),
+            ]
+            for i, v in enumerate(vals):
+                fg = color if i == 3 else "#333333"
+                ctk.CTkLabel(row, text=v, font=("Arial", 9), width=110, anchor="w", text_color=fg).grid(row=0, column=i, padx=4)
+
     def _toolbar(self, parent) -> None:
         bar = ctk.CTkFrame(parent, fg_color="transparent")
-        bar.grid(row=2, column=0, sticky="ew", pady=4)
-        ctk.CTkEntry(bar, textvariable=self._search_var, placeholder_text="Search...", width=220).pack(side="left", padx=(0, 6))
+        bar.grid(row=3, column=0, sticky="ew", pady=4)
+        ctk.CTkEntry(bar, textvariable=self._search_var, placeholder_text="Search by ID, name, client, engineer...", width=260).pack(side="left", padx=(0, 6))
         ctk.CTkButton(bar, text="Search", width=70, command=self.refresh).pack(side="left", padx=2)
-        ctk.CTkButton(bar, text="+ Assign Project", fg_color="#27AE60", command=self._assign_new).pack(side="left", padx=8)
-        ctk.CTkButton(bar, text="Today", width=60, command=lambda: self._set_date_filter("today")).pack(side="left", padx=2)
-        ctk.CTkButton(bar, text="Last 7 Days", width=90, command=lambda: self._set_date_filter("7d")).pack(side="left", padx=2)
+        ctk.CTkButton(bar, text="+ Assign Project", fg_color="#27AE60", command=safe_command(self._assign_new, parent=self)).pack(side="left", padx=8)
         ctk.CTkButton(bar, text="In Progress", width=90, command=lambda: self._set_status("in_progress")).pack(side="left", padx=2)
         ctk.CTkButton(bar, text="Delayed", width=70, command=lambda: self._set_status("delayed")).pack(side="left", padx=2)
-        ctk.CTkButton(bar, text="Clear Filters", width=90, command=self._clear_filters).pack(side="left", padx=2)
+        ctk.CTkButton(bar, text="Clear", width=60, command=self._clear_filters).pack(side="left", padx=2)
 
     def _set_date_filter(self, kind: str) -> None:
         today = datetime.now().date()
@@ -6620,8 +7218,6 @@ class TeamLeaderDashboard(ctk.CTkFrame):
     def refresh(self) -> None:
         if not self._table_frame:
             return
-        for w in self._table_frame.winfo_children():
-            w.destroy()
         date_from = self._date_filter if self._date_filter else ""
         projects = find_projects(
             query=self._search_var.get(),
@@ -6630,29 +7226,38 @@ class TeamLeaderDashboard(ctk.CTkFrame):
             status_filter=self._status_filter,
             date_from=date_from,
         )
-        headers = ["ID", "Name", "Engineer", "Status", "Elapsed", "Remaining", "Actions"]
+        self._render_live_monitor(projects)
+        for w in self._table_frame.winfo_children():
+            w.destroy()
+        headers = ["ID", "Name", "Type", "Engineer", "Status", "Elapsed", "Remaining", "Progress", "Actions"]
         hdr = ctk.CTkFrame(self._table_frame, fg_color="#E8ECF0")
         hdr.pack(fill="x", pady=(0, 4))
         for i, h in enumerate(headers):
-            ctk.CTkLabel(hdr, text=h, font=("Arial", 9, "bold"), width=100 if i < 5 else 80).grid(row=0, column=i, padx=2, pady=4)
+            ctk.CTkLabel(hdr, text=h, font=("Arial", 9, "bold"), width=90 if i < 7 else 70).grid(row=0, column=i, padx=2, pady=4)
         for p in projects:
             row = ctk.CTkFrame(self._table_frame, fg_color="transparent")
             row.pack(fill="x", pady=1)
+            status = p.get("status", "")
+            color = STATUS_COLORS.get(status, "#333333")
             vals = [
-                p["project_id"][:14],
-                (p["project_name"] or "")[:18],
-                (p["engineer_name"] or "")[:12],
-                p.get("status", ""),
+                p["project_id"][:12],
+                (p["project_name"] or "")[:16],
+                (p.get("project_type") or "")[:12],
+                (p.get("engineer_name") or "")[:12],
+                status,
                 p.get("elapsed_display", "-"),
                 p.get("remaining_display", "-"),
+                f"{p.get('progress_pct', 0)}%",
             ]
             for i, v in enumerate(vals):
-                ctk.CTkLabel(row, text=v, font=("Arial", 9), width=100 if i < 5 else 80, anchor="w").grid(row=0, column=i, padx=2)
+                ctk.CTkLabel(row, text=v, font=("Arial", 9), width=90 if i < 7 else 70, anchor="w", text_color=color if i == 4 else "#333333").grid(row=0, column=i, padx=2)
             pid = p["project_id"]
-            ctk.CTkButton(row, text="Open", width=50, height=24, command=lambda x=pid: self.on_open_project(x)).grid(row=0, column=6, padx=2)
+            ctk.CTkButton(row, text="Open", width=50, height=24, command=lambda x=pid: self.on_open_project(x)).grid(row=0, column=8, padx=2)
         self._refresh_performance()
 
     def _refresh_performance(self) -> None:
+        if not self._perf_frame:
+            return
         for w in self._perf_frame.winfo_children():
             w.destroy()
         ctk.CTkLabel(self._perf_frame, text="Engineer Performance", font=("Arial", 13, "bold"), text_color=BRAND_NAVY).pack(anchor="w", padx=12, pady=(10, 4))
@@ -6662,7 +7267,7 @@ class TeamLeaderDashboard(ctk.CTkFrame):
             return
         for row in perf:
             text = (
-                f"{row['engineer_name']}: Assigned {row['assigned']} | Completed {row['completed']} | "
+                f"{row['engineer_name']}: Created {row['assigned']} | Completed {row['completed']} | "
                 f"In Progress {row['in_progress']} | Delayed {row['delayed']} | "
                 f"Early {row['early']} | On Time {row['on_time']} | Late {row['late']}"
             )
@@ -6672,7 +7277,7 @@ class TeamLeaderDashboard(ctk.CTkFrame):
     def _assign_new(self) -> None:
         engineers = list_team_engineers(self.user.user_id)
         if not engineers:
-            messagebox.showwarning("No Engineers", "No engineers assigned to your team.")
+            messagebox.showwarning("No Engineers", "No engineers assigned to your team.", parent=self.winfo_toplevel())
             return
         dlg = ProjectAssignDialog(self.winfo_toplevel(), engineers, list(PROJECT_TYPE_LABELS.keys()))
         self.wait_window(dlg)
@@ -6691,11 +7296,11 @@ class TeamLeaderDashboard(ctk.CTkFrame):
             custom_minutes=int(dlg.result.get("custom_minutes") or 0),
             priority=dlg.result.get("priority", "Normal"),
         )
-        messagebox.showinfo("Assigned", f"Project {state.project.project_id} assigned.")
+        messagebox.showinfo("Assigned", f"Project {state.project.project_id} assigned.", parent=self.winfo_toplevel())
         self.refresh()
 
     def _logout(self) -> None:
-        if messagebox.askyesno("Logout", "Logout?"):
+        if messagebox.askyesno("Logout", "Logout?", parent=self.winfo_toplevel()):
             self.on_logout()
 
     def refresh_stats(self) -> None:
@@ -6710,9 +7315,16 @@ class TeamLeaderDashboard(ctk.CTkFrame):
 
 
 class SuperAdminDashboard(ctk.CTkFrame):
-    def __init__(self, master, user: UserSession, on_logout: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        master,
+        user: UserSession,
+        on_logout: Callable[[], None],
+        session=None,
+    ) -> None:
         super().__init__(master, fg_color="#F0F2F5")
         self.user = user
+        self.session = session
         self.on_logout = on_logout
         self._user_list: Optional[ctk.CTkScrollableFrame] = None
         self._audit_list: Optional[ctk.CTkScrollableFrame] = None
@@ -6722,11 +7334,11 @@ class SuperAdminDashboard(ctk.CTkFrame):
     def _build(self) -> None:
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
-        top = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=0, height=72)
-        top.grid(row=0, column=0, sticky="ew")
-        top.grid_propagate(False)
-        ctk.CTkLabel(top, text="SUPER ADMIN", font=("Arial", 16, "bold"), text_color=BRAND_ORANGE).grid(row=0, column=0, padx=24, pady=20, sticky="w")
-        ctk.CTkButton(top, text="Logout", command=self._logout, fg_color="#C0392B", width=90).grid(row=0, column=1, padx=24, sticky="e")
+        header = build_dashboard_header(
+            self, "SUPER ADMIN", self.user,
+            safe_command(self._logout, parent=self), session=self.session,
+        )
+        header.grid(row=0, column=0, sticky="ew")
 
         body = ctk.CTkScrollableFrame(self, fg_color="transparent")
         body.grid(row=1, column=0, sticky="nsew", padx=16, pady=12)
@@ -6850,9 +7462,10 @@ def create_dashboard(
     on_launch_water_demand: Callable[[], None],
     on_logout: Callable[[], None],
     on_assign_and_open: Callable[[str], None] | None = None,
+    session: Optional[SessionContext] = None,
 ) -> ctk.CTkFrame:
     if user.is_super_admin():
-        return SuperAdminDashboard(master, user=user, on_logout=on_logout)
+        return SuperAdminDashboard(master, user=user, on_logout=on_logout, session=session)
     if user.is_team_leader():
         return TeamLeaderDashboard(
             master,
@@ -6860,6 +7473,7 @@ def create_dashboard(
             on_open_project=on_open_project,
             on_logout=on_logout,
             on_assign_and_open=on_assign_and_open or on_open_project,
+            session=session,
         )
     if user.is_engineer():
         return EngineerDashboard(
@@ -6869,6 +7483,7 @@ def create_dashboard(
             on_open_project=on_open_project,
             on_launch_water_demand=on_launch_water_demand,
             on_logout=on_logout,
+            session=session,
         )
     return DashboardScreen(
         master,
@@ -6877,6 +7492,7 @@ def create_dashboard(
         on_open_project=on_open_project,
         on_launch_water_demand=on_launch_water_demand,
         on_logout=on_logout,
+        session=session,
     )
 
 # ==================== ui/pages/project_page.py ====================
@@ -10337,6 +10953,8 @@ class Application(ctk.CTk):
         init_users_table(DB_PATH)
 
         self.current_user: Optional[UserSession] = None
+        self.session: Optional[SessionContext] = None
+        self._session_manager: Optional[SessionManager] = None
         self._water_app = None
         self._active_screen = None
         self._pending_state: Optional[AppState] = None
@@ -10357,19 +10975,45 @@ class Application(ctk.CTk):
         self._active_screen.grid(row=0, column=0, sticky="nsew")
 
     def _show_login(self) -> None:
+        self._stop_session()
         self._clear_screen()
-        self._active_screen = LoginScreen(self, on_login_success=self._on_login_success)
+        self._active_screen = LoginScreen(
+            self,
+            on_login_success=self._on_login_success,
+            on_exit=self._exit_application,
+        )
         self._active_screen.grid(row=0, column=0, sticky="nsew")
+
+    def _exit_application(self) -> None:
+        self._stop_session()
+        self.destroy()
+
+    def _stop_session(self) -> None:
+        if self._session_manager is not None:
+            self._session_manager.stop()
+            self._session_manager = None
 
     def _on_login_success(self, user: UserSession) -> None:
         self.current_user = user
+        self.session = SessionContext.from_user(user)
+        self._start_session()
         self._show_dashboard()
+
+    def _start_session(self) -> None:
+        self._stop_session()
+        self._session_manager = SessionManager(
+            self,
+            get_user=lambda: self.current_user,
+            on_logout=safe_command(self._logout, parent=self),
+        )
+        self._session_manager.start()
 
     def _show_dashboard(self) -> None:
         self._clear_screen()
         self._active_screen = create_dashboard(
             self,
             user=self.current_user,
+            session=self.session,
             on_new_project=safe_command(self._start_new_project, parent=self),
             on_open_project=safe_command(self._open_project, parent=self),
             on_launch_water_demand=safe_command(self._launch_blank, parent=self),
@@ -10381,6 +11025,9 @@ class Application(ctk.CTk):
         if self.current_user is None:
             return
         self._pending_state = create_new_project_state(self.current_user, DB_PATH)
+        if self.current_user.is_engineer():
+            persist_project_state(self._pending_state, self.current_user, DB_PATH)
+            init_engineer_owned_project(self._pending_state.project.project_id, self.current_user, DB_PATH)
         self._launch_water_demand(self._pending_state)
 
     def _open_project(self, project_id: str) -> None:
@@ -10437,7 +11084,15 @@ class Application(ctk.CTk):
         self._logout()
 
     def _logout(self) -> None:
+        if self.current_user is not None:
+            log_audit(
+                ACTION_LOGOUT,
+                username=self.current_user.username,
+                user_id=self.current_user.user_id,
+            )
+        self._stop_session()
         self.current_user = None
+        self.session = None
         self._pending_state = None
         self._show_login()
         if isinstance(self._active_screen, LoginScreen):

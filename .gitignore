@@ -5,3 +5,6 @@ data/*.db
 *.db
 .venv/
 venv/
+build/
+dist/
+*.spec

@@ -8,7 +8,7 @@ import customtkinter as ctk
 from tkinter import messagebox
 
 from config.nbc_2026 import BRAND_NAVY, BRAND_ORANGE
-from models.user import ROLE_ENGINEER, ROLE_LABELS, USER_ROLES, UserRecord
+from models.user import ROLE_ENGINEER, ROLE_TEAM_LEADER, ROLE_LABELS, USER_ROLES, UserRecord
 from services.auth_db import (
     create_user,
     list_users,
@@ -91,10 +91,12 @@ class CreateUserDialog(ctk.CTkToplevel):
         row += 2
 
         self.team_entry = self._field(body, row, "Team")
+        self._team_label_row = row
         row += 1
 
         self.team_leader_label = ctk.CTkLabel(body, text="Team Leader", font=("Arial", 12), anchor="w")
         self.team_leader_label.grid(row=row, column=0, sticky="ew", pady=(10, 4))
+        self._team_leader_label_row = row
         self.team_leader_var = ctk.StringVar(value="")
         leaders = self._team_leader_options()
         self.team_leader_menu = ctk.CTkOptionMenu(
@@ -103,6 +105,7 @@ class CreateUserDialog(ctk.CTkToplevel):
             values=leaders or ["(No team leaders available)"],
         )
         self.team_leader_menu.grid(row=row + 1, column=0, sticky="ew", pady=(0, 4))
+        self._team_leader_menu_row = row + 1
         row += 2
 
         ctk.CTkLabel(body, text="Status", font=("Arial", 12), anchor="w").grid(
@@ -168,11 +171,17 @@ class CreateUserDialog(ctk.CTkToplevel):
         return ROLE_ENGINEER
 
     def _on_role_changed(self) -> None:
-        show_tl = self._role_key() == ROLE_ENGINEER
-        if show_tl:
+        role = self._role_key()
+        if role == ROLE_ENGINEER:
+            self.team_entry.grid()
             self.team_leader_label.grid()
             self.team_leader_menu.grid()
+        elif role == ROLE_TEAM_LEADER:
+            self.team_entry.grid()
+            self.team_leader_label.grid_remove()
+            self.team_leader_menu.grid_remove()
         else:
+            self.team_entry.grid()
             self.team_leader_label.grid_remove()
             self.team_leader_menu.grid_remove()
 
