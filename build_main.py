@@ -17,6 +17,8 @@ import json
 import math
 import os
 import re
+import secrets
+import hashlib
 import shutil
 import sqlite3
 import uuid
@@ -79,12 +81,14 @@ FILES = [
     "config/nbc_2026.py",
     "config/page_visibility.py",
     "models/project.py",
+    "models/user.py",
     "models/residential.py",
     "models/commercial.py",
     "models/other_details.py",
     "models/calculations.py",
     "services/calculator.py",
     "services/database.py",
+    "services/auth_db.py",
     "services/lookup_db.py",
     "services/pdf_exporter.py",
     "services/excel_exporter.py",
@@ -92,6 +96,9 @@ FILES = [
     "ui/app_state.py",
     "ui/components/scrollable_frame.py",
     "ui/components/preview_dialog.py",
+    "ui/splash_screen.py",
+    "ui/login_screen.py",
+    "ui/dashboard.py",
     "ui/pages/project_page.py",
     "ui/pages/residential_page.py",
     "ui/pages/commercial_page.py",
@@ -104,6 +111,7 @@ FILES = [
     "rwh/pdf_exporter.py",
     "ui/pages/rwh_page.py",
     "_app_sidebar.py",
+    "app_launcher.py",
 ]
 
 # Extend NBC commercial types before build

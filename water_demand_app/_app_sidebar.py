@@ -33,10 +33,12 @@ class WaterDemandApp(ctk.CTk):
         ("Settings", "Settings"),
     ]
 
-    def __init__(self):
+    def __init__(self, current_user=None, on_logout=None):
         super().__init__()
         ctk.set_appearance_mode("light")
         ctk.set_default_color_theme("blue")
+        self.current_user = current_user
+        self.on_logout = on_logout
         self.app_state = AppState()
         self.title("American Edge Engineers - Water Demand Report Generator")
         self.geometry("1280x850")
@@ -95,7 +97,15 @@ class WaterDemandApp(ctk.CTk):
             text_color=BRAND_ORANGE,
             justify="center",
         ).pack(pady=(20, 5))
-        ctk.CTkLabel(sb, text="Water Demand Generator", font=("Arial", 10), text_color="white").pack(pady=(0, 15))
+        ctk.CTkLabel(sb, text="Water Demand Generator", font=("Arial", 10), text_color="white").pack(pady=(0, 10))
+        if self.current_user:
+            ctk.CTkLabel(
+                sb,
+                text=f"{self.current_user.full_name}\n({self.current_user.role_label})",
+                font=("Arial", 9),
+                text_color="#CCCCCC",
+                justify="center",
+            ).pack(pady=(0, 10))
         self.nav_btns = {}
         for key, label in self.NAV:
             if not self._nav_visible(key):
@@ -120,9 +130,17 @@ class WaterDemandApp(ctk.CTk):
             side="bottom", fill="x", padx=10, pady=4
         )
         ctk.CTkButton(sb, text="New Project", fg_color="#27AE60", command=self._new).pack(
-            side="bottom", fill="x", padx=10, pady=(4, 15)
+            side="bottom", fill="x", padx=10, pady=(4, 4 if self.on_logout else 15)
         )
+        if self.on_logout:
+            ctk.CTkButton(sb, text="Logout", fg_color="#C0392B", command=self._logout).pack(
+                side="bottom", fill="x", padx=10, pady=(4, 15)
+            )
         return sb
+
+    def _logout(self) -> None:
+        if self.on_logout and messagebox.askyesno("Logout", "Return to login screen?"):
+            self.on_logout()
 
     def _rebuild_sidebar(self) -> None:
         self.sidebar.destroy()

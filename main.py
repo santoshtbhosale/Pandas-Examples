@@ -9,6 +9,8 @@ import json
 import math
 import os
 import re
+import secrets
+import hashlib
 import shutil
 import sqlite3
 import uuid
@@ -669,6 +671,56 @@ class ProjectData:
             "Project No.": self.project_no,
             "Date": self.date,
         }
+
+# ==================== models/user.py ====================
+
+
+ROLE_ADMIN = "admin"
+ROLE_ENGINEER = "engineer"
+ROLE_VIEWER = "viewer"
+
+USER_ROLES = (ROLE_ADMIN, ROLE_ENGINEER, ROLE_VIEWER)
+
+ROLE_LABELS: Dict[str, str] = {
+    ROLE_ADMIN: "Administrator",
+    ROLE_ENGINEER: "Engineer",
+    ROLE_VIEWER: "Viewer",
+}
+
+
+@dataclass
+class UserSession:
+    user_id: int
+    username: str
+    full_name: str
+    role: str
+    email: str = ""
+
+    @property
+    def role_label(self) -> str:
+        return ROLE_LABELS.get(self.role, self.role.title())
+
+    def can_launch_water_demand(self) -> bool:
+        return self.role in (ROLE_ADMIN, ROLE_ENGINEER)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "user_id": self.user_id,
+            "username": self.username,
+            "full_name": self.full_name,
+            "role": self.role,
+            "email": self.email,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "UserSession":
+        return cls(
+            user_id=int(data.get("user_id", 0)),
+            username=str(data.get("username", "")),
+            full_name=str(data.get("full_name", "")),
+            role=str(data.get("role", ROLE_VIEWER)),
+            email=str(data.get("email", "")),
+        )
 
 # ==================== models/residential.py ====================
 
@@ -1704,6 +1756,141 @@ def parse_project_snapshot(data: Dict[str, Any]) -> tuple:
     other = OtherDetails.from_dict(data.get("other", {}))
     calculated = data.get("calculated", {})
     return project, residential, commercial, other, calculated
+
+# ==================== services/auth_db.py ====================
+"""User authentication — SQLite users table with PBKDF2 password hashing."""
+
+
+
+
+PBKDF2_ITERATIONS = 260_000
+
+
+def _conn(db_path: str = DB_PATH) -> sqlite3.Connection:
+    init_db(db_path)
+    return sqlite3.connect(db_path)
+
+
+def hash_password(password: str, salt: Optional[bytes] = None) -> tuple[str, str]:
+    if salt is None:
+        salt = secrets.token_bytes(32)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS)
+    return salt.hex(), digest.hex()
+
+
+def verify_password(password: str, salt_hex: str, password_hash: str) -> bool:
+    salt = bytes.fromhex(salt_hex)
+    _, computed = hash_password(password, salt)
+    return secrets.compare_digest(computed, password_hash)
+
+
+def init_users_table(db_path: str = DB_PATH) -> None:
+    init_db(db_path)
+    conn = _conn(db_path)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            salt TEXT NOT NULL,
+            full_name TEXT NOT NULL,
+            role TEXT NOT NULL,
+            email TEXT DEFAULT '',
+            is_active INTEGER DEFAULT 1,
+            created_at TEXT,
+            last_login TEXT
+        )
+        """
+    )
+    conn.commit()
+    cur.execute("SELECT COUNT(*) FROM users")
+    if cur.fetchone()[0] == 0:
+        _seed_default_users(cur)
+        conn.commit()
+    conn.close()
+
+
+def _seed_default_users(cur: sqlite3.Cursor) -> None:
+    now = datetime.now().isoformat()
+    defaults = [
+        ("admin", "Admin@123", "System Administrator", ROLE_ADMIN, "admin@americanedge.com"),
+        ("akash", "Akash@123", "Akash", ROLE_ENGINEER, "akash@americanedge.com"),
+        ("vaibhav", "Vaibhav@123", "Vaibhav", ROLE_ENGINEER, "vaibhav@americanedge.com"),
+        ("sachin", "Sachin@123", "Sachin", ROLE_ENGINEER, "sachin@americanedge.com"),
+        ("omkar", "Omkar@123", "Omkar", ROLE_VIEWER, "omkar@americanedge.com"),
+    ]
+    for username, password, full_name, role, email in defaults:
+        salt_hex, pwd_hash = hash_password(password)
+        cur.execute(
+            """
+            INSERT INTO users
+            (username, password_hash, salt, full_name, role, email, is_active, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+            """,
+            (username, pwd_hash, salt_hex, full_name, role, email, now),
+        )
+
+
+def authenticate(username: str, password: str, db_path: str = DB_PATH) -> Optional[UserSession]:
+    init_users_table(db_path)
+    key = (username or "").strip().lower()
+    if not key or not password:
+        return None
+    conn = _conn(db_path)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT user_id, username, password_hash, salt, full_name, role, email, is_active
+        FROM users WHERE LOWER(username) = ?
+        """,
+        (key,),
+    )
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return None
+    user_id, uname, pwd_hash, salt_hex, full_name, role, email, is_active = row
+    if not is_active:
+        conn.close()
+        return None
+    if not verify_password(password, salt_hex, pwd_hash):
+        conn.close()
+        return None
+    now = datetime.now().isoformat()
+    cur.execute("UPDATE users SET last_login = ? WHERE user_id = ?", (now, user_id))
+    conn.commit()
+    conn.close()
+    return UserSession(user_id=user_id, username=uname, full_name=full_name, role=role, email=email or "")
+
+
+def list_users(db_path: str = DB_PATH) -> List[UserSession]:
+    init_users_table(db_path)
+    conn = _conn(db_path)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT user_id, username, full_name, role, email
+        FROM users WHERE is_active = 1 ORDER BY username
+        """
+    )
+    rows = [
+        UserSession(user_id=r[0], username=r[1], full_name=r[2], role=r[3], email=r[4] or "")
+        for r in cur.fetchall()
+    ]
+    conn.close()
+    return rows
+
+
+def count_active_users(db_path: str = DB_PATH) -> int:
+    init_users_table(db_path)
+    conn = _conn(db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM users WHERE is_active = 1")
+    count = int(cur.fetchone()[0])
+    conn.close()
+    return count
 
 # ==================== services/lookup_db.py ====================
 """Client and location lookup tables for autocomplete."""
@@ -3693,6 +3880,317 @@ STP DETAILS
             lines.append(f"  Excess Treated: {stp.excess_treated_lpd:,} LPD")
             lines.append("")
         self._text_tab(f"Page {page_num} - {plot_name} STP", "\n".join(lines))
+
+# ==================== ui/splash_screen.py ====================
+
+
+
+
+class SplashScreen(ctk.CTkFrame):
+    """Branded splash screen shown on application startup."""
+
+    def __init__(self, master, on_complete, duration_ms: int = 2500) -> None:
+        super().__init__(master, fg_color=BRAND_NAVY)
+        self.on_complete = on_complete
+        self.duration_ms = duration_ms
+        self._progress = 0.0
+        self._build()
+        self._animate()
+
+    def _build(self) -> None:
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=0)
+        self.grid_rowconfigure(2, weight=1)
+
+        center = ctk.CTkFrame(self, fg_color="transparent")
+        center.grid(row=1, column=0)
+
+        ctk.CTkLabel(
+            center,
+            text="AMERICAN EDGE",
+            font=("Arial", 36, "bold"),
+            text_color=BRAND_ORANGE,
+        ).pack(pady=(0, 4))
+        ctk.CTkLabel(
+            center,
+            text="ENGINEERS PVT. LTD.",
+            font=("Arial", 18),
+            text_color="white",
+        ).pack(pady=(0, 20))
+        ctk.CTkLabel(
+            center,
+            text="Water Demand Design Software",
+            font=("Arial", 15),
+            text_color="#CCCCCC",
+        ).pack(pady=(0, 30))
+
+        self.progress = ctk.CTkProgressBar(center, width=320, mode="determinate")
+        self.progress.pack(pady=8)
+        self.progress.set(0)
+
+        self.status_label = ctk.CTkLabel(center, text="Loading application...", font=("Arial", 11), text_color="#AAAAAA")
+        self.status_label.pack(pady=(8, 0))
+        ctk.CTkLabel(center, text="NBC-2026 Compliant", font=("Arial", 10, "italic"), text_color="#888888").pack(pady=(16, 0))
+
+    def _animate(self) -> None:
+        self._progress = min(1.0, self._progress + 0.04)
+        self.progress.set(self._progress)
+        if self._progress < 1.0:
+            self.after(40, self._animate)
+        else:
+            self.status_label.configure(text="Ready")
+            self.after(300, self.on_complete)
+
+# ==================== ui/login_screen.py ====================
+
+
+
+
+
+class LoginScreen(ctk.CTkFrame):
+    """Username/password login screen."""
+
+    def __init__(self, master, on_login_success: Callable[[UserSession], None]) -> None:
+        super().__init__(master, fg_color="#F0F2F5")
+        self.on_login_success = on_login_success
+        self._build()
+
+    def _build(self) -> None:
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=0)
+        self.grid_rowconfigure(2, weight=1)
+
+        card = ctk.CTkFrame(self, width=420, corner_radius=12)
+        card.grid(row=1, column=0, pady=20)
+        card.grid_propagate(False)
+
+        header = ctk.CTkFrame(card, fg_color=BRAND_NAVY, corner_radius=8)
+        header.pack(fill="x", padx=16, pady=(16, 12))
+        ctk.CTkLabel(header, text="Sign In", font=("Arial", 22, "bold"), text_color="white").pack(pady=14)
+        ctk.CTkLabel(
+            header,
+            text="American Edge Engineers",
+            font=("Arial", 11),
+            text_color=BRAND_ORANGE,
+        ).pack(pady=(0, 10))
+
+        form = ctk.CTkFrame(card, fg_color="transparent")
+        form.pack(fill="x", padx=24, pady=8)
+
+        ctk.CTkLabel(form, text="Username", font=("Arial", 13), anchor="w").pack(fill="x", pady=(8, 4))
+        self.username_entry = ctk.CTkEntry(form, width=340, placeholder_text="Enter username")
+        self.username_entry.pack(pady=(0, 8))
+        self.username_entry.bind("<Return>", lambda _e: self._attempt_login())
+
+        ctk.CTkLabel(form, text="Password", font=("Arial", 13), anchor="w").pack(fill="x", pady=(8, 4))
+        self.password_entry = ctk.CTkEntry(form, width=340, show="•", placeholder_text="Enter password")
+        self.password_entry.pack(pady=(0, 8))
+        self.password_entry.bind("<Return>", lambda _e: self._attempt_login())
+
+        self.error_label = ctk.CTkLabel(form, text="", font=("Arial", 11), text_color="#C0392B")
+        self.error_label.pack(pady=(4, 0))
+
+        ctk.CTkButton(
+            form,
+            text="Login",
+            command=self._attempt_login,
+            fg_color=BRAND_ORANGE,
+            hover_color="#D06018",
+            height=40,
+            font=("Arial", 14, "bold"),
+        ).pack(pady=16, fill="x")
+
+        ctk.CTkLabel(
+            form,
+            text="Default: admin / Admin@123  |  Engineer: akash / Akash@123",
+            font=("Arial", 9),
+            text_color="#888888",
+            wraplength=340,
+        ).pack(pady=(0, 16))
+
+        self.username_entry.focus_set()
+
+    def reset(self) -> None:
+        self.username_entry.delete(0, "end")
+        self.password_entry.delete(0, "end")
+        self.error_label.configure(text="")
+        self.username_entry.focus_set()
+
+    def _attempt_login(self) -> None:
+        username = self.username_entry.get().strip()
+        password = self.password_entry.get()
+        if not username:
+            self.error_label.configure(text="Username is required.")
+            return
+        if not password:
+            self.error_label.configure(text="Password is required.")
+            return
+        user = authenticate(username, password)
+        if user is None:
+            self.error_label.configure(text="Invalid username or password.")
+            self.password_entry.delete(0, "end")
+            return
+        self.error_label.configure(text="")
+        self.on_login_success(user)
+
+# ==================== ui/dashboard.py ====================
+
+
+
+
+
+class DashboardScreen(ctk.CTkFrame):
+    """Post-login dashboard with module launcher and logout."""
+
+    def __init__(
+        self,
+        master,
+        user: UserSession,
+        on_launch_water_demand: Callable[[], None],
+        on_logout: Callable[[], None],
+    ) -> None:
+        super().__init__(master, fg_color="#F0F2F5")
+        self.user = user
+        self.on_launch_water_demand = on_launch_water_demand
+        self.on_logout = on_logout
+        self._build()
+
+    def _build(self) -> None:
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        top = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=0, height=72)
+        top.grid(row=0, column=0, sticky="ew")
+        top.grid_propagate(False)
+        top.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            top,
+            text="AMERICAN EDGE ENGINEERS",
+            font=("Arial", 16, "bold"),
+            text_color=BRAND_ORANGE,
+        ).grid(row=0, column=0, padx=24, pady=20, sticky="w")
+
+        user_frame = ctk.CTkFrame(top, fg_color="transparent")
+        user_frame.grid(row=0, column=1, padx=16, sticky="e")
+        ctk.CTkLabel(
+            user_frame,
+            text=f"{self.user.full_name}  •  {self.user.role_label}",
+            font=("Arial", 12),
+            text_color="white",
+        ).pack(side="left", padx=(0, 12))
+        ctk.CTkButton(
+            user_frame,
+            text="Logout",
+            command=self._confirm_logout,
+            fg_color="#C0392B",
+            hover_color="#A93226",
+            width=90,
+            height=32,
+        ).pack(side="left")
+
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.grid(row=1, column=0, sticky="nsew", padx=32, pady=24)
+        body.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            body,
+            text=f"Welcome, {self.user.full_name}",
+            font=("Arial", 26, "bold"),
+            text_color=BRAND_NAVY,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
+        ctk.CTkLabel(
+            body,
+            text="Select a module to begin your engineering workflow.",
+            font=("Arial", 13),
+            text_color="#666666",
+            anchor="w",
+        ).grid(row=1, column=0, sticky="w", pady=(0, 24))
+
+        cards = ctk.CTkFrame(body, fg_color="transparent")
+        cards.grid(row=2, column=0, sticky="ew")
+        cards.grid_columnconfigure((0, 1, 2), weight=1)
+
+        self._module_card(
+            cards,
+            0,
+            "Water Demand Calculator",
+            "NBC-2026 water demand, UGT/OHT/STP sizing,\nPDF & Excel report generation.",
+            "Launch Module",
+            self._launch_water_demand,
+            enabled=self.user.can_launch_water_demand(),
+        )
+        project_count = len(list_projects())
+        self._stat_card(cards, 1, "Saved Projects", str(project_count), "Projects in database")
+        self._stat_card(cards, 2, "Active Users", str(count_active_users()), "Registered accounts")
+
+        if not self.user.can_launch_water_demand():
+            ctk.CTkLabel(
+                body,
+                text="Your account has Viewer access. Contact an administrator for module access.",
+                font=("Arial", 12),
+                text_color="#C0392B",
+            ).grid(row=3, column=0, sticky="w", pady=(20, 0))
+
+    def _module_card(
+        self,
+        parent,
+        column: int,
+        title: str,
+        description: str,
+        button_text: str,
+        command: Callable[[], None],
+        enabled: bool = True,
+    ) -> None:
+        card = ctk.CTkFrame(parent, corner_radius=10, fg_color="white", border_width=1, border_color="#DDDDDD")
+        card.grid(row=0, column=column, padx=8, pady=8, sticky="nsew")
+        ctk.CTkLabel(card, text=title, font=("Arial", 16, "bold"), text_color=BRAND_NAVY).pack(
+            anchor="w", padx=20, pady=(20, 8)
+        )
+        ctk.CTkLabel(card, text=description, font=("Arial", 12), text_color="#555555", justify="left").pack(
+            anchor="w", padx=20, pady=(0, 16)
+        )
+        ctk.CTkButton(
+            card,
+            text=button_text,
+            command=command,
+            fg_color=BRAND_ORANGE if enabled else "#AAAAAA",
+            hover_color="#D06018" if enabled else "#AAAAAA",
+            state="normal" if enabled else "disabled",
+            height=36,
+        ).pack(anchor="w", padx=20, pady=(0, 20))
+
+    def _stat_card(self, parent, column: int, title: str, value: str, subtitle: str) -> None:
+        card = ctk.CTkFrame(parent, corner_radius=10, fg_color="white", border_width=1, border_color="#DDDDDD")
+        card.grid(row=0, column=column, padx=8, pady=8, sticky="nsew")
+        ctk.CTkLabel(card, text=title, font=("Arial", 14, "bold"), text_color=BRAND_NAVY).pack(
+            anchor="w", padx=20, pady=(20, 8)
+        )
+        ctk.CTkLabel(card, text=value, font=("Arial", 32, "bold"), text_color=BRAND_ORANGE).pack(
+            anchor="w", padx=20, pady=(0, 4)
+        )
+        ctk.CTkLabel(card, text=subtitle, font=("Arial", 11), text_color="#888888").pack(
+            anchor="w", padx=20, pady=(0, 20)
+        )
+
+    def _launch_water_demand(self) -> None:
+        if not self.user.can_launch_water_demand():
+            messagebox.showwarning("Access Denied", "Your role does not have permission to launch this module.")
+            return
+        self.on_launch_water_demand()
+
+    def _confirm_logout(self) -> None:
+        if messagebox.askyesno("Logout", "Are you sure you want to logout?"):
+            self.on_logout()
+
+    def refresh_stats(self) -> None:
+        """Rebuild dashboard to refresh project/user counts."""
+        for child in self.winfo_children():
+            child.destroy()
+        self._build()
 
 # ==================== ui/pages/project_page.py ====================
 
@@ -6067,10 +6565,12 @@ class WaterDemandApp(ctk.CTk):
         ("Settings", "Settings"),
     ]
 
-    def __init__(self):
+    def __init__(self, current_user=None, on_logout=None):
         super().__init__()
         ctk.set_appearance_mode("light")
         ctk.set_default_color_theme("blue")
+        self.current_user = current_user
+        self.on_logout = on_logout
         self.app_state = AppState()
         self.title("American Edge Engineers - Water Demand Report Generator")
         self.geometry("1280x850")
@@ -6128,7 +6628,15 @@ class WaterDemandApp(ctk.CTk):
             text_color=BRAND_ORANGE,
             justify="center",
         ).pack(pady=(20, 5))
-        ctk.CTkLabel(sb, text="Water Demand Generator", font=("Arial", 10), text_color="white").pack(pady=(0, 15))
+        ctk.CTkLabel(sb, text="Water Demand Generator", font=("Arial", 10), text_color="white").pack(pady=(0, 10))
+        if self.current_user:
+            ctk.CTkLabel(
+                sb,
+                text=f"{self.current_user.full_name}\n({self.current_user.role_label})",
+                font=("Arial", 9),
+                text_color="#CCCCCC",
+                justify="center",
+            ).pack(pady=(0, 10))
         self.nav_btns = {}
         for key, label in self.NAV:
             if not self._nav_visible(key):
@@ -6153,9 +6661,17 @@ class WaterDemandApp(ctk.CTk):
             side="bottom", fill="x", padx=10, pady=4
         )
         ctk.CTkButton(sb, text="New Project", fg_color="#27AE60", command=self._new).pack(
-            side="bottom", fill="x", padx=10, pady=(4, 15)
+            side="bottom", fill="x", padx=10, pady=(4, 4 if self.on_logout else 15)
         )
+        if self.on_logout:
+            ctk.CTkButton(sb, text="Logout", fg_color="#C0392B", command=self._logout).pack(
+                side="bottom", fill="x", padx=10, pady=(4, 15)
+            )
         return sb
+
+    def _logout(self) -> None:
+        if self.on_logout and messagebox.askyesno("Logout", "Return to login screen?"):
+            self.on_logout()
 
     def _rebuild_sidebar(self) -> None:
         self.sidebar.destroy()
@@ -6814,6 +7330,109 @@ def _load_json_file(fp):
 
 def main():
     WaterDemandApp().mainloop()
+
+
+if __name__ == "__main__":
+    main()
+
+# ==================== app_launcher.py ====================
+"""Application entry point — Splash → Login → Dashboard → Water Demand."""
+
+
+
+
+
+
+class Application(ctk.CTk):
+    """Root shell managing authentication flow and module launch."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        ctk.set_appearance_mode("light")
+        ctk.set_default_color_theme("blue")
+        self.title("American Edge Engineers — Water Demand Software")
+        self.geometry("1100x700")
+        self.minsize(900, 600)
+        self.configure(fg_color="#F0F2F5")
+
+        init_db(DB_PATH)
+        init_lookup_tables(DB_PATH)
+        init_users_table(DB_PATH)
+
+        self.current_user: Optional[UserSession] = None
+        self._water_app = None
+        self._active_screen = None
+
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        self._show_splash()
+
+    def _clear_screen(self) -> None:
+        if self._active_screen is not None:
+            self._active_screen.destroy()
+            self._active_screen = None
+
+    def _show_splash(self) -> None:
+        self._clear_screen()
+        self._active_screen = SplashScreen(self, on_complete=self._show_login)
+        self._active_screen.grid(row=0, column=0, sticky="nsew")
+
+    def _show_login(self) -> None:
+        self._clear_screen()
+        self._active_screen = LoginScreen(self, on_login_success=self._on_login_success)
+        self._active_screen.grid(row=0, column=0, sticky="nsew")
+
+    def _on_login_success(self, user: UserSession) -> None:
+        self.current_user = user
+        self._show_dashboard()
+
+    def _show_dashboard(self) -> None:
+        self._clear_screen()
+        self._active_screen = DashboardScreen(
+            self,
+            user=self.current_user,
+            on_launch_water_demand=self._launch_water_demand,
+            on_logout=self._logout,
+        )
+        self._active_screen.grid(row=0, column=0, sticky="nsew")
+
+    def _launch_water_demand(self) -> None:
+        if self.current_user is None:
+            return
+        self.withdraw()
+        self._water_app = WaterDemandApp(
+            current_user=self.current_user,
+            on_logout=self._on_water_app_logout,
+        )
+        self._water_app.protocol("WM_DELETE_WINDOW", self._on_water_app_close)
+
+    def _on_water_app_close(self) -> None:
+        if self._water_app is not None:
+            try:
+                if self._water_app._autosave_job is not None:
+                    self._water_app.after_cancel(self._water_app._autosave_job)
+            except Exception:
+                pass
+            self._water_app.destroy()
+            self._water_app = None
+        self.deiconify()
+        if isinstance(self._active_screen, DashboardScreen):
+            self._active_screen.refresh_stats()
+
+    def _on_water_app_logout(self) -> None:
+        self._on_water_app_close()
+        self._logout()
+
+    def _logout(self) -> None:
+        self.current_user = None
+        self._show_login()
+        if isinstance(self._active_screen, LoginScreen):
+            self._active_screen.reset()
+
+
+def main() -> None:
+    Application().mainloop()
 
 
 if __name__ == "__main__":
