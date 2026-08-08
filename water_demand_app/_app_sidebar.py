@@ -135,7 +135,24 @@ class WaterDemandApp(ctk.CTk):
             font=("Arial", 8),
             text_color="#999999",
             wraplength=200,
-        ).pack(pady=(0, 8))
+        ).pack(pady=(0, 4))
+        from config.nbc_2026 import is_project_type_set, project_type_label
+        if is_project_type_set(self.app_state.project.project_type):
+            ctk.CTkLabel(
+                sb,
+                text=project_type_label(self.app_state.project.project_type),
+                font=("Arial", 9, "bold"),
+                text_color=BRAND_ORANGE,
+                wraplength=200,
+            ).pack(pady=(0, 8))
+        else:
+            ctk.CTkLabel(
+                sb,
+                text="Select project type",
+                font=("Arial", 9, "italic"),
+                text_color="#AAAAAA",
+                wraplength=200,
+            ).pack(pady=(0, 8))
         self.nav_btns = {}
         for key, label in self.NAV:
             if not self._nav_visible(key):
@@ -243,12 +260,20 @@ class WaterDemandApp(ctk.CTk):
         return frame
 
     def _on_project_type_changed(self) -> None:
+        from config.nbc_2026 import is_project_type_set
         from config.page_visibility import visible_pages, wizard_first_page_after_project
         self._rebuild_sidebar()
+        if not is_project_type_set(self.app_state.project.project_type):
+            self.show("Project")
+            if "Project" in self.pages and hasattr(self.pages["Project"], "refresh"):
+                self.pages["Project"].refresh()
+            return
         self._calc()
         visible = visible_pages(self.app_state.project.project_type)
         if self._current_page not in visible:
-            self.show(wizard_first_page_after_project(self.app_state.project.project_type))
+            self.show("Project")
+        if "Project" in self.pages and hasattr(self.pages["Project"], "refresh"):
+            self.pages["Project"].refresh()
 
     def _wizard_show_next(self, current: str) -> None:
         from config.page_visibility import wizard_next_page
@@ -615,24 +640,17 @@ class WaterDemandApp(ctk.CTk):
             self.show("Project")
 
     def _resolve_page_name(self, name: str) -> str:
-        from config.page_visibility import visible_pages
-        pages = visible_pages(self.app_state.project.project_type)
-        if name in pages:
-            return name
-        if name == "HVAC" and "UGT" in pages:
-            return "UGT"
-        if name == "Swimming" and "UGT" in pages:
-            return "UGT"
-        if name == "Residential" and "Commercial" in pages:
-            return "Commercial"
-        if name == "Commercial" and "Landscape" in pages:
-            return "Landscape"
-        if name in ("Hospital", "Hotel", "FoodCourt") and "Landscape" in pages:
-            return "Landscape"
         return name
 
     def show(self, name: str) -> None:
+        from config.nbc_2026 import is_project_type_set
+        from config.page_visibility import visible_pages
+        if not is_project_type_set(self.app_state.project.project_type) and name != "Project":
+            name = "Project"
         name = self._resolve_page_name(name)
+        allowed = visible_pages(self.app_state.project.project_type)
+        if name not in allowed:
+            name = "Project"
         if name not in self.pages:
             messagebox.showwarning(
                 "Navigation",

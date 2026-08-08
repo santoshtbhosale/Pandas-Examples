@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import FrozenSet, Tuple
 
 from config.nbc_2026 import (
+    PROJECT_TYPE_UNSET,
+    is_project_type_set,
     PROJECT_TYPE_COLLEGE,
     PROJECT_TYPE_COMMERCIAL,
     PROJECT_TYPE_HOSPITAL,
@@ -64,7 +66,22 @@ _PAGES_BY_TYPE: dict[str, FrozenSet[str]] = {
 
 
 def visible_pages(project_type: str) -> FrozenSet[str]:
+    if not is_project_type_set(project_type):
+        return frozenset({"Project"})
     return _PAGES_BY_TYPE.get(project_type, _PAGES_BY_TYPE[PROJECT_TYPE_MIXED])
+
+
+def visible_nav_labels(project_type: str) -> Tuple[str, ...]:
+    """Human-readable summary of which workflow sections apply."""
+    if not is_project_type_set(project_type):
+        return ("Select project type to begin",)
+    pages = visible_pages(project_type)
+    labels = []
+    for key in WIZARD_PAGE_ORDER:
+        if key == "Project" or key not in pages:
+            continue
+        labels.append(key)
+    return tuple(labels) if labels else ("Project",)
 
 
 def wizard_next_page(current: str, project_type: str) -> str | None:
@@ -81,6 +98,8 @@ def wizard_next_page(current: str, project_type: str) -> str | None:
 
 
 def wizard_first_page_after_project(project_type: str) -> str:
+    if not is_project_type_set(project_type):
+        return "Project"
     for key in WIZARD_PAGE_ORDER:
         if key == "Project":
             continue

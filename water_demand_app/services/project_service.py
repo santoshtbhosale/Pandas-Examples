@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
+from config.nbc_2026 import PROJECT_TYPE_UNSET
 from models.project import ProjectData, RevisionInfo
 from models.user import UserSession
 from services.database import (
@@ -41,6 +42,7 @@ def create_new_project_state(user: Optional[UserSession] = None, db_path: str = 
         project_name="NEW PROJECT",
         client_name="",
         project_location="",
+        project_type=PROJECT_TYPE_UNSET,
         engineer_name=user.full_name if user else "Akash",
         project_no=next_project_number(db_path),
         date=datetime.now().strftime("%d-%m-%Y"),

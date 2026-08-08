@@ -4,7 +4,9 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from config.nbc_2026 import (
+    PROJECT_TYPE_UNSET,
     hvac_applicable,
+    is_project_type_set,
     show_commercial_section,
     show_residential_section,
     show_swimming_section,
@@ -57,7 +59,11 @@ class AppState:
 
     def apply_project_type(self, new_type: str) -> None:
         """Clear data for sections hidden by the new project type."""
+        old_type = self.project.project_type
         self.project.project_type = new_type
+        if not is_project_type_set(new_type) or not is_project_type_set(old_type):
+            self.auto_calculate()
+            return
         if not show_residential_section(new_type):
             self.residential = []
         if not show_commercial_section(new_type):

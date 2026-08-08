@@ -79,6 +79,7 @@ PLOTS = ("Plot-A", "Plot-B")
 PLOT_SIMPLE = "Plot"
 
 # Project types
+PROJECT_TYPE_UNSET = ""
 PROJECT_TYPE_RESIDENTIAL = "residential"
 PROJECT_TYPE_COMMERCIAL = "commercial"
 PROJECT_TYPE_MIXED = "mixed_use"
@@ -198,8 +199,26 @@ def ui_plot_label(stored_plot: str, plot_mode: str = PLOT_MODE_DUAL) -> str:
     return choices[0]
 
 
+PROJECT_TYPE_PLACEHOLDER = "— Select Project Type —"
+
+
+def is_project_type_set(project_type: str) -> bool:
+    return bool(project_type and project_type != PROJECT_TYPE_UNSET)
+
+
 def project_type_key(label: str) -> str:
+    if not label or label == PROJECT_TYPE_PLACEHOLDER:
+        return PROJECT_TYPE_UNSET
     return PROJECT_TYPE_LABELS.get(label, PROJECT_TYPE_MIXED)
+
+
+def project_type_label(project_type: str) -> str:
+    if not is_project_type_set(project_type):
+        return PROJECT_TYPE_PLACEHOLDER
+    for label, key in PROJECT_TYPE_LABELS.items():
+        if key == project_type:
+            return label
+    return "Mixed Use"
 
 
 def show_residential_section(project_type: str) -> bool:
