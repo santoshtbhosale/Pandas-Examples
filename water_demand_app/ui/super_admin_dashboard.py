@@ -15,12 +15,8 @@ from services.auth_db import (
     create_user,
     deactivate_user,
     list_users,
-    list_team_engineers,
     reset_user_password,
-    update_user,
 )
-from services.database import DB_PATH
-from services.project_service import find_projects
 from services.project_workflow_service import dashboard_stats
 
 

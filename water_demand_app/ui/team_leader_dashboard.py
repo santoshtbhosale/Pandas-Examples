@@ -6,13 +6,11 @@ from datetime import datetime, timedelta
 from typing import Callable, Optional
 
 import customtkinter as ctk
-from tkinter import messagebox, simpledialog
+from tkinter import messagebox
 
 from config.nbc_2026 import BRAND_NAVY, BRAND_ORANGE, PROJECT_TYPE_LABELS
-from models.project_workflow import DURATION_PRESETS_MINUTES
 from models.user import UserSession
 from services.auth_db import list_team_engineers
-from services.database import DB_PATH
 from services.project_service import create_new_project_state, find_projects, persist_project_state
 from services.project_workflow_service import assign_project, dashboard_stats, engineer_performance
 from ui.project_assign_dialog import ProjectAssignDialog

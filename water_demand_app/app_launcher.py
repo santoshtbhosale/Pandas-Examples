@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional, Union
+from typing import Optional
 
 import customtkinter as ctk
 
@@ -10,15 +10,14 @@ from models.user import UserSession
 from services.auth_db import init_users_table
 from services.database import DB_PATH, init_db
 from services.lookup_db import init_lookup_tables
-from services.project_service import create_new_project_state, load_project_state, persist_project_state
+from services.project_service import create_new_project_state, load_project_state
 from ui.app_state import AppState
-from ui.dashboard import DashboardScreen
 from ui.dashboard_router import create_dashboard
-from ui.engineer_dashboard import EngineerDashboard
 from ui.login_screen import LoginScreen
 from ui.splash_screen import SplashScreen
-from ui.super_admin_dashboard import SuperAdminDashboard
-from ui.team_leader_dashboard import TeamLeaderDashboard
+
+APP_VERSION = "2.0.0"
+APP_TITLE = "PlanetCode Engineering Suite"
 
 
 class Application(ctk.CTk):
@@ -28,7 +27,7 @@ class Application(ctk.CTk):
         super().__init__()
         ctk.set_appearance_mode("light")
         ctk.set_default_color_theme("blue")
-        self.title("American Edge Engineers — Water Demand Software")
+        self.title(f"{APP_TITLE} v{APP_VERSION}")
         self.geometry("1100x780")
         self.minsize(900, 650)
         self.configure(fg_color="#F0F2F5")
