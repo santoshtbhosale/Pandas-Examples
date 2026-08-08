@@ -12,6 +12,7 @@ from config.nbc_2026 import (
 )
 from config.page_visibility import visible_pages
 from models.calculations import CalculationResults, PlotResults
+from models.environmental import EnvironmentalResults, SewageGenerationResults, SolidWasteResults
 from models.other_details import OtherDetails
 from models.project import ProjectData
 
@@ -216,12 +217,117 @@ def _other_calc_rows(
     return tuple(rows)
 
 
+def _project_header_rows(project: ProjectData) -> Tuple[TableRow, ...]:
+    return (
+        ("Project Name", project.project_name or "—", ""),
+        ("Reference No.", project.project_no or project.project_id or "—", ""),
+        ("Date", project.date or "—", ""),
+    )
+
+
+def build_solid_waste_table_sections(
+    project: ProjectData,
+    environmental: EnvironmentalResults,
+) -> List[TableSection]:
+    sw = environmental.solid_waste
+    if sw.res_population <= 0 and sw.comm_population <= 0:
+        return [TableSection(title="Solid Waste Calculations", rows=(("Enter population data first", "—", ""),))]
+
+    sections: List[TableSection] = [
+        TableSection(title="Solid Waste Calculations", rows=_project_header_rows(project)),
+        TableSection(
+            title="Residential Waste Generated",
+            rows=(
+                ("Total Population", _fmt_int(sw.res_population), "nos"),
+                ("Total Waste Generated (0.45 kg/capita/day)", _fmt_float(sw.res_total_waste_kg_day), "kgs/day"),
+                ("Wet Waste Generated (60% of Total Waste)", _fmt_float(sw.res_wet_waste_kg_day), "kgs/day"),
+                ("Dry Waste Generated (40% of Total Waste)", _fmt_float(sw.res_dry_waste_kg_day), "kgs/day"),
+            ),
+        ),
+        TableSection(
+            title="Commercial Waste Generated",
+            rows=(
+                ("Total Population", _fmt_int(sw.comm_population), "nos"),
+                ("Total Waste Generated (0.25 kg/capita/day)", _fmt_float(sw.comm_total_waste_kg_day), "kgs/day"),
+                ("Wet Waste Generated (40% of Total Waste)", _fmt_float(sw.comm_wet_waste_kg_day), "kgs/day"),
+                ("Dry Waste Generated (60% of Total Waste)", _fmt_float(sw.comm_dry_waste_kg_day), "kgs/day"),
+            ),
+        ),
+        TableSection(
+            title="Total Waste Generated",
+            rows=(
+                ("Total Waste Generated", _fmt_float(sw.total_waste_kg_day), "kgs/day"),
+                ("Wet Waste Generated", _fmt_float(sw.total_wet_waste_kg_day), "kgs/day"),
+                ("Dry Waste Generated", _fmt_float(sw.total_dry_waste_kg_day), "kgs/day"),
+            ),
+        ),
+        TableSection(
+            title="Waste Consideration",
+            rows=(
+                ("Wet Waste considered", _fmt_float(sw.wet_waste_considered_kg_day, 0), "kgs/day"),
+                ("Garden Waste Considered", _fmt_float(sw.garden_waste_considered_kg_day), "kgs/day"),
+                ("STP Sludge produced", _fmt_float(sw.stp_sludge_kg_day), "kgs/day"),
+                ("Proposed OWC Plant Capacity", _fmt_float(sw.owc_plant_capacity_kg_day), "kgs/day"),
+            ),
+        ),
+        TableSection(
+            title="Total E-Waste Generated",
+            rows=(
+                ("Residential E-Waste (1 kg/capita/annum)", _fmt_float(sw.res_e_waste_kg_year), "kgs/annum"),
+                ("Commercial E-Waste (1.5 kg/capita/annum)", _fmt_float(sw.comm_e_waste_kg_year), "kgs/annum"),
+                ("Total E-Waste (Resi.+Comm.) Generated", _fmt_float(sw.total_e_waste_kg_year), "kgs/annum"),
+                ("Approx. Area Required", sw.approx_area_sqm or "—", "Sq. mtrs."),
+            ),
+        ),
+    ]
+    return sections
+
+
+def build_sewage_generation_table_sections(
+    project: ProjectData,
+    environmental: EnvironmentalResults,
+) -> List[TableSection]:
+    sg = environmental.sewage
+    if sg.res_population <= 0 and sg.comm_population <= 0:
+        return [TableSection(title="Sewage Generation Calculations", rows=(("Enter population data first", "—", ""),))]
+
+    return [
+        TableSection(title="Sewage Generation Calculations", rows=_project_header_rows(project)),
+        TableSection(
+            title="Residential Sewage Generated",
+            rows=(
+                ("Total Population", _fmt_int(sg.res_population), "nos"),
+                ("Percentage of Sewage", "90", "%"),
+                ("Total Sewage Generated", _fmt_float(sg.res_sewage_kld), "KLD"),
+            ),
+        ),
+        TableSection(
+            title="Commercial Sewage Generated",
+            rows=(
+                ("Total Population", _fmt_int(sg.comm_population), "nos"),
+                ("Percentage of Sewage", "90", "%"),
+                ("Total Sewage Generated", _fmt_float(sg.comm_sewage_kld), "KLD"),
+            ),
+        ),
+        TableSection(
+            title="Total Sewage Generated",
+            rows=(
+                ("Total Sewage Generated", _fmt_float(sg.total_sewage_kld), "KLD"),
+                ("Proposed STP Capacity", _fmt_float(sg.proposed_stp_capacity_kld), "KLD"),
+                ("STP Sludge produced", _fmt_float(sg.stp_sludge_kg_day), "Kgs/Day"),
+                ("Approx. Area Required", sg.approx_area_sqm or "—", "Sq. mtrs."),
+            ),
+        ),
+    ]
+
+
 def build_preview_table_sections(
     project: ProjectData,
     results: CalculationResults,
     plot_names: Sequence[str],
     other: Optional[OtherDetails] = None,
     rwh_summary: Optional[Sequence[TableRow]] = None,
+    environmental: Optional[EnvironmentalResults] = None,
 ) -> List[TableSection]:
     """Build preview sections; only includes modules applicable to project type."""
     if not results or not results.plots:
@@ -255,15 +361,12 @@ def build_preview_table_sections(
     if len(water_rows) > 4:
         sections.append(TableSection(title="Water Demand Summary", rows=tuple(water_rows)))
 
-    if "STP" in pages:
-        sewage_rows: List[TableRow] = []
-        for plot_name in plot_names:
-            plot = results.plots.get(plot_name)
-            if plot and plot.sewage_lpd > 0:
-                sewage_rows.extend(_plot_sewage_rows(plot))
-        if sewage_rows:
-            sections.append(TableSection(title="Sewage Summary", rows=tuple(sewage_rows)))
+    if "Sewage" in pages and environmental:
+        sg = environmental.sewage
+        if sg.res_population > 0 or sg.comm_population > 0:
+            sections.extend(build_sewage_generation_table_sections(project, environmental))
 
+    if "STP" in pages:
         stp_rows: List[TableRow] = []
         for plot_name in plot_names:
             plot = results.plots.get(plot_name)
@@ -273,6 +376,17 @@ def build_preview_table_sections(
                     stp_rows.extend(_stp_section_rows(stp))
         if stp_rows:
             sections.append(TableSection(title="STP Summary", rows=tuple(stp_rows)))
+
+    if "SolidWaste" in pages and environmental:
+        sw = environmental.solid_waste
+        if sw.res_population > 0 or sw.comm_population > 0:
+            sw_rows: List[TableRow] = []
+            for sec in build_solid_waste_table_sections(project, environmental):
+                if sec.title == "Solid Waste Calculations":
+                    continue
+                sw_rows.extend(sec.rows)
+            if sw_rows:
+                sections.append(TableSection(title="Solid Waste Summary", rows=tuple(sw_rows)))
 
     if "OHT" in pages:
         oht_rows: List[TableRow] = []

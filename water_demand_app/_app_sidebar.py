@@ -22,6 +22,8 @@ from services.pdf_exporter import export_pdf
 from services.result_tables import (
     build_oht_table_sections,
     build_preview_table_sections,
+    build_sewage_generation_table_sections,
+    build_solid_waste_table_sections,
     build_stp_table_sections,
 )
 from ui.app_state import AppState
@@ -67,8 +69,10 @@ class WaterDemandApp(ctk.CTkToplevel):
         ("Swimming", "Swimming Pool"),
         ("HVAC", "HVAC"),
         ("UGT", "UGT / Fire Tank"),
+        ("Sewage", "Sewage Generation"),
         ("OHT", "OHT Details"),
         ("STP", "STP Summary"),
+        ("SolidWaste", "Solid Waste Generation"),
         ("Preview", "Preview"),
         ("Report", "Generate Report"),
         ("RWH", "Rain Water Harvesting"),
@@ -292,8 +296,10 @@ class WaterDemandApp(ctk.CTkToplevel):
         self.pages["Swimming"] = self._form_page("Swimming Pool", self._pool_ui)
         self.pages["HVAC"] = self._form_page("HVAC Water", self._hvac_ui)
         self.pages["UGT"] = self._form_page("UGT / Fire Tank", self._ugt_ui)
+        self.pages["Sewage"] = self._sewage_page()
         self.pages["OHT"] = self._oht_page()
         self.pages["STP"] = self._stp_page()
+        self.pages["SolidWaste"] = self._solid_waste_page()
         self.pages["Preview"] = self._preview_page()
         self.pages["Report"] = FinalPage(
             self.container,
@@ -565,6 +571,70 @@ class WaterDemandApp(ctk.CTkToplevel):
             self.app_state.other.fire_tank[plot] = float(auto_val)
             lbl.configure(text=f"{auto_val:,} (auto — NBC Table 7)")
 
+    def _sewage_page(self):
+        frame = ScrollablePage(self.container)
+        header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
+        header.pack(fill="x", padx=5, pady=5)
+        ctk.CTkLabel(header, text="Sewage Generation", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
+        ctk.CTkLabel(
+            frame,
+            text="Population-based sewage generation — auto-calculated from residential/commercial data.",
+            font=("Arial", 11, "italic"),
+        ).pack(anchor="w", padx=20, pady=(0, 5))
+        self.sewage_table = ResultTableView(frame)
+        self.sewage_table.pack(fill="both", expand=True, padx=15, pady=10)
+        ctk.CTkLabel(
+            frame,
+            text="Updates automatically as you enter data on other pages.",
+            font=("Arial", 10, "italic"),
+            text_color="#666666",
+        ).pack(pady=(0, 8))
+        return frame
+
+    def _refresh_sewage(self, silent: bool = False) -> None:
+        if not hasattr(self, "sewage_table"):
+            return
+        if not self.app_state.environmental:
+            self.sewage_table.set_rows("Sewage Generation Calculations", [("Enter project data first", "—", "")])
+            return
+        sections = build_sewage_generation_table_sections(
+            self.app_state.project,
+            self.app_state.environmental,
+        )
+        self.sewage_table.set_sections(sections)
+
+    def _solid_waste_page(self):
+        frame = ScrollablePage(self.container)
+        header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
+        header.pack(fill="x", padx=5, pady=5)
+        ctk.CTkLabel(header, text="Solid Waste Generation", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
+        ctk.CTkLabel(
+            frame,
+            text="Solid waste and e-waste calculations — auto-calculated from population and STP data.",
+            font=("Arial", 11, "italic"),
+        ).pack(anchor="w", padx=20, pady=(0, 5))
+        self.solid_waste_table = ResultTableView(frame)
+        self.solid_waste_table.pack(fill="both", expand=True, padx=15, pady=10)
+        ctk.CTkLabel(
+            frame,
+            text="Updates automatically as you enter data on other pages.",
+            font=("Arial", 10, "italic"),
+            text_color="#666666",
+        ).pack(pady=(0, 8))
+        return frame
+
+    def _refresh_solid_waste(self, silent: bool = False) -> None:
+        if not hasattr(self, "solid_waste_table"):
+            return
+        if not self.app_state.environmental:
+            self.solid_waste_table.set_rows("Solid Waste Calculations", [("Enter project data first", "—", "")])
+            return
+        sections = build_solid_waste_table_sections(
+            self.app_state.project,
+            self.app_state.environmental,
+        )
+        self.solid_waste_table.set_sections(sections)
+
     def _oht_page(self):
         frame = ScrollablePage(self.container)
         header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
@@ -671,6 +741,7 @@ class WaterDemandApp(ctk.CTkToplevel):
             self._plots(),
             other=self.app_state.other,
             rwh_summary=self._rwh_preview_rows(),
+            environmental=self.app_state.environmental,
         )
         self.preview_table.set_sections(sections)
 
@@ -743,6 +814,10 @@ class WaterDemandApp(ctk.CTkToplevel):
             page.refresh()
         if name == "STP":
             self._refresh_stp()
+        elif name == "Sewage":
+            self._refresh_sewage()
+        elif name == "SolidWaste":
+            self._refresh_solid_waste()
         elif name == "OHT":
             self._refresh_oht()
         elif name == "Preview":
@@ -772,6 +847,10 @@ class WaterDemandApp(ctk.CTkToplevel):
             self._refresh_oht(silent=True)
         if hasattr(self, "stp_table"):
             self._refresh_stp(silent=True)
+        if hasattr(self, "sewage_table"):
+            self._refresh_sewage(silent=True)
+        if hasattr(self, "solid_waste_table"):
+            self._refresh_solid_waste(silent=True)
         if hasattr(self, "preview_table"):
             self._refresh_preview(silent=True)
 

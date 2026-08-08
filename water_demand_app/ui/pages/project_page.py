@@ -112,19 +112,6 @@ class ProjectPage(ScrollablePage):
                 ent.bind("<KeyRelease>", self._on_location_type)
             row += 1
 
-        for key, label, attr in [
-            ("client_address", "Client Address", "client_address"),
-            ("client_contact", "Contact", "client_contact"),
-            ("client_email", "Email", "client_email"),
-            ("client_gst", "GST", "client_gst"),
-        ]:
-            ctk.CTkLabel(self.form, text=label, font=("Arial", 13)).grid(row=row, column=0, padx=20, pady=6, sticky="w")
-            ent = ctk.CTkEntry(self.form, width=400)
-            ent.insert(0, getattr(self.state.project, attr, "") or "")
-            ent.grid(row=row, column=1, padx=20, pady=6, sticky="w")
-            self.entries[key] = ent
-            row += 1
-
         ctk.CTkLabel(self.form, text="Building Configuration", font=("Arial", 14)).grid(
             row=row, column=0, padx=20, pady=8, sticky="w"
         )
@@ -213,14 +200,6 @@ class ProjectPage(ScrollablePage):
         self.date_label.grid(row=row, column=1, padx=20, pady=8, sticky="w")
         row += 1
 
-        for key, label in [("city", "City"), ("state", "State"), ("rainfall_zone", "Rainfall Zone"), ("climate", "Climate")]:
-            ctk.CTkLabel(self.form, text=label, font=("Arial", 13)).grid(row=row, column=0, padx=20, pady=4, sticky="w")
-            ent = ctk.CTkEntry(self.form, width=400)
-            ent.insert(0, getattr(self.state.project, key, "") or "")
-            ent.grid(row=row, column=1, padx=20, pady=4, sticky="w")
-            self.entries[key] = ent
-            row += 1
-
         btn_frame = ctk.CTkFrame(self.details_frame, fg_color="transparent")
         btn_frame.pack(pady=15)
         ctk.CTkButton(
@@ -301,16 +280,20 @@ class ProjectPage(ScrollablePage):
             return
         for key, field in [
             ("client_name", "client_name"),
-            ("client_address", "address"),
-            ("client_contact", "contact"),
-            ("client_email", "email"),
-            ("client_gst", "gst"),
         ]:
             if field in best and best[field] and key in self.entries:
                 self.entries[key].delete(0, "end")
                 self.entries[key].insert(0, best[field])
         if best.get("engineer_name"):
             self.engineer_var.set(best["engineer_name"])
+        if best.get("address"):
+            self.state.project.client_address = best["address"]
+        if best.get("contact"):
+            self.state.project.client_contact = best["contact"]
+        if best.get("email"):
+            self.state.project.client_email = best["email"]
+        if best.get("gst"):
+            self.state.project.client_gst = best["gst"]
 
     def _on_location_type(self, _event=None) -> None:
         if not self._details_visible:
@@ -320,10 +303,9 @@ class ProjectPage(ScrollablePage):
         if not matches:
             return
         best = matches[0]
-        for key, src in [("city", "city"), ("state", "state"), ("rainfall_zone", "rainfall_zone"), ("climate", "climate")]:
-            if src in best and best[src] and key in self.entries:
-                self.entries[key].delete(0, "end")
-                self.entries[key].insert(0, best[src])
+        for src, attr in [("city", "city"), ("state", "state"), ("rainfall_zone", "rainfall_zone"), ("climate", "climate")]:
+            if src in best and best[src]:
+                setattr(self.state.project, attr, best[src])
 
     def _save_and_next(self) -> None:
         if not is_project_type_set(self.state.project.project_type):
@@ -348,8 +330,6 @@ class ProjectPage(ScrollablePage):
             self.state.project.building_height_m = float(self.height_entry.get() or 0)
             self.state.project.num_wings = validate_positive_int(self.wings_entry.get(), "Number of Wings")
             self.state.project.building_type = self.building_type_var.get()
-            for key in ("client_address", "client_contact", "client_email", "client_gst", "city", "state", "rainfall_zone", "climate"):
-                setattr(self.state.project, key, self.entries[key].get().strip())
             self.state.project.revision = RevisionInfo(
                 date=today,
                 revision_no="R0",

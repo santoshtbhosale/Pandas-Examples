@@ -33,8 +33,10 @@ WIZARD_PAGE_ORDER: Tuple[str, ...] = (
     "Swimming",
     "HVAC",
     "UGT",
+    "Sewage",
     "OHT",
     "STP",
+    "SolidWaste",
     "Preview",
     "Report",
     "RWH",
@@ -42,7 +44,18 @@ WIZARD_PAGE_ORDER: Tuple[str, ...] = (
 )
 
 _COMMON_TAIL: FrozenSet[str] = frozenset(
-    {"Landscape", "UGT", "OHT", "STP", "Preview", "Report", "RWH", "Settings"}
+    {
+        "Landscape",
+        "UGT",
+        "Sewage",
+        "OHT",
+        "STP",
+        "SolidWaste",
+        "Preview",
+        "Report",
+        "RWH",
+        "Settings",
+    }
 )
 
 _PAGES_BY_TYPE: dict[str, FrozenSet[str]] = {
@@ -53,8 +66,8 @@ _PAGES_BY_TYPE: dict[str, FrozenSet[str]] = {
     ),
     PROJECT_TYPE_HOSPITAL: frozenset({"Project", "Hospital", *_COMMON_TAIL}),
     PROJECT_TYPE_HOTEL: frozenset({"Project", "Hotel", "Swimming", *_COMMON_TAIL}),
-    PROJECT_TYPE_SCHOOL: frozenset({"Project", "Commercial", "Landscape", "UGT", "OHT", "STP", "Preview", "Report", "RWH", "Settings"}),
-    PROJECT_TYPE_COLLEGE: frozenset({"Project", "Commercial", "Landscape", "UGT", "OHT", "STP", "Preview", "Report", "RWH", "Settings"}),
+    PROJECT_TYPE_SCHOOL: frozenset({"Project", "Commercial", "Landscape", "UGT", "Sewage", "OHT", "STP", "SolidWaste", "Preview", "Report", "RWH", "Settings"}),
+    PROJECT_TYPE_COLLEGE: frozenset({"Project", "Commercial", "Landscape", "UGT", "Sewage", "OHT", "STP", "SolidWaste", "Preview", "Report", "RWH", "Settings"}),
     PROJECT_TYPE_IT_PARK: frozenset({"Project", "Commercial", "HVAC", *_COMMON_TAIL}),
     PROJECT_TYPE_MALL: frozenset({"Project", "Commercial", "HVAC", "FoodCourt", *_COMMON_TAIL}),
     PROJECT_TYPE_INDUSTRIAL: frozenset({"Project", "Commercial", *_COMMON_TAIL}),

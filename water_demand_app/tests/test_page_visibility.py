@@ -67,6 +67,11 @@ class TestPageVisibility(unittest.TestCase):
         nxt = wizard_next_page("Commercial", PROJECT_TYPE_COMMERCIAL)
         self.assertEqual(nxt, "Landscape")
 
+    def test_residential_includes_sewage_and_solid_waste(self) -> None:
+        pages = visible_pages(PROJECT_TYPE_RESIDENTIAL)
+        self.assertIn("Sewage", pages)
+        self.assertIn("SolidWaste", pages)
+
     def test_unset_type_shows_only_project_tab(self) -> None:
         pages = visible_pages("")
         self.assertEqual(pages, frozenset({"Project"}))

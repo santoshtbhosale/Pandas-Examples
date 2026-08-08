@@ -493,6 +493,37 @@ def wet_landscape_demand(dry_landscape_lpd: int) -> int:
 def treated_water_lpd(say_stp_kld: float) -> int:
     return int(say_stp_kld * STP_TREATED_WATER_PER_KLD)
 
+# ==================== config/environmental.py ====================
+"""Solid waste and sewage generation engineering constants."""
+
+
+# Solid waste — kg per capita per day
+RESIDENTIAL_WASTE_KG_PER_CAPITA_DAY = 0.45
+COMMERCIAL_WASTE_KG_PER_CAPITA_DAY = 0.25
+
+RESIDENTIAL_WET_WASTE_FRACTION = 0.60
+RESIDENTIAL_DRY_WASTE_FRACTION = 0.40
+COMMERCIAL_WET_WASTE_FRACTION = 0.40
+COMMERCIAL_DRY_WASTE_FRACTION = 0.60
+
+RESIDENTIAL_E_WASTE_KG_PER_CAPITA_YEAR = 1.0
+COMMERCIAL_E_WASTE_KG_PER_CAPITA_YEAR = 1.5
+
+GARDEN_WASTE_POP_DIVISOR = 47.25  # Residential Population / 47.25 = Garden Waste (kgs/day)
+
+STP_SLUDGE_KG_PER_KLD_DAY = 0.20  # 370 KLD → 74 Kgs/Day
+
+OWC_AREA_LOW_FACTOR = 70 / 900.0
+OWC_AREA_HIGH_FACTOR = 75 / 900.0
+
+# Sewage generation — population based (L/capita/day before 90% factor)
+RESIDENTIAL_SEWAGE_LPCD = 135
+COMMERCIAL_SEWAGE_LPCD = 45
+SEWAGE_GENERATION_PERCENT = 0.90
+
+SEWAGE_STP_AREA_LOW_FACTOR = 140 / 370.0
+SEWAGE_STP_AREA_HIGH_FACTOR = 160 / 370.0
+
 # ==================== config/page_visibility.py ====================
 """Navigation and section visibility by project type."""
 
@@ -511,8 +542,10 @@ WIZARD_PAGE_ORDER: Tuple[str, ...] = (
     "Swimming",
     "HVAC",
     "UGT",
+    "Sewage",
     "OHT",
     "STP",
+    "SolidWaste",
     "Preview",
     "Report",
     "RWH",
@@ -520,7 +553,18 @@ WIZARD_PAGE_ORDER: Tuple[str, ...] = (
 )
 
 _COMMON_TAIL: FrozenSet[str] = frozenset(
-    {"Landscape", "UGT", "OHT", "STP", "Preview", "Report", "RWH", "Settings"}
+    {
+        "Landscape",
+        "UGT",
+        "Sewage",
+        "OHT",
+        "STP",
+        "SolidWaste",
+        "Preview",
+        "Report",
+        "RWH",
+        "Settings",
+    }
 )
 
 _PAGES_BY_TYPE: dict[str, FrozenSet[str]] = {
@@ -531,8 +575,8 @@ _PAGES_BY_TYPE: dict[str, FrozenSet[str]] = {
     ),
     PROJECT_TYPE_HOSPITAL: frozenset({"Project", "Hospital", *_COMMON_TAIL}),
     PROJECT_TYPE_HOTEL: frozenset({"Project", "Hotel", "Swimming", *_COMMON_TAIL}),
-    PROJECT_TYPE_SCHOOL: frozenset({"Project", "Commercial", "Landscape", "UGT", "OHT", "STP", "Preview", "Report", "RWH", "Settings"}),
-    PROJECT_TYPE_COLLEGE: frozenset({"Project", "Commercial", "Landscape", "UGT", "OHT", "STP", "Preview", "Report", "RWH", "Settings"}),
+    PROJECT_TYPE_SCHOOL: frozenset({"Project", "Commercial", "Landscape", "UGT", "Sewage", "OHT", "STP", "SolidWaste", "Preview", "Report", "RWH", "Settings"}),
+    PROJECT_TYPE_COLLEGE: frozenset({"Project", "Commercial", "Landscape", "UGT", "Sewage", "OHT", "STP", "SolidWaste", "Preview", "Report", "RWH", "Settings"}),
     PROJECT_TYPE_IT_PARK: frozenset({"Project", "Commercial", "HVAC", *_COMMON_TAIL}),
     PROJECT_TYPE_MALL: frozenset({"Project", "Commercial", "HVAC", "FoodCourt", *_COMMON_TAIL}),
     PROJECT_TYPE_INDUSTRIAL: frozenset({"Project", "Commercial", *_COMMON_TAIL}),
@@ -1092,6 +1136,50 @@ class CalculationResults:
             },
             "total": self.total,
         }
+
+# ==================== models/environmental.py ====================
+
+
+
+@dataclass
+class SolidWasteResults:
+    res_population: int = 0
+    comm_population: int = 0
+    res_total_waste_kg_day: float = 0.0
+    res_wet_waste_kg_day: float = 0.0
+    res_dry_waste_kg_day: float = 0.0
+    comm_total_waste_kg_day: float = 0.0
+    comm_wet_waste_kg_day: float = 0.0
+    comm_dry_waste_kg_day: float = 0.0
+    total_waste_kg_day: float = 0.0
+    total_wet_waste_kg_day: float = 0.0
+    total_dry_waste_kg_day: float = 0.0
+    wet_waste_considered_kg_day: float = 0.0
+    garden_waste_considered_kg_day: float = 0.0
+    stp_sludge_kg_day: float = 0.0
+    owc_plant_capacity_kg_day: float = 0.0
+    res_e_waste_kg_year: float = 0.0
+    comm_e_waste_kg_year: float = 0.0
+    total_e_waste_kg_year: float = 0.0
+    approx_area_sqm: str = ""
+
+
+@dataclass
+class SewageGenerationResults:
+    res_population: int = 0
+    comm_population: int = 0
+    res_sewage_kld: float = 0.0
+    comm_sewage_kld: float = 0.0
+    total_sewage_kld: float = 0.0
+    proposed_stp_capacity_kld: float = 0.0
+    stp_sludge_kg_day: float = 0.0
+    approx_area_sqm: str = ""
+
+
+@dataclass
+class EnvironmentalResults:
+    solid_waste: SolidWasteResults = field(default_factory=SolidWasteResults)
+    sewage: SewageGenerationResults = field(default_factory=SewageGenerationResults)
 
 # ==================== services/calculator.py ====================
 
@@ -2332,6 +2420,129 @@ def sync_pages_to_state(app: Any) -> None:
 
     prepare_live_calculation(state)
 
+# ==================== services/environmental_calculator.py ====================
+"""Solid waste and sewage generation calculations from water-demand results."""
+
+
+
+
+
+def _aggregate_population(results: CalculationResults, plot_mode: str) -> tuple[int, int]:
+    res_pop = 0
+    comm_pop = 0
+    for plot_name in active_plots(plot_mode):
+        plot = results.plots.get(plot_name)
+        if not plot:
+            continue
+        res_pop += plot.res_population
+        comm_pop += plot.com_population
+    return res_pop, comm_pop
+
+
+def _total_stp_capacity_kld(results: CalculationResults) -> float:
+    if results.total:
+        return float(results.total.get("Total STP Capacity (KLD)", 0) or 0)
+    return 0.0
+
+
+def _stp_sludge_kg_day(stp_capacity_kld: float) -> float:
+    return round(stp_capacity_kld * STP_SLUDGE_KG_PER_KLD_DAY, 2)
+
+
+def _owc_area_range(owc_capacity_kg_day: float) -> str:
+    if owc_capacity_kg_day <= 0:
+        return ""
+    low = round(owc_capacity_kg_day * OWC_AREA_LOW_FACTOR)
+    high = round(owc_capacity_kg_day * OWC_AREA_HIGH_FACTOR)
+    return f"{low}-{high}"
+
+
+def _sewage_area_range(stp_capacity_kld: float) -> str:
+    if stp_capacity_kld <= 0:
+        return ""
+    low = round(stp_capacity_kld * SEWAGE_STP_AREA_LOW_FACTOR)
+    high = round(stp_capacity_kld * SEWAGE_STP_AREA_HIGH_FACTOR)
+    return f"{low}-{high}"
+
+
+def calculate_solid_waste(
+    results: Optional[CalculationResults],
+    project: ProjectData,
+) -> SolidWasteResults:
+    out = SolidWasteResults()
+    if not results or not results.plots:
+        return out
+
+    res_pop, comm_pop = _aggregate_population(results, project.plot_mode)
+    out.res_population = res_pop
+    out.comm_population = comm_pop
+
+    out.res_total_waste_kg_day = round(res_pop * RESIDENTIAL_WASTE_KG_PER_CAPITA_DAY, 2)
+    out.res_wet_waste_kg_day = round(out.res_total_waste_kg_day * RESIDENTIAL_WET_WASTE_FRACTION, 2)
+    out.res_dry_waste_kg_day = round(out.res_total_waste_kg_day * RESIDENTIAL_DRY_WASTE_FRACTION, 2)
+
+    out.comm_total_waste_kg_day = round(comm_pop * COMMERCIAL_WASTE_KG_PER_CAPITA_DAY, 2)
+    out.comm_wet_waste_kg_day = round(out.comm_total_waste_kg_day * COMMERCIAL_WET_WASTE_FRACTION, 2)
+    out.comm_dry_waste_kg_day = round(out.comm_total_waste_kg_day * COMMERCIAL_DRY_WASTE_FRACTION, 2)
+
+    out.total_waste_kg_day = round(out.res_total_waste_kg_day + out.comm_total_waste_kg_day, 2)
+    out.total_wet_waste_kg_day = round(out.res_wet_waste_kg_day + out.comm_wet_waste_kg_day, 2)
+    out.total_dry_waste_kg_day = round(out.res_dry_waste_kg_day + out.comm_dry_waste_kg_day, 2)
+
+    out.wet_waste_considered_kg_day = float(math.ceil(out.res_wet_waste_kg_day))
+    out.garden_waste_considered_kg_day = round(res_pop / GARDEN_WASTE_POP_DIVISOR, 2) if res_pop > 0 else 0.0
+
+    stp_capacity = _total_stp_capacity_kld(results)
+    out.stp_sludge_kg_day = _stp_sludge_kg_day(stp_capacity)
+    out.owc_plant_capacity_kg_day = round(
+        out.wet_waste_considered_kg_day + out.garden_waste_considered_kg_day + out.stp_sludge_kg_day,
+        2,
+    )
+
+    out.res_e_waste_kg_year = round(res_pop * RESIDENTIAL_E_WASTE_KG_PER_CAPITA_YEAR, 2)
+    out.comm_e_waste_kg_year = round(comm_pop * COMMERCIAL_E_WASTE_KG_PER_CAPITA_YEAR, 2)
+    out.total_e_waste_kg_year = round(out.res_e_waste_kg_year + out.comm_e_waste_kg_year, 2)
+    out.approx_area_sqm = _owc_area_range(out.owc_plant_capacity_kg_day)
+    return out
+
+
+def calculate_sewage_generation(
+    results: Optional[CalculationResults],
+    project: ProjectData,
+) -> SewageGenerationResults:
+    out = SewageGenerationResults()
+    if not results or not results.plots:
+        return out
+
+    res_pop, comm_pop = _aggregate_population(results, project.plot_mode)
+    out.res_population = res_pop
+    out.comm_population = comm_pop
+
+    out.res_sewage_kld = round(
+        res_pop * RESIDENTIAL_SEWAGE_LPCD * SEWAGE_GENERATION_PERCENT / 1000.0,
+        2,
+    )
+    out.comm_sewage_kld = round(
+        comm_pop * COMMERCIAL_SEWAGE_LPCD * SEWAGE_GENERATION_PERCENT / 1000.0,
+        2,
+    )
+    out.total_sewage_kld = round(out.res_sewage_kld + out.comm_sewage_kld, 2)
+
+    out.proposed_stp_capacity_kld = _total_stp_capacity_kld(results)
+    out.stp_sludge_kg_day = _stp_sludge_kg_day(out.proposed_stp_capacity_kld)
+    out.approx_area_sqm = _sewage_area_range(out.proposed_stp_capacity_kld)
+    return out
+
+
+def calculate_environmental(
+    results: Optional[CalculationResults],
+    project: ProjectData,
+) -> EnvironmentalResults:
+    return EnvironmentalResults(
+        solid_waste=calculate_solid_waste(results, project),
+        sewage=calculate_sewage_generation(results, project),
+    )
+
 # ==================== services/result_tables.py ====================
 """Shared table row builders for OHT, STP, and Preview — single source of truth for GUI/PDF/Excel."""
 
@@ -2539,12 +2750,117 @@ def _other_calc_rows(
     return tuple(rows)
 
 
+def _project_header_rows(project: ProjectData) -> Tuple[TableRow, ...]:
+    return (
+        ("Project Name", project.project_name or "—", ""),
+        ("Reference No.", project.project_no or project.project_id or "—", ""),
+        ("Date", project.date or "—", ""),
+    )
+
+
+def build_solid_waste_table_sections(
+    project: ProjectData,
+    environmental: EnvironmentalResults,
+) -> List[TableSection]:
+    sw = environmental.solid_waste
+    if sw.res_population <= 0 and sw.comm_population <= 0:
+        return [TableSection(title="Solid Waste Calculations", rows=(("Enter population data first", "—", ""),))]
+
+    sections: List[TableSection] = [
+        TableSection(title="Solid Waste Calculations", rows=_project_header_rows(project)),
+        TableSection(
+            title="Residential Waste Generated",
+            rows=(
+                ("Total Population", _fmt_int(sw.res_population), "nos"),
+                ("Total Waste Generated (0.45 kg/capita/day)", _fmt_float(sw.res_total_waste_kg_day), "kgs/day"),
+                ("Wet Waste Generated (60% of Total Waste)", _fmt_float(sw.res_wet_waste_kg_day), "kgs/day"),
+                ("Dry Waste Generated (40% of Total Waste)", _fmt_float(sw.res_dry_waste_kg_day), "kgs/day"),
+            ),
+        ),
+        TableSection(
+            title="Commercial Waste Generated",
+            rows=(
+                ("Total Population", _fmt_int(sw.comm_population), "nos"),
+                ("Total Waste Generated (0.25 kg/capita/day)", _fmt_float(sw.comm_total_waste_kg_day), "kgs/day"),
+                ("Wet Waste Generated (40% of Total Waste)", _fmt_float(sw.comm_wet_waste_kg_day), "kgs/day"),
+                ("Dry Waste Generated (60% of Total Waste)", _fmt_float(sw.comm_dry_waste_kg_day), "kgs/day"),
+            ),
+        ),
+        TableSection(
+            title="Total Waste Generated",
+            rows=(
+                ("Total Waste Generated", _fmt_float(sw.total_waste_kg_day), "kgs/day"),
+                ("Wet Waste Generated", _fmt_float(sw.total_wet_waste_kg_day), "kgs/day"),
+                ("Dry Waste Generated", _fmt_float(sw.total_dry_waste_kg_day), "kgs/day"),
+            ),
+        ),
+        TableSection(
+            title="Waste Consideration",
+            rows=(
+                ("Wet Waste considered", _fmt_float(sw.wet_waste_considered_kg_day, 0), "kgs/day"),
+                ("Garden Waste Considered", _fmt_float(sw.garden_waste_considered_kg_day), "kgs/day"),
+                ("STP Sludge produced", _fmt_float(sw.stp_sludge_kg_day), "kgs/day"),
+                ("Proposed OWC Plant Capacity", _fmt_float(sw.owc_plant_capacity_kg_day), "kgs/day"),
+            ),
+        ),
+        TableSection(
+            title="Total E-Waste Generated",
+            rows=(
+                ("Residential E-Waste (1 kg/capita/annum)", _fmt_float(sw.res_e_waste_kg_year), "kgs/annum"),
+                ("Commercial E-Waste (1.5 kg/capita/annum)", _fmt_float(sw.comm_e_waste_kg_year), "kgs/annum"),
+                ("Total E-Waste (Resi.+Comm.) Generated", _fmt_float(sw.total_e_waste_kg_year), "kgs/annum"),
+                ("Approx. Area Required", sw.approx_area_sqm or "—", "Sq. mtrs."),
+            ),
+        ),
+    ]
+    return sections
+
+
+def build_sewage_generation_table_sections(
+    project: ProjectData,
+    environmental: EnvironmentalResults,
+) -> List[TableSection]:
+    sg = environmental.sewage
+    if sg.res_population <= 0 and sg.comm_population <= 0:
+        return [TableSection(title="Sewage Generation Calculations", rows=(("Enter population data first", "—", ""),))]
+
+    return [
+        TableSection(title="Sewage Generation Calculations", rows=_project_header_rows(project)),
+        TableSection(
+            title="Residential Sewage Generated",
+            rows=(
+                ("Total Population", _fmt_int(sg.res_population), "nos"),
+                ("Percentage of Sewage", "90", "%"),
+                ("Total Sewage Generated", _fmt_float(sg.res_sewage_kld), "KLD"),
+            ),
+        ),
+        TableSection(
+            title="Commercial Sewage Generated",
+            rows=(
+                ("Total Population", _fmt_int(sg.comm_population), "nos"),
+                ("Percentage of Sewage", "90", "%"),
+                ("Total Sewage Generated", _fmt_float(sg.comm_sewage_kld), "KLD"),
+            ),
+        ),
+        TableSection(
+            title="Total Sewage Generated",
+            rows=(
+                ("Total Sewage Generated", _fmt_float(sg.total_sewage_kld), "KLD"),
+                ("Proposed STP Capacity", _fmt_float(sg.proposed_stp_capacity_kld), "KLD"),
+                ("STP Sludge produced", _fmt_float(sg.stp_sludge_kg_day), "Kgs/Day"),
+                ("Approx. Area Required", sg.approx_area_sqm or "—", "Sq. mtrs."),
+            ),
+        ),
+    ]
+
+
 def build_preview_table_sections(
     project: ProjectData,
     results: CalculationResults,
     plot_names: Sequence[str],
     other: Optional[OtherDetails] = None,
     rwh_summary: Optional[Sequence[TableRow]] = None,
+    environmental: Optional[EnvironmentalResults] = None,
 ) -> List[TableSection]:
     """Build preview sections; only includes modules applicable to project type."""
     if not results or not results.plots:
@@ -2574,19 +2890,16 @@ def build_preview_table_sections(
     for plot_name in plot_names:
         plot = results.plots.get(plot_name)
         if plot and plot.dry_total_water_lpd > 0:
-            water_rows.extend(_plot_water_rows(plot))
+            water_rows.extend(_plot_water_rows(plot, project.project_type))
     if len(water_rows) > 4:
         sections.append(TableSection(title="Water Demand Summary", rows=tuple(water_rows)))
 
-    if "STP" in pages:
-        sewage_rows: List[TableRow] = []
-        for plot_name in plot_names:
-            plot = results.plots.get(plot_name)
-            if plot and plot.sewage_lpd > 0:
-                sewage_rows.extend(_plot_sewage_rows(plot))
-        if sewage_rows:
-            sections.append(TableSection(title="Sewage Summary", rows=tuple(sewage_rows)))
+    if "Sewage" in pages and environmental:
+        sg = environmental.sewage
+        if sg.res_population > 0 or sg.comm_population > 0:
+            sections.extend(build_sewage_generation_table_sections(project, environmental))
 
+    if "STP" in pages:
         stp_rows: List[TableRow] = []
         for plot_name in plot_names:
             plot = results.plots.get(plot_name)
@@ -2596,6 +2909,17 @@ def build_preview_table_sections(
                     stp_rows.extend(_stp_section_rows(stp))
         if stp_rows:
             sections.append(TableSection(title="STP Summary", rows=tuple(stp_rows)))
+
+    if "SolidWaste" in pages and environmental:
+        sw = environmental.solid_waste
+        if sw.res_population > 0 or sw.comm_population > 0:
+            sw_rows: List[TableRow] = []
+            for sec in build_solid_waste_table_sections(project, environmental):
+                if sec.title == "Solid Waste Calculations":
+                    continue
+                sw_rows.extend(sec.rows)
+            if sw_rows:
+                sections.append(TableSection(title="Solid Waste Summary", rows=tuple(sw_rows)))
 
     if "OHT" in pages:
         oht_rows: List[TableRow] = []
@@ -2712,6 +3036,24 @@ class PDFExporter:
         story.extend(self._build_stp("Plot-A"))
         story.append(PageBreak())
         story.extend(self._build_stp("Plot-B"))
+
+        environmental = calculate_environmental(self.results, self.project)
+        story.append(PageBreak())
+        story.extend(
+            self._build_environmental_tables(
+                "SEWAGE GENERATION",
+                BRAND_STP_PURPLE,
+                build_sewage_generation_table_sections(self.project, environmental),
+            )
+        )
+        story.append(PageBreak())
+        story.extend(
+            self._build_environmental_tables(
+                "SOLID WASTE GENERATION",
+                BRAND_DEMAND_ORANGE,
+                build_solid_waste_table_sections(self.project, environmental),
+            )
+        )
         doc.build(story, onFirstPage=self._footer, onLaterPages=self._footer)
 
     def _footer(self, canvas, doc) -> None:
@@ -3371,6 +3713,23 @@ class PDFExporter:
             story.append(Spacer(1, 10))
         return story
 
+    def _build_environmental_tables(self, title: str, color: str, sections) -> List[Any]:
+        story: List[Any] = [self._eng_header(), Spacer(1, 5)]
+        story.append(self._section_bar(title, color))
+        story.append(Spacer(1, 5))
+        for section in sections:
+            story.append(self._p(f"<b>{section.title}</b>", "EnvSec", fontSize=7, fontName="Helvetica-Bold"))
+            table_rows = [
+                [self._th("DESCRIPTION"), self._th("VALUE"), self._th("UNIT")],
+            ]
+            for desc, value, unit in section.rows:
+                table_rows.append([self._tc(desc, 0), self._tc(value, 1), self._tc(unit, 0)])
+            table = Table(table_rows, colWidths=[260, 120, 100])
+            table.setStyle(self._grid_style())
+            story.append(table)
+            story.append(Spacer(1, 8))
+        return story
+
 
 def export_pdf(
     file_path: str,
@@ -3409,12 +3768,15 @@ class ExcelExporter:
         self.wb = Workbook()
 
     def export(self, file_path: str) -> None:
+        environmental = calculate_environmental(self.results, self.project)
         self._build_cover()
         self._build_consolidated()
         for plot in active_plots(self.project.plot_mode):
             self._build_plot_demand(plot)
             self._build_ugt_oht(plot)
             self._build_stp(plot)
+        self._build_environmental_sheet("Sewage Generation", build_sewage_generation_table_sections(self.project, environmental))
+        self._build_environmental_sheet("Solid Waste Generation", build_solid_waste_table_sections(self.project, environmental))
         self._build_summary()
         if "Sheet" in self.wb.sheetnames:
             del self.wb["Sheet"]
@@ -3667,6 +4029,31 @@ class ExcelExporter:
             row += 2
         self._auto_width(ws)
 
+    def _build_environmental_sheet(self, sheet_title: str, sections: list[TableSection]) -> None:
+        ws = self.wb.create_sheet(sheet_title)
+        ws["A1"] = sheet_title.upper()
+        ws["A1"].font = TITLE_FONT
+        ws.merge_cells("A1:C1")
+        row = 3
+        for section in sections:
+            ws.cell(row=row, column=1, value=section.title)
+            ws.cell(row=row, column=1).font = Font(bold=True)
+            row += 1
+            headers = ["Description", "Value", "Unit"]
+            for col, header in enumerate(headers, 1):
+                ws.cell(row=row, column=col, value=header)
+            self._style_header_row(ws, row, 3)
+            row += 1
+            start = row
+            for desc, value, unit in section.rows:
+                ws.cell(row=row, column=1, value=desc)
+                ws.cell(row=row, column=2, value=value)
+                ws.cell(row=row, column=3, value=unit)
+                row += 1
+            self._style_data_area(ws, start, row - 1, 3)
+            row += 2
+        self._auto_width(ws)
+
     def _build_summary(self) -> None:
         ws = self.wb.create_sheet("Summary")
         ws["A1"] = "PROJECT SUMMARY"
@@ -3711,6 +4098,7 @@ class TemplateExcelExporter:
     def export(self, file_path: str) -> None:
         shutil.copy2(TEMPLATE_PATH, file_path)
         wb = load_workbook(file_path)
+        environmental = calculate_environmental(self.results, self.project)
         self._populate_cover(wb)
         self._populate_consolidated(wb)
         for plot in ("Plot-A", "Plot-B"):
@@ -3721,6 +4109,16 @@ class TemplateExcelExporter:
             else:
                 self._clear_plot_sheets(wb, plot)
         self._populate_summary(wb)
+        self._append_environmental_sheets(
+            wb,
+            build_sewage_generation_table_sections(self.project, environmental),
+            "Sewage Generation",
+        )
+        self._append_environmental_sheets(
+            wb,
+            build_solid_waste_table_sections(self.project, environmental),
+            "Solid Waste Generation",
+        )
         wb.save(file_path)
 
     @staticmethod
@@ -4072,6 +4470,28 @@ class TemplateExcelExporter:
         for cell, val in fields.items():
             self._set(ws, cell, val)
 
+    def _append_environmental_sheets(self, wb, sections: list[TableSection], sheet_title: str) -> None:
+        if sheet_title in wb.sheetnames:
+            ws = wb[sheet_title]
+            self._clear_range(ws, 1, ws.max_row, 1, 6)
+        else:
+            ws = wb.create_sheet(sheet_title)
+        ws["A1"] = sheet_title.upper()
+        row = 3
+        for section in sections:
+            ws.cell(row=row, column=1, value=section.title)
+            row += 1
+            ws.cell(row=row, column=1, value="Description")
+            ws.cell(row=row, column=2, value="Value")
+            ws.cell(row=row, column=3, value="Unit")
+            row += 1
+            for desc, value, unit in section.rows:
+                ws.cell(row=row, column=1, value=desc)
+                ws.cell(row=row, column=2, value=value)
+                ws.cell(row=row, column=3, value=unit)
+                row += 1
+            row += 1
+
 
 def export_excel(file_path: str, project: ProjectData, results: CalculationResults) -> None:
     if os.path.isfile(TEMPLATE_PATH):
@@ -4184,6 +4604,7 @@ class AppState:
     commercial: List[CommercialUnit] = field(default_factory=list)
     other: OtherDetails = field(default_factory=OtherDetails)
     results: Optional[CalculationResults] = None
+    environmental: Optional[EnvironmentalResults] = None
     calculated_legacy: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     def residential_legacy(self) -> List[dict]:
@@ -4207,6 +4628,7 @@ class AppState:
         )
         self.results = calc.calculate()
         self.calculated_legacy = self.results.legacy_dict()
+        self.environmental = calculate_environmental(self.results, self.project)
 
     def auto_calculate(self) -> None:
         """Recalculate whenever inputs change (no manual Calculate button)."""
@@ -4215,6 +4637,7 @@ class AppState:
             self.run_calculations()
         except Exception:
             self.results = None
+            self.environmental = None
 
     def apply_project_type(self, new_type: str) -> None:
         """Clear data for sections hidden by the new project type."""
@@ -5046,19 +5469,6 @@ class ProjectPage(ScrollablePage):
                 ent.bind("<KeyRelease>", self._on_location_type)
             row += 1
 
-        for key, label, attr in [
-            ("client_address", "Client Address", "client_address"),
-            ("client_contact", "Contact", "client_contact"),
-            ("client_email", "Email", "client_email"),
-            ("client_gst", "GST", "client_gst"),
-        ]:
-            ctk.CTkLabel(self.form, text=label, font=("Arial", 13)).grid(row=row, column=0, padx=20, pady=6, sticky="w")
-            ent = ctk.CTkEntry(self.form, width=400)
-            ent.insert(0, getattr(self.state.project, attr, "") or "")
-            ent.grid(row=row, column=1, padx=20, pady=6, sticky="w")
-            self.entries[key] = ent
-            row += 1
-
         ctk.CTkLabel(self.form, text="Building Configuration", font=("Arial", 14)).grid(
             row=row, column=0, padx=20, pady=8, sticky="w"
         )
@@ -5147,14 +5557,6 @@ class ProjectPage(ScrollablePage):
         self.date_label.grid(row=row, column=1, padx=20, pady=8, sticky="w")
         row += 1
 
-        for key, label in [("city", "City"), ("state", "State"), ("rainfall_zone", "Rainfall Zone"), ("climate", "Climate")]:
-            ctk.CTkLabel(self.form, text=label, font=("Arial", 13)).grid(row=row, column=0, padx=20, pady=4, sticky="w")
-            ent = ctk.CTkEntry(self.form, width=400)
-            ent.insert(0, getattr(self.state.project, key, "") or "")
-            ent.grid(row=row, column=1, padx=20, pady=4, sticky="w")
-            self.entries[key] = ent
-            row += 1
-
         btn_frame = ctk.CTkFrame(self.details_frame, fg_color="transparent")
         btn_frame.pack(pady=15)
         ctk.CTkButton(
@@ -5235,16 +5637,20 @@ class ProjectPage(ScrollablePage):
             return
         for key, field in [
             ("client_name", "client_name"),
-            ("client_address", "address"),
-            ("client_contact", "contact"),
-            ("client_email", "email"),
-            ("client_gst", "gst"),
         ]:
             if field in best and best[field] and key in self.entries:
                 self.entries[key].delete(0, "end")
                 self.entries[key].insert(0, best[field])
         if best.get("engineer_name"):
             self.engineer_var.set(best["engineer_name"])
+        if best.get("address"):
+            self.state.project.client_address = best["address"]
+        if best.get("contact"):
+            self.state.project.client_contact = best["contact"]
+        if best.get("email"):
+            self.state.project.client_email = best["email"]
+        if best.get("gst"):
+            self.state.project.client_gst = best["gst"]
 
     def _on_location_type(self, _event=None) -> None:
         if not self._details_visible:
@@ -5254,10 +5660,9 @@ class ProjectPage(ScrollablePage):
         if not matches:
             return
         best = matches[0]
-        for key, src in [("city", "city"), ("state", "state"), ("rainfall_zone", "rainfall_zone"), ("climate", "climate")]:
-            if src in best and best[src] and key in self.entries:
-                self.entries[key].delete(0, "end")
-                self.entries[key].insert(0, best[src])
+        for src, attr in [("city", "city"), ("state", "state"), ("rainfall_zone", "rainfall_zone"), ("climate", "climate")]:
+            if src in best and best[src]:
+                setattr(self.state.project, attr, best[src])
 
     def _save_and_next(self) -> None:
         if not is_project_type_set(self.state.project.project_type):
@@ -5282,8 +5687,6 @@ class ProjectPage(ScrollablePage):
             self.state.project.building_height_m = float(self.height_entry.get() or 0)
             self.state.project.num_wings = validate_positive_int(self.wings_entry.get(), "Number of Wings")
             self.state.project.building_type = self.building_type_var.get()
-            for key in ("client_address", "client_contact", "client_email", "client_gst", "city", "state", "rainfall_zone", "climate"):
-                setattr(self.state.project, key, self.entries[key].get().strip())
             self.state.project.revision = RevisionInfo(
                 date=today,
                 revision_no="R0",
@@ -7428,8 +7831,10 @@ class WaterDemandApp(ctk.CTkToplevel):
         ("Swimming", "Swimming Pool"),
         ("HVAC", "HVAC"),
         ("UGT", "UGT / Fire Tank"),
+        ("Sewage", "Sewage Generation"),
         ("OHT", "OHT Details"),
         ("STP", "STP Summary"),
+        ("SolidWaste", "Solid Waste Generation"),
         ("Preview", "Preview"),
         ("Report", "Generate Report"),
         ("RWH", "Rain Water Harvesting"),
@@ -7649,8 +8054,10 @@ class WaterDemandApp(ctk.CTkToplevel):
         self.pages["Swimming"] = self._form_page("Swimming Pool", self._pool_ui)
         self.pages["HVAC"] = self._form_page("HVAC Water", self._hvac_ui)
         self.pages["UGT"] = self._form_page("UGT / Fire Tank", self._ugt_ui)
+        self.pages["Sewage"] = self._sewage_page()
         self.pages["OHT"] = self._oht_page()
         self.pages["STP"] = self._stp_page()
+        self.pages["SolidWaste"] = self._solid_waste_page()
         self.pages["Preview"] = self._preview_page()
         self.pages["Report"] = FinalPage(
             self.container,
@@ -7916,6 +8323,70 @@ class WaterDemandApp(ctk.CTkToplevel):
             self.app_state.other.fire_tank[plot] = float(auto_val)
             lbl.configure(text=f"{auto_val:,} (auto — NBC Table 7)")
 
+    def _sewage_page(self):
+        frame = ScrollablePage(self.container)
+        header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
+        header.pack(fill="x", padx=5, pady=5)
+        ctk.CTkLabel(header, text="Sewage Generation", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
+        ctk.CTkLabel(
+            frame,
+            text="Population-based sewage generation — auto-calculated from residential/commercial data.",
+            font=("Arial", 11, "italic"),
+        ).pack(anchor="w", padx=20, pady=(0, 5))
+        self.sewage_table = ResultTableView(frame)
+        self.sewage_table.pack(fill="both", expand=True, padx=15, pady=10)
+        ctk.CTkLabel(
+            frame,
+            text="Updates automatically as you enter data on other pages.",
+            font=("Arial", 10, "italic"),
+            text_color="#666666",
+        ).pack(pady=(0, 8))
+        return frame
+
+    def _refresh_sewage(self, silent: bool = False) -> None:
+        if not hasattr(self, "sewage_table"):
+            return
+        if not self.app_state.environmental:
+            self.sewage_table.set_rows("Sewage Generation Calculations", [("Enter project data first", "—", "")])
+            return
+        sections = build_sewage_generation_table_sections(
+            self.app_state.project,
+            self.app_state.environmental,
+        )
+        self.sewage_table.set_sections(sections)
+
+    def _solid_waste_page(self):
+        frame = ScrollablePage(self.container)
+        header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
+        header.pack(fill="x", padx=5, pady=5)
+        ctk.CTkLabel(header, text="Solid Waste Generation", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
+        ctk.CTkLabel(
+            frame,
+            text="Solid waste and e-waste calculations — auto-calculated from population and STP data.",
+            font=("Arial", 11, "italic"),
+        ).pack(anchor="w", padx=20, pady=(0, 5))
+        self.solid_waste_table = ResultTableView(frame)
+        self.solid_waste_table.pack(fill="both", expand=True, padx=15, pady=10)
+        ctk.CTkLabel(
+            frame,
+            text="Updates automatically as you enter data on other pages.",
+            font=("Arial", 10, "italic"),
+            text_color="#666666",
+        ).pack(pady=(0, 8))
+        return frame
+
+    def _refresh_solid_waste(self, silent: bool = False) -> None:
+        if not hasattr(self, "solid_waste_table"):
+            return
+        if not self.app_state.environmental:
+            self.solid_waste_table.set_rows("Solid Waste Calculations", [("Enter project data first", "—", "")])
+            return
+        sections = build_solid_waste_table_sections(
+            self.app_state.project,
+            self.app_state.environmental,
+        )
+        self.solid_waste_table.set_sections(sections)
+
     def _oht_page(self):
         frame = ScrollablePage(self.container)
         header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
@@ -8022,6 +8493,7 @@ class WaterDemandApp(ctk.CTkToplevel):
             self._plots(),
             other=self.app_state.other,
             rwh_summary=self._rwh_preview_rows(),
+            environmental=self.app_state.environmental,
         )
         self.preview_table.set_sections(sections)
 
@@ -8091,6 +8563,10 @@ class WaterDemandApp(ctk.CTkToplevel):
             page.refresh()
         if name == "STP":
             self._refresh_stp()
+        elif name == "Sewage":
+            self._refresh_sewage()
+        elif name == "SolidWaste":
+            self._refresh_solid_waste()
         elif name == "OHT":
             self._refresh_oht()
         elif name == "Preview":
@@ -8119,6 +8595,10 @@ class WaterDemandApp(ctk.CTkToplevel):
             self._refresh_oht(silent=True)
         if hasattr(self, "stp_table"):
             self._refresh_stp(silent=True)
+        if hasattr(self, "sewage_table"):
+            self._refresh_sewage(silent=True)
+        if hasattr(self, "solid_waste_table"):
+            self._refresh_solid_waste(silent=True)
         if hasattr(self, "preview_table"):
             self._refresh_preview(silent=True)
 

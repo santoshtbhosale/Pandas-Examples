@@ -58,6 +58,18 @@ class TestSidebarNavigation(unittest.TestCase):
     def test_oht_page_exists(self) -> None:
         self.assertIn("OHT", self.app.pages)
 
+    def test_sewage_page_exists(self) -> None:
+        self.assertIn("Sewage", self.app.pages)
+
+    def test_solid_waste_page_exists(self) -> None:
+        self.assertIn("SolidWaste", self.app.pages)
+
+    def test_sewage_table_widget_exists(self) -> None:
+        self.assertTrue(hasattr(self.app, "sewage_table"))
+
+    def test_solid_waste_table_widget_exists(self) -> None:
+        self.assertTrue(hasattr(self.app, "solid_waste_table"))
+
     def test_hospital_type_navigation(self) -> None:
         self.app.app_state.apply_project_type("hospital")
         self.app._rebuild_sidebar()

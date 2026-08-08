@@ -78,6 +78,29 @@ class PDFExporter:
         story.extend(self._build_stp("Plot-A"))
         story.append(PageBreak())
         story.extend(self._build_stp("Plot-B"))
+        from services.environmental_calculator import calculate_environmental
+        from services.result_tables import (
+            build_sewage_generation_table_sections,
+            build_solid_waste_table_sections,
+        )
+
+        environmental = calculate_environmental(self.results, self.project)
+        story.append(PageBreak())
+        story.extend(
+            self._build_environmental_tables(
+                "SEWAGE GENERATION",
+                BRAND_STP_PURPLE,
+                build_sewage_generation_table_sections(self.project, environmental),
+            )
+        )
+        story.append(PageBreak())
+        story.extend(
+            self._build_environmental_tables(
+                "SOLID WASTE GENERATION",
+                BRAND_DEMAND_ORANGE,
+                build_solid_waste_table_sections(self.project, environmental),
+            )
+        )
         doc.build(story, onFirstPage=self._footer, onLaterPages=self._footer)
 
     def _footer(self, canvas, doc) -> None:
@@ -735,6 +758,23 @@ class PDFExporter:
             t_stp.setStyle(self._grid_style())
             story.append(t_stp)
             story.append(Spacer(1, 10))
+        return story
+
+    def _build_environmental_tables(self, title: str, color: str, sections) -> List[Any]:
+        story: List[Any] = [self._eng_header(), Spacer(1, 5)]
+        story.append(self._section_bar(title, color))
+        story.append(Spacer(1, 5))
+        for section in sections:
+            story.append(self._p(f"<b>{section.title}</b>", "EnvSec", fontSize=7, fontName="Helvetica-Bold"))
+            table_rows = [
+                [self._th("DESCRIPTION"), self._th("VALUE"), self._th("UNIT")],
+            ]
+            for desc, value, unit in section.rows:
+                table_rows.append([self._tc(desc, 0), self._tc(value, 1), self._tc(unit, 0)])
+            table = Table(table_rows, colWidths=[260, 120, 100])
+            table.setStyle(self._grid_style())
+            story.append(table)
+            story.append(Spacer(1, 8))
         return story
 
 

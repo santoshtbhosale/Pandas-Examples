@@ -20,7 +20,14 @@ from config.nbc_2026 import (
     hvac_applicable,
 )
 from models.calculations import CalculationResults
+from models.environmental import EnvironmentalResults
 from models.project import ProjectData
+from services.environmental_calculator import calculate_environmental
+from services.result_tables import (
+    TableSection,
+    build_sewage_generation_table_sections,
+    build_solid_waste_table_sections,
+)
 
 
 HEADER_FILL = PatternFill("solid", fgColor=BRAND_DARK_GRAY.replace("#", ""))
@@ -44,12 +51,15 @@ class ExcelExporter:
         self.wb = Workbook()
 
     def export(self, file_path: str) -> None:
+        environmental = calculate_environmental(self.results, self.project)
         self._build_cover()
         self._build_consolidated()
         for plot in active_plots(self.project.plot_mode):
             self._build_plot_demand(plot)
             self._build_ugt_oht(plot)
             self._build_stp(plot)
+        self._build_environmental_sheet("Sewage Generation", build_sewage_generation_table_sections(self.project, environmental))
+        self._build_environmental_sheet("Solid Waste Generation", build_solid_waste_table_sections(self.project, environmental))
         self._build_summary()
         if "Sheet" in self.wb.sheetnames:
             del self.wb["Sheet"]
@@ -302,6 +312,31 @@ class ExcelExporter:
             row += 2
         self._auto_width(ws)
 
+    def _build_environmental_sheet(self, sheet_title: str, sections: list[TableSection]) -> None:
+        ws = self.wb.create_sheet(sheet_title)
+        ws["A1"] = sheet_title.upper()
+        ws["A1"].font = TITLE_FONT
+        ws.merge_cells("A1:C1")
+        row = 3
+        for section in sections:
+            ws.cell(row=row, column=1, value=section.title)
+            ws.cell(row=row, column=1).font = Font(bold=True)
+            row += 1
+            headers = ["Description", "Value", "Unit"]
+            for col, header in enumerate(headers, 1):
+                ws.cell(row=row, column=col, value=header)
+            self._style_header_row(ws, row, 3)
+            row += 1
+            start = row
+            for desc, value, unit in section.rows:
+                ws.cell(row=row, column=1, value=desc)
+                ws.cell(row=row, column=2, value=value)
+                ws.cell(row=row, column=3, value=unit)
+                row += 1
+            self._style_data_area(ws, start, row - 1, 3)
+            row += 2
+        self._auto_width(ws)
+
     def _build_summary(self) -> None:
         ws = self.wb.create_sheet("Summary")
         ws["A1"] = "PROJECT SUMMARY"
@@ -346,6 +381,7 @@ class TemplateExcelExporter:
     def export(self, file_path: str) -> None:
         shutil.copy2(TEMPLATE_PATH, file_path)
         wb = load_workbook(file_path)
+        environmental = calculate_environmental(self.results, self.project)
         self._populate_cover(wb)
         self._populate_consolidated(wb)
         for plot in ("Plot-A", "Plot-B"):
@@ -356,6 +392,16 @@ class TemplateExcelExporter:
             else:
                 self._clear_plot_sheets(wb, plot)
         self._populate_summary(wb)
+        self._append_environmental_sheets(
+            wb,
+            build_sewage_generation_table_sections(self.project, environmental),
+            "Sewage Generation",
+        )
+        self._append_environmental_sheets(
+            wb,
+            build_solid_waste_table_sections(self.project, environmental),
+            "Solid Waste Generation",
+        )
         wb.save(file_path)
 
     @staticmethod
@@ -706,6 +752,28 @@ class TemplateExcelExporter:
         }
         for cell, val in fields.items():
             self._set(ws, cell, val)
+
+    def _append_environmental_sheets(self, wb, sections: list[TableSection], sheet_title: str) -> None:
+        if sheet_title in wb.sheetnames:
+            ws = wb[sheet_title]
+            self._clear_range(ws, 1, ws.max_row, 1, 6)
+        else:
+            ws = wb.create_sheet(sheet_title)
+        ws["A1"] = sheet_title.upper()
+        row = 3
+        for section in sections:
+            ws.cell(row=row, column=1, value=section.title)
+            row += 1
+            ws.cell(row=row, column=1, value="Description")
+            ws.cell(row=row, column=2, value="Value")
+            ws.cell(row=row, column=3, value="Unit")
+            row += 1
+            for desc, value, unit in section.rows:
+                ws.cell(row=row, column=1, value=desc)
+                ws.cell(row=row, column=2, value=value)
+                ws.cell(row=row, column=3, value=unit)
+                row += 1
+            row += 1
 
 
 def export_excel(file_path: str, project: ProjectData, results: CalculationResults) -> None:

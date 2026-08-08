@@ -13,10 +13,12 @@ from config.nbc_2026 import (
 )
 from models.calculations import CalculationResults
 from models.commercial import CommercialUnit
+from models.environmental import EnvironmentalResults
 from models.other_details import OtherDetails, OHTDetail
 from models.project import ProjectData
 from models.residential import ResidentialWing
 from services.calculator import WaterDemandCalculator
+from services.environmental_calculator import calculate_environmental
 
 
 @dataclass
@@ -26,6 +28,7 @@ class AppState:
     commercial: List[CommercialUnit] = field(default_factory=list)
     other: OtherDetails = field(default_factory=OtherDetails)
     results: Optional[CalculationResults] = None
+    environmental: Optional[EnvironmentalResults] = None
     calculated_legacy: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     def residential_legacy(self) -> List[dict]:
@@ -49,6 +52,7 @@ class AppState:
         )
         self.results = calc.calculate()
         self.calculated_legacy = self.results.legacy_dict()
+        self.environmental = calculate_environmental(self.results, self.project)
 
     def auto_calculate(self) -> None:
         """Recalculate whenever inputs change (no manual Calculate button)."""
@@ -58,6 +62,7 @@ class AppState:
             self.run_calculations()
         except Exception:
             self.results = None
+            self.environmental = None
 
     def apply_project_type(self, new_type: str) -> None:
         """Clear data for sections hidden by the new project type."""
