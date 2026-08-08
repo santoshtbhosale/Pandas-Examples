@@ -90,6 +90,15 @@ class TestUserSession(unittest.TestCase):
         user = UserSession(1, "admin", "Admin", ROLE_ADMIN)
         self.assertTrue(user.can_launch_water_demand())
 
+    def test_engineer_project_access(self) -> None:
+        akash = UserSession(1, "akash", "Akash", ROLE_ENGINEER)
+        vaibhav = UserSession(2, "vaibhav", "Vaibhav", ROLE_ENGINEER)
+        admin = UserSession(3, "admin", "Admin", ROLE_ADMIN)
+        self.assertTrue(akash.can_access_project("akash", "Akash"))
+        self.assertFalse(akash.can_access_project("vaibhav", "Vaibhav"))
+        self.assertTrue(akash.can_access_project("", "Akash"))
+        self.assertTrue(admin.can_access_project("vaibhav", "Anyone"))
+
 
 if __name__ == "__main__":
     unittest.main()

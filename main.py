@@ -322,6 +322,8 @@ def parse_building_config(config: str) -> Tuple[int, float]:
         above = int(m.group(3))
     elif re.match(r"^G\+(\d+)$", text):
         above = int(re.match(r"^G\+(\d+)$", text).group(1))
+    else:
+        return 0, 0.0
     total_floors = basements + 1 + above
     height = total_floors * FLOOR_HEIGHT_M
     return above, height
@@ -738,6 +740,17 @@ class UserSession:
 
     def can_launch_water_demand(self) -> bool:
         return self.role in (ROLE_ADMIN, ROLE_ENGINEER)
+
+    def can_access_project(self, created_by: str = "", engineer_name: str = "") -> bool:
+        """Admin sees all projects; engineers only their own."""
+        if self.role == ROLE_ADMIN:
+            return True
+        if self.role != ROLE_ENGINEER:
+            return False
+        owner = (created_by or "").strip()
+        if not owner:
+            return (engineer_name or "").strip().lower() == self.full_name.strip().lower()
+        return owner == self.username
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -1799,21 +1812,36 @@ def get_project_history(limit: int = 100, db_path: str = DB_PATH) -> List[Dict[s
     return rows
 
 
-def search_projects(query: str, limit: int = 50, db_path: str = DB_PATH) -> List[Dict[str, str]]:
+def search_projects(
+    query: str,
+    limit: int = 50,
+    db_path: str = DB_PATH,
+    *,
+    username: str = "",
+    role: str = "",
+    full_name: str = "",
+) -> List[Dict[str, str]]:
     init_db(db_path)
     key = f"%{(query or '').strip()}%"
-    if key == "%%":
-        return get_project_history(limit, db_path)
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
+    conditions: list[str] = []
+    params: list = []
+    if role == "engineer" and username:
+        conditions.append(
+            "(created_by = ? OR (COALESCE(created_by, '') = '' AND LOWER(engineer_name) = LOWER(?)))"
+        )
+        params.extend([username, full_name or username])
+    if key != "%%":
+        conditions.append(
+            "(project_id LIKE ? OR project_name LIKE ? OR client_name LIKE ? "
+            "OR project_location LIKE ? OR project_no LIKE ? OR engineer_name LIKE ?)"
+        )
+        params.extend([key, key, key, key, key, key])
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     cursor.execute(
-        _HISTORY_SQL
-        + """
-        WHERE project_id LIKE ? OR project_name LIKE ? OR client_name LIKE ?
-           OR project_location LIKE ? OR project_no LIKE ? OR engineer_name LIKE ?
-        ORDER BY updated_at DESC LIMIT ?
-        """,
-        (key, key, key, key, key, key, limit),
+        _HISTORY_SQL + where + " ORDER BY updated_at DESC LIMIT ?",
+        tuple(params) + (limit,),
     )
     rows = [_row_to_summary(r) for r in cursor.fetchall()]
     conn.close()
@@ -2273,8 +2301,18 @@ def create_new_project_state(user: Optional[UserSession] = None, db_path: str = 
     return state
 
 
-def load_project_state(project_id: str, db_path: str = DB_PATH) -> AppState:
+def load_project_state(
+    project_id: str,
+    db_path: str = DB_PATH,
+    user: Optional[UserSession] = None,
+) -> AppState:
     """Load an existing project into AppState."""
+    summary = get_project_summary(project_id, db_path)
+    if summary and user and not user.can_access_project(
+        summary.get("created_by", ""),
+        summary.get("engineer_name", ""),
+    ):
+        raise ValueError("You do not have permission to open this project.")
     data = load_project_from_db(project_id, db_path)
     project, residential, commercial, other, calculated = parse_project_snapshot(data)
     state = AppState()
@@ -2308,8 +2346,18 @@ def persist_project_state(
     )
 
 
-def find_projects(query: str = "", limit: int = 50, db_path: str = DB_PATH):
-    return search_projects(query, limit=limit, db_path=db_path)
+def find_projects(
+    query: str = "",
+    limit: int = 50,
+    db_path: str = DB_PATH,
+    user: Optional[UserSession] = None,
+):
+    username = user.username if user else ""
+    role = user.role if user else ""
+    full_name = user.full_name if user else ""
+    return search_projects(
+        query, limit=limit, db_path=db_path, username=username, role=role, full_name=full_name
+    )
 
 # ==================== services/automation.py ====================
 """Live automation — sync UI inputs to state and apply building parser rules."""
@@ -4525,7 +4573,7 @@ class DashboardScreen(ctk.CTkFrame):
         stats.grid(row=2, column=0, sticky="ew", pady=(0, 16))
         stats.grid_columnconfigure((0, 1, 2), weight=1)
 
-        project_count = len(find_projects())
+        project_count = len(find_projects(user=self.user))
         can_launch = self.user.can_launch_water_demand()
         self._stat_card(stats, 0, "Saved Projects", str(project_count), "In database")
         self._stat_card(stats, 1, "Active Users", str(count_active_users()), "Registered accounts")
@@ -4707,7 +4755,7 @@ class ProjectHub(ctk.CTkFrame):
         self._row_widgets.clear()
         self._selected_id = None
 
-        projects = find_projects(query)
+        projects = find_projects(query, user=self.user)
         if not projects:
             ctk.CTkLabel(
                 self.history_frame,
@@ -8164,14 +8212,6 @@ def _load_json_file(fp):
         data = json.load(f)
     return parse_project_snapshot(data)
 
-
-def main():
-    WaterDemandApp().mainloop()
-
-
-if __name__ == "__main__":
-    main()
-
 # ==================== app_launcher.py ====================
 """Application entry point — Splash → Login → Dashboard → Water Demand."""
 
@@ -8247,7 +8287,7 @@ class Application(ctk.CTk):
         if self.current_user is None:
             return
         try:
-            self._pending_state = load_project_state(project_id, DB_PATH)
+            self._pending_state = load_project_state(project_id, DB_PATH, user=self.current_user)
         except ValueError as exc:
             messagebox.showerror("Open Project", str(exc))
             return
@@ -8262,6 +8302,7 @@ class Application(ctk.CTk):
     def _launch_water_demand(self, initial_state: Optional[AppState]) -> None:
         if self.current_user is None:
             return
+
         self.withdraw()
         self._water_app = WaterDemandApp(
             current_user=self.current_user,

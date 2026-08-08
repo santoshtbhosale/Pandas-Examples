@@ -230,21 +230,36 @@ def get_project_history(limit: int = 100, db_path: str = DB_PATH) -> List[Dict[s
     return rows
 
 
-def search_projects(query: str, limit: int = 50, db_path: str = DB_PATH) -> List[Dict[str, str]]:
+def search_projects(
+    query: str,
+    limit: int = 50,
+    db_path: str = DB_PATH,
+    *,
+    username: str = "",
+    role: str = "",
+    full_name: str = "",
+) -> List[Dict[str, str]]:
     init_db(db_path)
     key = f"%{(query or '').strip()}%"
-    if key == "%%":
-        return get_project_history(limit, db_path)
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
+    conditions: list[str] = []
+    params: list = []
+    if role == "engineer" and username:
+        conditions.append(
+            "(created_by = ? OR (COALESCE(created_by, '') = '' AND LOWER(engineer_name) = LOWER(?)))"
+        )
+        params.extend([username, full_name or username])
+    if key != "%%":
+        conditions.append(
+            "(project_id LIKE ? OR project_name LIKE ? OR client_name LIKE ? "
+            "OR project_location LIKE ? OR project_no LIKE ? OR engineer_name LIKE ?)"
+        )
+        params.extend([key, key, key, key, key, key])
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     cursor.execute(
-        _HISTORY_SQL
-        + """
-        WHERE project_id LIKE ? OR project_name LIKE ? OR client_name LIKE ?
-           OR project_location LIKE ? OR project_no LIKE ? OR engineer_name LIKE ?
-        ORDER BY updated_at DESC LIMIT ?
-        """,
-        (key, key, key, key, key, key, limit),
+        _HISTORY_SQL + where + " ORDER BY updated_at DESC LIMIT ?",
+        tuple(params) + (limit,),
     )
     rows = [_row_to_summary(r) for r in cursor.fetchall()]
     conn.close()

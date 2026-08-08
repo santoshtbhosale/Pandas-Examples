@@ -31,6 +31,17 @@ class UserSession:
     def can_launch_water_demand(self) -> bool:
         return self.role in (ROLE_ADMIN, ROLE_ENGINEER)
 
+    def can_access_project(self, created_by: str = "", engineer_name: str = "") -> bool:
+        """Admin sees all projects; engineers only their own."""
+        if self.role == ROLE_ADMIN:
+            return True
+        if self.role != ROLE_ENGINEER:
+            return False
+        owner = (created_by or "").strip()
+        if not owner:
+            return (engineer_name or "").strip().lower() == self.full_name.strip().lower()
+        return owner == self.username
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "user_id": self.user_id,

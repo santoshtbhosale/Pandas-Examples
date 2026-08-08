@@ -287,6 +287,8 @@ def parse_building_config(config: str) -> Tuple[int, float]:
         above = int(m.group(3))
     elif re.match(r"^G\+(\d+)$", text):
         above = int(re.match(r"^G\+(\d+)$", text).group(1))
+    else:
+        return 0, 0.0
     total_floors = basements + 1 + above
     height = total_floors * FLOOR_HEIGHT_M
     return above, height

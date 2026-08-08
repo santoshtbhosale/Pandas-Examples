@@ -84,7 +84,7 @@ class Application(ctk.CTk):
         if self.current_user is None:
             return
         try:
-            self._pending_state = load_project_state(project_id, DB_PATH)
+            self._pending_state = load_project_state(project_id, DB_PATH, user=self.current_user)
         except ValueError as exc:
             from tkinter import messagebox
             messagebox.showerror("Open Project", str(exc))
@@ -100,6 +100,8 @@ class Application(ctk.CTk):
     def _launch_water_demand(self, initial_state: Optional[AppState]) -> None:
         if self.current_user is None:
             return
+        from _app_sidebar import WaterDemandApp
+
         self.withdraw()
         self._water_app = WaterDemandApp(
             current_user=self.current_user,

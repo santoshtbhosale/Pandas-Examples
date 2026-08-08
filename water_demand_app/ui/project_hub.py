@@ -109,7 +109,7 @@ class ProjectHub(ctk.CTkFrame):
         self._row_widgets.clear()
         self._selected_id = None
 
-        projects = find_projects(query)
+        projects = find_projects(query, user=self.user)
         if not projects:
             ctk.CTkLabel(
                 self.history_frame,

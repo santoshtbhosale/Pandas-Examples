@@ -10,6 +10,7 @@ from models.project import ProjectData, RevisionInfo
 from models.user import UserSession
 from services.database import (
     DB_PATH,
+    get_project_summary,
     load_project_from_db,
     parse_project_snapshot,
     project_exists,
@@ -56,8 +57,18 @@ def create_new_project_state(user: Optional[UserSession] = None, db_path: str = 
     return state
 
 
-def load_project_state(project_id: str, db_path: str = DB_PATH) -> AppState:
+def load_project_state(
+    project_id: str,
+    db_path: str = DB_PATH,
+    user: Optional[UserSession] = None,
+) -> AppState:
     """Load an existing project into AppState."""
+    summary = get_project_summary(project_id, db_path)
+    if summary and user and not user.can_access_project(
+        summary.get("created_by", ""),
+        summary.get("engineer_name", ""),
+    ):
+        raise ValueError("You do not have permission to open this project.")
     data = load_project_from_db(project_id, db_path)
     project, residential, commercial, other, calculated = parse_project_snapshot(data)
     state = AppState()
@@ -91,5 +102,15 @@ def persist_project_state(
     )
 
 
-def find_projects(query: str = "", limit: int = 50, db_path: str = DB_PATH):
-    return search_projects(query, limit=limit, db_path=db_path)
+def find_projects(
+    query: str = "",
+    limit: int = 50,
+    db_path: str = DB_PATH,
+    user: Optional[UserSession] = None,
+):
+    username = user.username if user else ""
+    role = user.role if user else ""
+    full_name = user.full_name if user else ""
+    return search_projects(
+        query, limit=limit, db_path=db_path, username=username, role=role, full_name=full_name
+    )

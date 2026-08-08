@@ -898,11 +898,3 @@ def _load_json_file(fp):
     with open(fp, encoding="utf-8") as f:
         data = json.load(f)
     return parse_project_snapshot(data)
-
-
-def main():
-    WaterDemandApp().mainloop()
-
-
-if __name__ == "__main__":
-    main()

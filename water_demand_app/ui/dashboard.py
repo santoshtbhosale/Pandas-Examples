@@ -90,7 +90,7 @@ class DashboardScreen(ctk.CTkFrame):
         stats.grid(row=2, column=0, sticky="ew", pady=(0, 16))
         stats.grid_columnconfigure((0, 1, 2), weight=1)
 
-        project_count = len(find_projects())
+        project_count = len(find_projects(user=self.user))
         can_launch = self.user.can_launch_water_demand()
         self._stat_card(stats, 0, "Saved Projects", str(project_count), "In database")
         self._stat_card(stats, 1, "Active Users", str(count_active_users()), "Registered accounts")

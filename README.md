@@ -11,8 +11,15 @@ Python desktop application (CustomTkinter) for engineering reports.
 
 ```bash
 pip install -r requirements.txt
-python main.py
+python build_main.py   # bundle modules into main.py
+python main.py           # Splash → Login → Dashboard → Water Demand
 ```
+
+Default logins: `admin` / `Admin@123`, `akash` / `Akash@123` (engineer), `omkar` / `Omkar@123` (viewer).
+
+Place reference files in `templates/`:
+- `WaterDemand_Template.xlsx` — master Excel template
+- `Comments.docx` — engineering rules reference
 
 ## Rain Water Harvesting
 
