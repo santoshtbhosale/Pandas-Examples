@@ -11,7 +11,6 @@ from config.nbc_2026 import (
     UGT_FIRE_DAYS,
     active_plots,
     commercial_demand,
-    fire_tank_capacity_liters,
     hvac_applicable,
     landscape_demand,
     normalize_plot_for_calc,
@@ -64,18 +63,12 @@ class WaterDemandCalculator:
         return normalize_plot_for_calc(item_plot) == plot
 
     def _apply_auto_fire_tanks(self) -> None:
+        from services.automation import auto_fire_tank_liters
+
         for plot in self._plots:
-            heights_types = [
-                (w.building_height_m, w.building_type)
-                for w in self.residential
-                if self._on_plot(w.plot, plot) and w.building_height_m > 0
-            ]
-            if heights_types:
-                max_height = max(h for h, _ in heights_types)
-                btype = next((t for h, t in heights_types if h == max_height), "")
-                self.other.fire_tank[plot] = float(
-                    fire_tank_capacity_liters(max_height, btype)
-                )
+            self.other.fire_tank[plot] = float(
+                auto_fire_tank_liters(plot, self.residential, self.project, self.other)
+            )
 
     def _calculate_plot(self, plot: str) -> PlotResults:
         plot_res = PlotResults(plot=plot)

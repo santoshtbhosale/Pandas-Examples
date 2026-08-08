@@ -133,7 +133,7 @@ class CommercialPage(ScrollablePage):
                 dom_lbl.configure(text="0")
                 flu_lbl.configure(text="0")
                 tot_lbl.configure(text="0")
-            self.state.auto_calculate()
+            self._sync_and_calculate()
 
         area_ent.bind("<KeyRelease>", update)
         type_var.trace_add("write", update)
@@ -154,7 +154,7 @@ class CommercialPage(ScrollablePage):
                 w.destroy()
             self.rows = [row for row in self.rows if row["row_idx"] != r]
             self._regrid()
-            self.state.auto_calculate()
+            self._sync_and_calculate()
 
         rm_btn = ctk.CTkButton(self.table_frame, text="X", width=28, fg_color="#C0392B", command=remove_row)
         rm_btn.grid(row=r, column=9, padx=3, pady=5)
@@ -178,6 +178,11 @@ class CommercialPage(ScrollablePage):
             row["row_idx"] = i
             for j, widget in enumerate(row["widgets"]):
                 widget.grid(row=i, column=j, padx=3, pady=5)
+
+    def _sync_and_calculate(self) -> None:
+        from services.automation import commercial_from_ui_rows
+        self.state.commercial = commercial_from_ui_rows(self.rows, self.state.project.plot_mode)
+        self.state.auto_calculate()
 
     def _save_and_next(self) -> None:
         units: list = []

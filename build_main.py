@@ -91,6 +91,7 @@ FILES = [
     "services/auth_db.py",
     "services/lookup_db.py",
     "services/project_service.py",
+    "services/automation.py",
     "services/pdf_exporter.py",
     "services/excel_exporter.py",
     "ui/components/validation.py",

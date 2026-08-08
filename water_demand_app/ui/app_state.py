@@ -53,6 +53,8 @@ class AppState:
     def auto_calculate(self) -> None:
         """Recalculate whenever inputs change (no manual Calculate button)."""
         try:
+            from services.automation import prepare_live_calculation
+            prepare_live_calculation(self)
             self.run_calculations()
         except Exception:
             self.results = None

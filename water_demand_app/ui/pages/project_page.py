@@ -144,7 +144,7 @@ class ProjectPage(ScrollablePage):
         self.height_entry = ctk.CTkEntry(self.form, width=120)
         self.height_entry.insert(0, str(self.state.project.building_height_m or ""))
         self.height_entry.grid(row=row, column=1, padx=20, pady=8, sticky="w")
-        self.height_entry.bind("<KeyRelease>", lambda *_: self.state.auto_calculate())
+        self.height_entry.bind("<KeyRelease>", lambda *_: self._sync_building_height())
         row += 1
 
         ctk.CTkLabel(self.form, text="Number of Wings", font=("Arial", 14)).grid(
@@ -261,10 +261,16 @@ class ProjectPage(ScrollablePage):
     def _sync_building_height(self) -> None:
         if not self._details_visible:
             return
-        _, height = parse_building_config(self.building_config_var.get())
+        config = self.building_config_var.get().strip()
+        _, height = parse_building_config(config)
         if height > 0 and not self.height_entry.get().strip():
             self.height_entry.delete(0, "end")
             self.height_entry.insert(0, str(int(height)))
+        self.state.project.building_config = config
+        try:
+            self.state.project.building_height_m = float(self.height_entry.get() or height or 0)
+        except ValueError:
+            pass
         self.state.auto_calculate()
 
     def _on_project_type_selected(self, _choice: str) -> None:

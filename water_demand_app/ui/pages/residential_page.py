@@ -183,7 +183,7 @@ class ResidentialPage(ScrollablePage):
                 tot_lbl.configure(text="0")
                 kit_lbl.configure(text="0")
             self._update_subtotals()
-            self.state.auto_calculate()
+            self._sync_and_calculate()
 
         for ent in (ht_ent, wings_ent, b1_ent, b2_ent, b3_ent, b4_ent, ph_ent):
             ent.bind("<KeyRelease>", update)
@@ -204,7 +204,7 @@ class ResidentialPage(ScrollablePage):
             self.rows = [row for row in self.rows if row["row_idx"] != r]
             self._regrid()
             self._update_subtotals()
-            self.state.auto_calculate()
+            self._sync_and_calculate()
 
         rm_btn = ctk.CTkButton(self.table_frame, text="X", width=26, fg_color="#C0392B", command=remove_row)
         rm_btn.grid(row=r, column=16, padx=1, pady=4)
@@ -251,6 +251,11 @@ class ResidentialPage(ScrollablePage):
                 pass
         for plot, lbl in self.subtotal_labels.items():
             lbl.configure(text=f"{plot} Population: {totals.get(plot, 0):,}")
+
+    def _sync_and_calculate(self) -> None:
+        from services.automation import wings_from_ui_rows
+        self.state.residential = wings_from_ui_rows(self.rows, self.state.project.plot_mode)
+        self.state.auto_calculate()
 
     def _save_and_next(self) -> None:
         wings: list = []

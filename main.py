@@ -1175,18 +1175,11 @@ class WaterDemandCalculator:
         return normalize_plot_for_calc(item_plot) == plot
 
     def _apply_auto_fire_tanks(self) -> None:
+
         for plot in self._plots:
-            heights_types = [
-                (w.building_height_m, w.building_type)
-                for w in self.residential
-                if self._on_plot(w.plot, plot) and w.building_height_m > 0
-            ]
-            if heights_types:
-                max_height = max(h for h, _ in heights_types)
-                btype = next((t for h, t in heights_types if h == max_height), "")
-                self.other.fire_tank[plot] = float(
-                    fire_tank_capacity_liters(max_height, btype)
-                )
+            self.other.fire_tank[plot] = float(
+                auto_fire_tank_liters(plot, self.residential, self.project, self.other)
+            )
 
     def _calculate_plot(self, plot: str) -> PlotResults:
         plot_res = PlotResults(plot=plot)
@@ -2317,6 +2310,183 @@ def persist_project_state(
 
 def find_projects(query: str = "", limit: int = 50, db_path: str = DB_PATH):
     return search_projects(query, limit=limit, db_path=db_path)
+
+# ==================== services/automation.py ====================
+"""Live automation — sync UI inputs to state and apply building parser rules."""
+
+
+
+
+
+def apply_building_parser(project: ProjectData, residential: List[ResidentialWing]) -> None:
+    """Parse building configuration into height/floors and propagate to wings."""
+    if not project.building_config:
+        return
+    floors_above, est_height = parse_building_config(project.building_config)
+    if est_height > 0 and project.building_height_m <= 0:
+        project.building_height_m = est_height
+    for wing in residential:
+        if not wing.building_config or wing.building_config == "G+7":
+            wing.building_config = project.building_config
+        if wing.building_height_m <= 0 and project.building_height_m > 0:
+            wing.building_height_m = project.building_height_m
+        if not wing.building_type:
+            wing.building_type = project.building_type
+        if wing.num_wings <= 0 and project.num_wings > 0:
+            wing.num_wings = project.num_wings
+        elif wing.building_config and wing.building_height_m <= 0:
+            _, wh = parse_building_config(wing.building_config)
+            if wh > 0:
+                wing.building_height_m = wh
+
+
+def wings_from_ui_rows(rows: List[dict], plot_mode: str) -> List[ResidentialWing]:
+    """Best-effort sync of residential table rows (no validation)."""
+    wings: List[ResidentialWing] = []
+    for idx, row in enumerate(rows):
+        try:
+            wing_name = (row["wing"].get() or "").strip()
+            if not wing_name:
+                continue
+            wings.append(
+                ResidentialWing(
+                    plot=ui_plot_label(row["plot"].get(), plot_mode),
+                    wing=wing_name,
+                    building_config=row["config"].get(),
+                    building_type=row["btype"].get(),
+                    building_height_m=float(row["height"].get() or 0),
+                    num_wings=max(1, int(row["num_wings"].get() or 1)),
+                    flats_1bhk=max(0, int(row["b1"].get() or 0)),
+                    flats_2bhk=max(0, int(row["b2"].get() or 0)),
+                    flats_3bhk=max(0, int(row["b3"].get() or 0)),
+                    flats_4bhk=max(0, int(row["b4"].get() or 0)),
+                    flats_penthouse=max(0, int(row["ph"].get() or 0)),
+                    sort_order=idx,
+                )
+            )
+        except (ValueError, KeyError, TypeError):
+            continue
+    return wings
+
+
+def commercial_from_ui_rows(rows: List[dict], plot_mode: str) -> List[CommercialUnit]:
+    """Best-effort sync of commercial table rows (no validation)."""
+    units: List[CommercialUnit] = []
+    for idx, row in enumerate(rows):
+        try:
+            area = float(row["area"].get() or 0)
+            if area <= 0:
+                continue
+            block = (row["block"].get() or "").strip()
+            if not block:
+                continue
+            units.append(
+                CommercialUnit(
+                    plot=ui_plot_label(row["plot"].get(), plot_mode),
+                    block=block,
+                    comm_type=row["type"].get(),
+                    floor_label=(row["floor"].get() or "").strip(),
+                    area_sqm=area,
+                    sort_order=idx,
+                )
+            )
+        except (ValueError, KeyError, TypeError):
+            continue
+    return units
+
+
+def sync_landscape(other: OtherDetails, entries: Dict[str, Any]) -> None:
+    for plot, entry in entries.items():
+        try:
+            other.landscape_area[plot] = float(entry.get() or 0)
+        except (ValueError, TypeError):
+            other.landscape_area[plot] = 0.0
+
+
+def sync_hvac(other: OtherDetails, entries: Dict[str, Any]) -> None:
+    for plot, entry in entries.items():
+        try:
+            other.hvac_water[plot] = float(entry.get() or 0)
+        except (ValueError, TypeError):
+            other.hvac_water[plot] = 0.0
+
+
+def sync_swimming_pool(
+    other: OtherDetails,
+    volume_entries: Dict[str, Any],
+    status_vars: Dict[str, Any],
+) -> None:
+    for plot, status_var in status_vars.items():
+        status = POOL_STATUS_LABELS.get(status_var.get(), POOL_NOT_APPLICABLE)
+        other.swimming_pool_status[plot] = status
+        other.swimming_pool_na[plot] = status == POOL_NOT_APPLICABLE
+        if status == POOL_NOT_APPLICABLE:
+            other.swimming_pool[plot] = 0.0
+        else:
+            try:
+                other.swimming_pool[plot] = float(volume_entries[plot].get() or 0)
+            except (ValueError, TypeError, KeyError):
+                other.swimming_pool[plot] = 0.0
+
+
+def auto_fire_tank_liters(
+    plot: str,
+    residential: List[ResidentialWing],
+    project: ProjectData,
+    other: OtherDetails,
+) -> int:
+    """Resolve fire tank capacity from wings or project-level building data."""
+    heights_types = [
+        (w.building_height_m, w.building_type)
+        for w in residential
+        if w.plot == plot and w.building_height_m > 0
+    ]
+    if heights_types:
+        max_height = max(h for h, _ in heights_types)
+        btype = next((t for h, t in heights_types if h == max_height), "")
+        return fire_tank_capacity_liters(max_height, btype)
+    if project.building_height_m > 0:
+        return fire_tank_capacity_liters(
+            project.building_height_m,
+            project.building_type or "Residential Apartment",
+        )
+    return int(other.fire_tank.get(plot, 0))
+
+
+def apply_fire_tanks(state: AppState) -> None:
+    """Auto-populate fire tank capacities for all active plots."""
+
+    for plot in active_plots(state.project.plot_mode):
+        state.other.fire_tank[plot] = float(
+            auto_fire_tank_liters(plot, state.residential, state.project, state.other)
+        )
+
+
+def prepare_live_calculation(state: AppState) -> None:
+    """Run all automation steps before calculator executes."""
+    apply_building_parser(state.project, state.residential)
+    apply_fire_tanks(state)
+
+
+def sync_pages_to_state(app: Any) -> None:
+    """Pull current UI page inputs into AppState (called before live calc)."""
+    state = app.app_state
+    res_page = app.pages.get("Residential")
+    if res_page and hasattr(res_page, "rows"):
+        state.residential = wings_from_ui_rows(res_page.rows, state.project.plot_mode)
+
+    com_page = app.pages.get("Commercial")
+    if com_page and hasattr(com_page, "rows"):
+        state.commercial = commercial_from_ui_rows(com_page.rows, state.project.plot_mode)
+
+    if hasattr(app, "_le"):
+        sync_landscape(state.other, app._le)
+    if hasattr(app, "_he"):
+        sync_hvac(state.other, app._he)
+    if hasattr(app, "_pe") and hasattr(app, "_pool_status"):
+        sync_swimming_pool(state.other, app._pe, app._pool_status)
+
+    prepare_live_calculation(state)
 
 # ==================== services/pdf_exporter.py ====================
 
@@ -3844,6 +4014,7 @@ class AppState:
     def auto_calculate(self) -> None:
         """Recalculate whenever inputs change (no manual Calculate button)."""
         try:
+            prepare_live_calculation(self)
             self.run_calculations()
         except Exception:
             self.results = None
@@ -4798,7 +4969,7 @@ class ProjectPage(ScrollablePage):
         self.height_entry = ctk.CTkEntry(self.form, width=120)
         self.height_entry.insert(0, str(self.state.project.building_height_m or ""))
         self.height_entry.grid(row=row, column=1, padx=20, pady=8, sticky="w")
-        self.height_entry.bind("<KeyRelease>", lambda *_: self.state.auto_calculate())
+        self.height_entry.bind("<KeyRelease>", lambda *_: self._sync_building_height())
         row += 1
 
         ctk.CTkLabel(self.form, text="Number of Wings", font=("Arial", 14)).grid(
@@ -4915,10 +5086,16 @@ class ProjectPage(ScrollablePage):
     def _sync_building_height(self) -> None:
         if not self._details_visible:
             return
-        _, height = parse_building_config(self.building_config_var.get())
+        config = self.building_config_var.get().strip()
+        _, height = parse_building_config(config)
         if height > 0 and not self.height_entry.get().strip():
             self.height_entry.delete(0, "end")
             self.height_entry.insert(0, str(int(height)))
+        self.state.project.building_config = config
+        try:
+            self.state.project.building_height_m = float(self.height_entry.get() or height or 0)
+        except ValueError:
+            pass
         self.state.auto_calculate()
 
     def _on_project_type_selected(self, _choice: str) -> None:
@@ -5207,7 +5384,7 @@ class ResidentialPage(ScrollablePage):
                 tot_lbl.configure(text="0")
                 kit_lbl.configure(text="0")
             self._update_subtotals()
-            self.state.auto_calculate()
+            self._sync_and_calculate()
 
         for ent in (ht_ent, wings_ent, b1_ent, b2_ent, b3_ent, b4_ent, ph_ent):
             ent.bind("<KeyRelease>", update)
@@ -5228,7 +5405,7 @@ class ResidentialPage(ScrollablePage):
             self.rows = [row for row in self.rows if row["row_idx"] != r]
             self._regrid()
             self._update_subtotals()
-            self.state.auto_calculate()
+            self._sync_and_calculate()
 
         rm_btn = ctk.CTkButton(self.table_frame, text="X", width=26, fg_color="#C0392B", command=remove_row)
         rm_btn.grid(row=r, column=16, padx=1, pady=4)
@@ -5289,6 +5466,10 @@ class ResidentialPage(ScrollablePage):
                 pass
         for plot, lbl in self.subtotal_labels.items():
             lbl.configure(text=f"{plot} Population: {totals.get(plot, 0):,}")
+
+    def _sync_and_calculate(self) -> None:
+        self.state.residential = wings_from_ui_rows(self.rows, self.state.project.plot_mode)
+        self.state.auto_calculate()
 
     def _save_and_next(self) -> None:
         wings: list = []
@@ -5447,7 +5628,7 @@ class CommercialPage(ScrollablePage):
                 dom_lbl.configure(text="0")
                 flu_lbl.configure(text="0")
                 tot_lbl.configure(text="0")
-            self.state.auto_calculate()
+            self._sync_and_calculate()
 
         area_ent.bind("<KeyRelease>", update)
         type_var.trace_add("write", update)
@@ -5468,7 +5649,7 @@ class CommercialPage(ScrollablePage):
                 w.destroy()
             self.rows = [row for row in self.rows if row["row_idx"] != r]
             self._regrid()
-            self.state.auto_calculate()
+            self._sync_and_calculate()
 
         rm_btn = ctk.CTkButton(self.table_frame, text="X", width=28, fg_color="#C0392B", command=remove_row)
         rm_btn.grid(row=r, column=9, padx=3, pady=5)
@@ -5506,6 +5687,10 @@ class CommercialPage(ScrollablePage):
             row["row_idx"] = i
             for j, widget in enumerate(row["widgets"]):
                 widget.grid(row=i, column=j, padx=3, pady=5)
+
+    def _sync_and_calculate(self) -> None:
+        self.state.commercial = commercial_from_ui_rows(self.rows, self.state.project.plot_mode)
+        self.state.auto_calculate()
 
     def _save_and_next(self) -> None:
         units: list = []
@@ -7431,10 +7616,14 @@ class WaterDemandApp(ctk.CTk):
             entry = ctk.CTkEntry(form, width=220)
             entry.insert(0, str(self.app_state.other.landscape_area.get(plot, 765 if plot == "Plot-A" else 762)))
             entry.grid(row=i, column=1, padx=10, pady=8, sticky="w")
-            entry.bind("<KeyRelease>", lambda *_: self._calc())
+            entry.bind("<KeyRelease>", lambda *_: (self._sync_landscape_live(), self._calc()))
             self._le[plot] = entry
-        ctk.CTkLabel(parent, text="Auto: 6 L/sq.m/day per NBC-2026", font=("Arial", 11, "italic")).pack(anchor="w", padx=20)
+        ctk.CTkLabel(parent, text="Auto: 6 L/sq.m/day per NBC-2026 (live)", font=("Arial", 11, "italic")).pack(anchor="w", padx=20)
         ctk.CTkButton(parent, text="Next ->", fg_color=BRAND_ORANGE, command=self._save_landscape).pack(pady=12)
+
+    def _sync_landscape_live(self) -> None:
+        if hasattr(self, "_le"):
+            sync_landscape(self.app_state.other, self._le)
 
     def _save_landscape(self):
         try:
@@ -7464,15 +7653,19 @@ class WaterDemandApp(ctk.CTk):
                 values=list(POOL_STATUS_LABELS.keys()),
                 variable=status_var,
                 width=180,
-                command=lambda *_: self._calc(),
+                command=lambda *_: (self._sync_pool_live(), self._calc()),
             ).grid(row=i, column=1, padx=10, pady=8, sticky="w")
             self._pool_status[plot] = status_var
             entry = ctk.CTkEntry(form, width=180)
             entry.insert(0, str(int(self.app_state.other.swimming_pool.get(plot, 0))))
             entry.grid(row=i, column=2, padx=10, pady=8, sticky="w")
-            entry.bind("<KeyRelease>", lambda *_: self._calc())
+            entry.bind("<KeyRelease>", lambda *_: (self._sync_pool_live(), self._calc()))
             self._pe[plot] = entry
         ctk.CTkButton(parent, text="Next ->", fg_color=BRAND_ORANGE, command=self._save_pool).pack(pady=12)
+
+    def _sync_pool_live(self) -> None:
+        if hasattr(self, "_pe") and hasattr(self, "_pool_status"):
+            sync_swimming_pool(self.app_state.other, self._pe, self._pool_status)
 
     def _save_pool(self):
         for plot in self._plots():
@@ -7497,14 +7690,18 @@ class WaterDemandApp(ctk.CTk):
             entry = ctk.CTkEntry(form, width=220)
             entry.insert(0, str(int(self.app_state.other.hvac_water.get(plot, 0))))
             entry.grid(row=i, column=1, padx=10, pady=8, sticky="w")
-            entry.bind("<KeyRelease>", lambda *_: self._calc())
+            entry.bind("<KeyRelease>", lambda *_: (self._sync_hvac_live(), self._calc()))
             self._he[plot] = entry
         ctk.CTkButton(
             parent,
-            text="Save & Next",
+            text="Next ->",
             fg_color=BRAND_ORANGE,
-            command=lambda: (self._save_dict(self._he, self.app_state.other.hvac_water), self._calc(), self._wizard_show_next("HVAC")),
+            command=lambda: (self._sync_hvac_live(), self._calc(), self._wizard_show_next("HVAC")),
         ).pack(pady=12)
+
+    def _sync_hvac_live(self) -> None:
+        if hasattr(self, "_he"):
+            sync_hvac(self.app_state.other, self._he)
 
     def _plot_building_info(self, plot: str) -> tuple[float, str]:
         heights_types = [
@@ -7578,11 +7775,15 @@ class WaterDemandApp(ctk.CTk):
         ).pack(anchor="w", padx=20, pady=(0, 5))
         self.oht_box = ctk.CTkTextbox(frame, height=420, font=("Courier", 11))
         self.oht_box.pack(fill="both", expand=True, padx=15, pady=10)
-        ctk.CTkButton(frame, text="Refresh OHT", fg_color=BRAND_ORANGE, command=self._refresh_oht).pack(pady=10)
+        ctk.CTkLabel(
+            frame,
+            text="Updates automatically as you enter data on other pages.",
+            font=("Arial", 10, "italic"),
+            text_color="#666666",
+        ).pack(pady=(0, 8))
         return frame
 
-    def _refresh_oht(self) -> None:
-        self._calc()
+    def _refresh_oht(self, silent: bool = False) -> None:
         lines = ["OHT DETAILS (auto-calculated)", "=" * 60, ""]
         if not self.app_state.results:
             lines.append("Enter residential/commercial data first.")
@@ -7614,11 +7815,15 @@ class WaterDemandApp(ctk.CTk):
         ctk.CTkLabel(header, text="STP Summary", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
         self.stp_box = ctk.CTkTextbox(frame, height=420, font=("Courier", 11))
         self.stp_box.pack(fill="both", expand=True, padx=15, pady=10)
-        ctk.CTkButton(frame, text="Refresh STP", fg_color=BRAND_ORANGE, command=self._refresh_stp).pack(pady=10)
+        ctk.CTkLabel(
+            frame,
+            text="Updates automatically as you enter data on other pages.",
+            font=("Arial", 10, "italic"),
+            text_color="#666666",
+        ).pack(pady=(0, 8))
         return frame
 
-    def _refresh_stp(self):
-        self._calc()
+    def _refresh_stp(self, silent: bool = False):
         if not self.app_state.results:
             self.stp_box.delete("1.0", "end")
             self.stp_box.insert("1.0", "Enter project data to calculate STP.")
@@ -7644,9 +7849,12 @@ class WaterDemandApp(ctk.CTk):
         ctk.CTkLabel(header, text="Report Preview", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
         self.preview_box = ctk.CTkTextbox(frame, height=360, font=("Courier", 11))
         self.preview_box.pack(fill="both", expand=True, padx=15, pady=10)
-        ctk.CTkButton(frame, text="Calculate & Refresh Summary", fg_color="#8E44AD", height=42, command=self._refresh_preview).pack(
-            pady=10
-        )
+        ctk.CTkLabel(
+            frame,
+            text="Summary updates live — no Calculate button required.",
+            font=("Arial", 10, "italic"),
+            text_color="#666666",
+        ).pack(pady=(0, 6))
         ctk.CTkButton(frame, text="Open Full Preview", fg_color="#2980B9", height=38, command=self._open_preview).pack(pady=6)
         ctk.CTkButton(
             frame,
@@ -7657,8 +7865,7 @@ class WaterDemandApp(ctk.CTk):
         ).pack(pady=6)
         return frame
 
-    def _refresh_preview(self) -> None:
-        self._calc()
+    def _refresh_preview(self, silent: bool = False) -> None:
         lines = ["WATER DEMAND REPORT SUMMARY", "=" * 60, ""]
         if not self.app_state.results:
             lines.append("Complete Project, Residential, and Commercial pages first.")
@@ -7757,7 +7964,8 @@ class WaterDemandApp(ctk.CTk):
         elif name == "OHT":
             self._refresh_oht()
         elif name == "Preview":
-            self._refresh_preview()
+            self._calc()
+            self._refresh_preview(silent=True)
         elif name == "UGT":
             self._refresh_ugt()
         elif name == "Report" and hasattr(page, "refresh"):
@@ -7767,9 +7975,22 @@ class WaterDemandApp(ctk.CTk):
 
     def _calc(self):
         try:
+            sync_pages_to_state(self)
             self.app_state.auto_calculate()
+            self._refresh_live_panels()
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
+
+    def _refresh_live_panels(self) -> None:
+        """Update auto-calculated panels without manual refresh buttons."""
+        if hasattr(self, "_ugt_labels"):
+            self._refresh_ugt()
+        if self._current_page == "OHT" and hasattr(self, "oht_box"):
+            self._refresh_oht(silent=True)
+        elif self._current_page == "STP" and hasattr(self, "stp_box"):
+            self._refresh_stp(silent=True)
+        elif self._current_page == "Preview" and hasattr(self, "preview_box"):
+            self._refresh_preview(silent=True)
 
     def _open_preview(self):
         self._calc()

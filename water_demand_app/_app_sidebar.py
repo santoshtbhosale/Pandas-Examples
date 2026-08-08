@@ -339,10 +339,15 @@ class WaterDemandApp(ctk.CTk):
             entry = ctk.CTkEntry(form, width=220)
             entry.insert(0, str(self.app_state.other.landscape_area.get(plot, 765 if plot == "Plot-A" else 762)))
             entry.grid(row=i, column=1, padx=10, pady=8, sticky="w")
-            entry.bind("<KeyRelease>", lambda *_: self._calc())
+            entry.bind("<KeyRelease>", lambda *_: (self._sync_landscape_live(), self._calc()))
             self._le[plot] = entry
-        ctk.CTkLabel(parent, text="Auto: 6 L/sq.m/day per NBC-2026", font=("Arial", 11, "italic")).pack(anchor="w", padx=20)
+        ctk.CTkLabel(parent, text="Auto: 6 L/sq.m/day per NBC-2026 (live)", font=("Arial", 11, "italic")).pack(anchor="w", padx=20)
         ctk.CTkButton(parent, text="Next ->", fg_color=BRAND_ORANGE, command=self._save_landscape).pack(pady=12)
+
+    def _sync_landscape_live(self) -> None:
+        from services.automation import sync_landscape
+        if hasattr(self, "_le"):
+            sync_landscape(self.app_state.other, self._le)
 
     def _save_landscape(self):
         try:
@@ -372,15 +377,20 @@ class WaterDemandApp(ctk.CTk):
                 values=list(POOL_STATUS_LABELS.keys()),
                 variable=status_var,
                 width=180,
-                command=lambda *_: self._calc(),
+                command=lambda *_: (self._sync_pool_live(), self._calc()),
             ).grid(row=i, column=1, padx=10, pady=8, sticky="w")
             self._pool_status[plot] = status_var
             entry = ctk.CTkEntry(form, width=180)
             entry.insert(0, str(int(self.app_state.other.swimming_pool.get(plot, 0))))
             entry.grid(row=i, column=2, padx=10, pady=8, sticky="w")
-            entry.bind("<KeyRelease>", lambda *_: self._calc())
+            entry.bind("<KeyRelease>", lambda *_: (self._sync_pool_live(), self._calc()))
             self._pe[plot] = entry
         ctk.CTkButton(parent, text="Next ->", fg_color=BRAND_ORANGE, command=self._save_pool).pack(pady=12)
+
+    def _sync_pool_live(self) -> None:
+        from services.automation import sync_swimming_pool
+        if hasattr(self, "_pe") and hasattr(self, "_pool_status"):
+            sync_swimming_pool(self.app_state.other, self._pe, self._pool_status)
 
     def _save_pool(self):
         for plot in self._plots():
@@ -405,14 +415,19 @@ class WaterDemandApp(ctk.CTk):
             entry = ctk.CTkEntry(form, width=220)
             entry.insert(0, str(int(self.app_state.other.hvac_water.get(plot, 0))))
             entry.grid(row=i, column=1, padx=10, pady=8, sticky="w")
-            entry.bind("<KeyRelease>", lambda *_: self._calc())
+            entry.bind("<KeyRelease>", lambda *_: (self._sync_hvac_live(), self._calc()))
             self._he[plot] = entry
         ctk.CTkButton(
             parent,
-            text="Save & Next",
+            text="Next ->",
             fg_color=BRAND_ORANGE,
-            command=lambda: (self._save_dict(self._he, self.app_state.other.hvac_water), self._calc(), self._wizard_show_next("HVAC")),
+            command=lambda: (self._sync_hvac_live(), self._calc(), self._wizard_show_next("HVAC")),
         ).pack(pady=12)
+
+    def _sync_hvac_live(self) -> None:
+        from services.automation import sync_hvac
+        if hasattr(self, "_he"):
+            sync_hvac(self.app_state.other, self._he)
 
     def _plot_building_info(self, plot: str) -> tuple[float, str]:
         heights_types = [
@@ -486,11 +501,15 @@ class WaterDemandApp(ctk.CTk):
         ).pack(anchor="w", padx=20, pady=(0, 5))
         self.oht_box = ctk.CTkTextbox(frame, height=420, font=("Courier", 11))
         self.oht_box.pack(fill="both", expand=True, padx=15, pady=10)
-        ctk.CTkButton(frame, text="Refresh OHT", fg_color=BRAND_ORANGE, command=self._refresh_oht).pack(pady=10)
+        ctk.CTkLabel(
+            frame,
+            text="Updates automatically as you enter data on other pages.",
+            font=("Arial", 10, "italic"),
+            text_color="#666666",
+        ).pack(pady=(0, 8))
         return frame
 
-    def _refresh_oht(self) -> None:
-        self._calc()
+    def _refresh_oht(self, silent: bool = False) -> None:
         lines = ["OHT DETAILS (auto-calculated)", "=" * 60, ""]
         if not self.app_state.results:
             lines.append("Enter residential/commercial data first.")
@@ -522,11 +541,15 @@ class WaterDemandApp(ctk.CTk):
         ctk.CTkLabel(header, text="STP Summary", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
         self.stp_box = ctk.CTkTextbox(frame, height=420, font=("Courier", 11))
         self.stp_box.pack(fill="both", expand=True, padx=15, pady=10)
-        ctk.CTkButton(frame, text="Refresh STP", fg_color=BRAND_ORANGE, command=self._refresh_stp).pack(pady=10)
+        ctk.CTkLabel(
+            frame,
+            text="Updates automatically as you enter data on other pages.",
+            font=("Arial", 10, "italic"),
+            text_color="#666666",
+        ).pack(pady=(0, 8))
         return frame
 
-    def _refresh_stp(self):
-        self._calc()
+    def _refresh_stp(self, silent: bool = False):
         if not self.app_state.results:
             self.stp_box.delete("1.0", "end")
             self.stp_box.insert("1.0", "Enter project data to calculate STP.")
@@ -552,9 +575,12 @@ class WaterDemandApp(ctk.CTk):
         ctk.CTkLabel(header, text="Report Preview", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
         self.preview_box = ctk.CTkTextbox(frame, height=360, font=("Courier", 11))
         self.preview_box.pack(fill="both", expand=True, padx=15, pady=10)
-        ctk.CTkButton(frame, text="Calculate & Refresh Summary", fg_color="#8E44AD", height=42, command=self._refresh_preview).pack(
-            pady=10
-        )
+        ctk.CTkLabel(
+            frame,
+            text="Summary updates live — no Calculate button required.",
+            font=("Arial", 10, "italic"),
+            text_color="#666666",
+        ).pack(pady=(0, 6))
         ctk.CTkButton(frame, text="Open Full Preview", fg_color="#2980B9", height=38, command=self._open_preview).pack(pady=6)
         ctk.CTkButton(
             frame,
@@ -565,8 +591,7 @@ class WaterDemandApp(ctk.CTk):
         ).pack(pady=6)
         return frame
 
-    def _refresh_preview(self) -> None:
-        self._calc()
+    def _refresh_preview(self, silent: bool = False) -> None:
         lines = ["WATER DEMAND REPORT SUMMARY", "=" * 60, ""]
         if not self.app_state.results:
             lines.append("Complete Project, Residential, and Commercial pages first.")
@@ -668,7 +693,8 @@ class WaterDemandApp(ctk.CTk):
         elif name == "OHT":
             self._refresh_oht()
         elif name == "Preview":
-            self._refresh_preview()
+            self._calc()
+            self._refresh_preview(silent=True)
         elif name == "UGT":
             self._refresh_ugt()
         elif name == "Report" and hasattr(page, "refresh"):
@@ -678,9 +704,23 @@ class WaterDemandApp(ctk.CTk):
 
     def _calc(self):
         try:
+            from services.automation import sync_pages_to_state
+            sync_pages_to_state(self)
             self.app_state.auto_calculate()
+            self._refresh_live_panels()
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
+
+    def _refresh_live_panels(self) -> None:
+        """Update auto-calculated panels without manual refresh buttons."""
+        if hasattr(self, "_ugt_labels"):
+            self._refresh_ugt()
+        if self._current_page == "OHT" and hasattr(self, "oht_box"):
+            self._refresh_oht(silent=True)
+        elif self._current_page == "STP" and hasattr(self, "stp_box"):
+            self._refresh_stp(silent=True)
+        elif self._current_page == "Preview" and hasattr(self, "preview_box"):
+            self._refresh_preview(silent=True)
 
     def _open_preview(self):
         self._calc()
