@@ -13,6 +13,7 @@ from services.lookup_db import init_lookup_tables
 from services.project_service import create_new_project_state, load_project_state
 from ui.app_state import AppState
 from ui.dashboard_router import create_dashboard
+from ui.gui_safe import safe_command
 from ui.login_screen import LoginScreen
 from ui.splash_screen import SplashScreen
 
@@ -70,10 +71,10 @@ class Application(ctk.CTk):
         self._active_screen = create_dashboard(
             self,
             user=self.current_user,
-            on_new_project=self._start_new_project,
-            on_open_project=self._open_project,
-            on_launch_water_demand=self._launch_blank,
-            on_logout=self._logout,
+            on_new_project=safe_command(self._start_new_project, parent=self),
+            on_open_project=safe_command(self._open_project, parent=self),
+            on_launch_water_demand=safe_command(self._launch_blank, parent=self),
+            on_logout=safe_command(self._logout, parent=self),
         )
         self._active_screen.grid(row=0, column=0, sticky="nsew")
 
@@ -107,12 +108,14 @@ class Application(ctk.CTk):
 
         self.withdraw()
         self._water_app = WaterDemandApp(
+            master=self,
             current_user=self.current_user,
             on_logout=self._on_water_app_logout,
             initial_state=initial_state,
             on_autosave=self._on_project_autosaved,
         )
         self._water_app.protocol("WM_DELETE_WINDOW", self._on_water_app_close)
+        self._water_app.focus_force()
 
     def _on_project_autosaved(self) -> None:
         if hasattr(self._active_screen, "refresh_stats"):

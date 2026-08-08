@@ -26,7 +26,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from tkinter import filedialog, messagebox
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 import customtkinter as ctk
 from tkcalendar import DateEntry
@@ -99,6 +99,7 @@ FILES = [
     "services/pdf_exporter.py",
     "services/excel_exporter.py",
     "ui/components/validation.py",
+    "ui/gui_safe.py",
     "ui/app_state.py",
     "ui/components/scrollable_frame.py",
     "ui/components/preview_dialog.py",
@@ -107,6 +108,7 @@ FILES = [
     "ui/dashboard.py",
     "ui/project_hub.py",
     "ui/project_edit_dialog.py",
+    "ui/create_user_dialog.py",
     "ui/project_assign_dialog.py",
     "ui/engineer_dashboard.py",
     "ui/team_leader_dashboard.py",

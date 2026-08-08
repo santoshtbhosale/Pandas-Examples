@@ -243,6 +243,19 @@ def get_user_by_username(username: str, db_path: str = DB_PATH) -> Optional[User
     return _row_to_record(row) if row else None
 
 
+def username_exists(username: str, exclude_user_id: int = 0, db_path: str = DB_PATH) -> bool:
+    init_users_table(db_path)
+    conn = _conn(db_path)
+    cur = conn.cursor()
+    cur.execute(
+        _USER_SELECT + " WHERE LOWER(username) = ? AND user_id != ?",
+        (username.strip().lower(), exclude_user_id),
+    )
+    exists = cur.fetchone() is not None
+    conn.close()
+    return exists
+
+
 def list_team_engineers(team_leader_id: int, db_path: str = DB_PATH) -> List[UserRecord]:
     init_users_table(db_path)
     conn = _conn(db_path)

@@ -1,4 +1,38 @@
 
+import json
+import os
+import re
+from datetime import datetime
+from tkinter import filedialog, messagebox
+
+import customtkinter as ctk
+
+from config.nbc_2026 import (
+    BRAND_NAVY,
+    BRAND_ORANGE,
+    POOL_NOT_APPLICABLE,
+    POOL_STATUS_LABELS,
+    fire_tank_capacity_liters,
+    plot_choices,
+)
+from services.database import DB_PATH, build_project_snapshot, init_db, parse_project_snapshot
+from services.excel_exporter import export_excel
+from services.lookup_db import init_lookup_tables
+from services.pdf_exporter import export_pdf
+from ui.app_state import AppState
+from ui.components.preview_dialog import PreviewDialog
+from ui.components.scrollable_frame import ScrollablePage
+from ui.pages.commercial_page import CommercialPage
+from ui.pages.final_page import FinalPage
+from ui.pages.project_page import ProjectPage
+from ui.pages.residential_page import ResidentialPage
+from ui.pages.rwh_page import RWHPage
+
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+LOGO_PATH = os.path.join(APP_DIR, "assets", "logo.png")
+if not os.path.exists(LOGO_PATH):
+    LOGO_PATH = os.path.join(os.path.dirname(APP_DIR), "logo.png")
+
 # ============================================================
 # MAIN APPLICATION
 # ============================================================
@@ -13,7 +47,9 @@ def _raise_page(page) -> None:
         page.tkraise()
 
 
-class WaterDemandApp(ctk.CTk):
+class WaterDemandApp(ctk.CTkToplevel):
+    """Water Demand calculator — CTkToplevel when embedded, hidden CTk root when standalone."""
+
     NAV = [
         ("Project", "1. Project Details"),
         ("Residential", "2. Residential"),
@@ -33,8 +69,20 @@ class WaterDemandApp(ctk.CTk):
         ("Settings", "Settings"),
     ]
 
-    def __init__(self, current_user=None, on_logout=None, initial_state=None, on_autosave=None):
-        super().__init__()
+    def __init__(
+        self,
+        master=None,
+        current_user=None,
+        on_logout=None,
+        initial_state=None,
+        on_autosave=None,
+    ):
+        self._standalone_root = None
+        if master is None:
+            self._standalone_root = ctk.CTk()
+            self._standalone_root.withdraw()
+            master = self._standalone_root
+        super().__init__(master)
         ctk.set_appearance_mode("light")
         ctk.set_default_color_theme("blue")
         self.current_user = current_user
@@ -63,6 +111,15 @@ class WaterDemandApp(ctk.CTk):
         self._build_pages()
         self.show("Project")
         self._schedule_autosave()
+
+    def destroy(self) -> None:
+        root = self._standalone_root
+        super().destroy()
+        if root is not None:
+            try:
+                root.destroy()
+            except Exception:
+                pass
 
     def _window_title(self) -> str:
         pid = self.app_state.project.project_id

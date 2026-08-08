@@ -18,7 +18,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from tkinter import filedialog, messagebox
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 import customtkinter as ctk
 from tkcalendar import DateEntry
@@ -2243,6 +2243,19 @@ def get_user_by_username(username: str, db_path: str = DB_PATH) -> Optional[User
     row = cur.fetchone()
     conn.close()
     return _row_to_record(row) if row else None
+
+
+def username_exists(username: str, exclude_user_id: int = 0, db_path: str = DB_PATH) -> bool:
+    init_users_table(db_path)
+    conn = _conn(db_path)
+    cur = conn.cursor()
+    cur.execute(
+        _USER_SELECT + " WHERE LOWER(username) = ? AND user_id != ?",
+        (username.strip().lower(), exclude_user_id),
+    )
+    exists = cur.fetchone() is not None
+    conn.close()
+    return exists
 
 
 def list_team_engineers(team_leader_id: int, db_path: str = DB_PATH) -> List[UserRecord]:
@@ -5026,6 +5039,31 @@ def safe_execute(action: Callable, on_error: Callable[[str], None]) -> bool:
         on_error(str(exc))
         return False
 
+# ==================== ui/gui_safe.py ====================
+"""Safe GUI callback wrappers — show errors instead of crashing the application."""
+
+
+
+
+F = TypeVar("F", bound=Callable[..., Any])
+
+
+def safe_command(callback: F, parent: Optional[Any] = None, title: str = "Error") -> F:
+    """Wrap a GUI callback so unexpected exceptions are shown and logged."""
+
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return callback(*args, **kwargs)
+        except Exception as exc:
+            traceback.print_exc()
+            win = parent
+            if win is not None and hasattr(win, "winfo_toplevel"):
+                win = win.winfo_toplevel()
+            messagebox.showerror(title, f"An unexpected error occurred:\n{exc}", parent=win)
+
+    wrapper.__name__ = getattr(callback, "__name__", "safe_command")
+    return wrapper  # type: ignore[return-value]
+
 # ==================== ui/app_state.py ====================
 
 
@@ -5404,92 +5442,161 @@ class SplashScreen(ctk.CTkFrame):
 
 
 
+APP_VERSION = "2.0.0"
+
+
+def _logo_path() -> Optional[str]:
+    base = APP_DIR
+    for candidate in (
+        os.path.join(base, "assets", "logo.png"),
+        os.path.join(os.path.dirname(base), "logo.png"),
+    ):
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
 
 class LoginScreen(ctk.CTkFrame):
-    """Username/password login screen."""
+    """Modern corporate login screen for PlanetCode Engineering Suite."""
 
     def __init__(self, master, on_login_success: Callable[[UserSession], None]) -> None:
-        super().__init__(master, fg_color="#F0F2F5")
+        super().__init__(master, fg_color="#E8EDF2")
         self.on_login_success = on_login_success
+        self._logo_image: Optional[ctk.CTkImage] = None
+        self._loading = False
         self._build()
 
     def _build(self) -> None:
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=0)
-        self.grid_rowconfigure(2, weight=1)
 
-        card = ctk.CTkFrame(self, width=420, corner_radius=12)
-        card.grid(row=1, column=0, pady=20)
+        card = ctk.CTkFrame(self, width=460, corner_radius=16, fg_color="white", border_width=1, border_color="#D9DEE5")
+        card.grid(row=0, column=0, padx=24, pady=24)
         card.grid_propagate(False)
 
-        header = ctk.CTkFrame(card, fg_color=BRAND_NAVY, corner_radius=8)
-        header.pack(fill="x", padx=16, pady=(16, 12))
-        ctk.CTkLabel(header, text="Sign In", font=("Arial", 22, "bold"), text_color="white").pack(pady=14)
+        content = ctk.CTkFrame(card, fg_color="transparent")
+        content.pack(fill="both", expand=True, padx=36, pady=32)
+
+        logo_path = _logo_path()
+        if logo_path:
+            try:
+                img = Image.open(logo_path)
+                self._logo_image = ctk.CTkImage(light_image=img, dark_image=img, size=(96, 96))
+                ctk.CTkLabel(content, text="", image=self._logo_image).pack(pady=(0, 12))
+            except Exception:
+                pass
+
         ctk.CTkLabel(
-            header,
-            text="American Edge Engineers",
-            font=("Arial", 11),
-            text_color=BRAND_ORANGE,
-        ).pack(pady=(0, 10))
+            content,
+            text="PLANETCODE ENGINEERING SUITE",
+            font=("Arial", 18, "bold"),
+            text_color=BRAND_NAVY,
+        ).pack(pady=(0, 4))
+        ctk.CTkLabel(
+            content,
+            text="Engineering Software",
+            font=("Arial", 12),
+            text_color="#5C6B7A",
+        ).pack(pady=(0, 24))
 
-        form = ctk.CTkFrame(card, fg_color="transparent")
-        form.pack(fill="x", padx=24, pady=8)
-
-        ctk.CTkLabel(form, text="Username", font=("Arial", 13), anchor="w").pack(fill="x", pady=(8, 4))
-        self.username_entry = ctk.CTkEntry(form, width=340, placeholder_text="Enter username")
-        self.username_entry.pack(pady=(0, 8))
+        ctk.CTkLabel(content, text="Username / Employee ID", font=("Arial", 12), anchor="w").pack(fill="x", pady=(0, 6))
+        self.username_entry = ctk.CTkEntry(
+            content, height=40, corner_radius=8, placeholder_text="Enter username or employee ID"
+        )
+        self.username_entry.pack(fill="x", pady=(0, 14))
         self.username_entry.bind("<Return>", lambda _e: self._attempt_login())
 
-        ctk.CTkLabel(form, text="Password", font=("Arial", 13), anchor="w").pack(fill="x", pady=(8, 4))
-        self.password_entry = ctk.CTkEntry(form, width=340, show="•", placeholder_text="Enter password")
-        self.password_entry.pack(pady=(0, 8))
+        ctk.CTkLabel(content, text="Password", font=("Arial", 12), anchor="w").pack(fill="x", pady=(0, 6))
+        pwd_row = ctk.CTkFrame(content, fg_color="transparent")
+        pwd_row.pack(fill="x", pady=(0, 10))
+        pwd_row.grid_columnconfigure(0, weight=1)
+        self.password_entry = ctk.CTkEntry(pwd_row, height=40, corner_radius=8, show="•", placeholder_text="Enter password")
+        self.password_entry.grid(row=0, column=0, sticky="ew")
+        self._pwd_visible = False
+        self.show_pwd_btn = ctk.CTkButton(
+            pwd_row, text="Show", width=72, height=36, corner_radius=8, command=self._toggle_password
+        )
+        self.show_pwd_btn.grid(row=0, column=1, padx=(8, 0))
         self.password_entry.bind("<Return>", lambda _e: self._attempt_login())
 
-        self.error_label = ctk.CTkLabel(form, text="", font=("Arial", 11), text_color="#C0392B")
-        self.error_label.pack(pady=(4, 0))
+        self.remember_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(content, text="Remember Me", variable=self.remember_var, font=("Arial", 11)).pack(
+            anchor="w", pady=(4, 12)
+        )
 
-        ctk.CTkButton(
-            form,
-            text="Login",
+        self.error_label = ctk.CTkLabel(content, text="", font=("Arial", 11), text_color="#C0392B")
+        self.error_label.pack(fill="x", pady=(0, 8))
+
+        self.login_btn = ctk.CTkButton(
+            content,
+            text="LOGIN",
             command=self._attempt_login,
             fg_color=BRAND_ORANGE,
             hover_color="#D06018",
-            height=40,
+            height=42,
+            corner_radius=8,
             font=("Arial", 14, "bold"),
-        ).pack(pady=16, fill="x")
+        )
+        self.login_btn.pack(fill="x", pady=(4, 12))
 
         ctk.CTkLabel(
-            form,
-            text="Default: superadmin / Super@123  |  leader / Leader@123  |  akash / Akash@123",
-            font=("Arial", 9),
-            text_color="#888888",
-            wraplength=340,
+            content,
+            text="Forgot Password?",
+            font=("Arial", 11),
+            text_color="#5C6B7A",
         ).pack(pady=(0, 16))
 
+        ctk.CTkLabel(
+            content,
+            text=f"Version {APP_VERSION}",
+            font=("Arial", 10),
+            text_color="#8A96A3",
+        ).pack()
+
         self.username_entry.focus_set()
+
+    def _toggle_password(self) -> None:
+        self._pwd_visible = not self._pwd_visible
+        self.password_entry.configure(show="" if self._pwd_visible else "•")
+        self.show_pwd_btn.configure(text="Hide" if self._pwd_visible else "Show")
+
+    def _set_loading(self, loading: bool) -> None:
+        self._loading = loading
+        state = "disabled" if loading else "normal"
+        self.login_btn.configure(text="Logging in..." if loading else "LOGIN", state=state)
+        self.username_entry.configure(state=state)
+        self.password_entry.configure(state=state)
+        self.show_pwd_btn.configure(state=state)
 
     def reset(self) -> None:
         self.username_entry.delete(0, "end")
         self.password_entry.delete(0, "end")
         self.error_label.configure(text="")
+        self._set_loading(False)
         self.username_entry.focus_set()
 
     def _attempt_login(self) -> None:
+        if self._loading:
+            return
         username = self.username_entry.get().strip()
         password = self.password_entry.get()
         if not username:
-            self.error_label.configure(text="Username is required.")
+            self.error_label.configure(text="Please enter username.")
             return
         if not password:
-            self.error_label.configure(text="Password is required.")
+            self.error_label.configure(text="Please enter password.")
             return
+
+        self.error_label.configure(text="")
+        self._set_loading(True)
+        self.update_idletasks()
+
         user = authenticate(username, password)
+        self._set_loading(False)
         if user is None:
             self.error_label.configure(text="Invalid username or password.")
             self.password_entry.delete(0, "end")
             return
-        self.error_label.configure(text="")
         self.on_login_success(user)
 
 # ==================== ui/dashboard.py ====================
@@ -5897,6 +6004,341 @@ class ProjectEditDialog(ctk.CTkToplevel):
         except ValidationError as exc:
             messagebox.showerror("Validation", exc.message)
 
+# ==================== ui/create_user_dialog.py ====================
+"""Create / edit user dialog for Super Admin user management."""
+
+
+
+
+
+
+class CreateUserDialog(ctk.CTkToplevel):
+    """Professional create / edit user form."""
+
+    def __init__(
+        self,
+        master,
+        actor_username: str,
+        on_saved: Optional[Callable[[], None]] = None,
+        edit_user: Optional[UserRecord] = None,
+    ) -> None:
+        super().__init__(master)
+        self.actor_username = actor_username
+        self.on_saved = on_saved
+        self.edit_user = edit_user
+        self._team_leader_map: Dict[str, int] = {}
+
+        self.title("Edit User" if edit_user else "Create User")
+        self.geometry("520x640")
+        self.minsize(480, 600)
+        self.configure(fg_color="#F5F7FA")
+        self.transient(master.winfo_toplevel())
+        self.grab_set()
+
+        self._build()
+        if edit_user:
+            self._load_user(edit_user)
+        self._on_role_changed()
+        self.after(100, self.lift)
+
+    def _build(self) -> None:
+        header = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=0)
+        header.pack(fill="x")
+        title = "Edit User" if self.edit_user else "Create User"
+        ctk.CTkLabel(header, text=title, font=("Arial", 18, "bold"), text_color="white").pack(pady=14)
+
+        body = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=24, pady=16)
+        body.grid_columnconfigure(0, weight=1)
+
+        self.error_label = ctk.CTkLabel(body, text="", font=("Arial", 11), text_color="#C0392B")
+        self.error_label.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+
+        row = 1
+        self.full_name_entry = self._field(body, row, "Full Name *")
+        row += 1
+        self.username_entry = self._field(body, row, "Username *")
+        row += 1
+        self.employee_id_entry = self._field(body, row, "Employee ID *")
+        row += 1
+
+        if not self.edit_user:
+            self.password_entry = self._password_field(body, row, "Password *")
+            row += 1
+            self.confirm_password_entry = self._password_field(body, row, "Confirm Password *")
+            row += 1
+        else:
+            self.password_entry = None
+            self.confirm_password_entry = None
+
+        ctk.CTkLabel(body, text="Role *", font=("Arial", 12), anchor="w").grid(
+            row=row, column=0, sticky="ew", pady=(10, 4)
+        )
+        self.role_var = ctk.StringVar(value=ROLE_LABELS[ROLE_ENGINEER])
+        self.role_menu = ctk.CTkOptionMenu(
+            body,
+            variable=self.role_var,
+            values=[ROLE_LABELS[r] for r in USER_ROLES],
+            command=lambda _v: self._on_role_changed(),
+        )
+        self.role_menu.grid(row=row + 1, column=0, sticky="ew", pady=(0, 4))
+        row += 2
+
+        self.team_entry = self._field(body, row, "Team")
+        row += 1
+
+        self.team_leader_label = ctk.CTkLabel(body, text="Team Leader", font=("Arial", 12), anchor="w")
+        self.team_leader_label.grid(row=row, column=0, sticky="ew", pady=(10, 4))
+        self.team_leader_var = ctk.StringVar(value="")
+        leaders = self._team_leader_options()
+        self.team_leader_menu = ctk.CTkOptionMenu(
+            body,
+            variable=self.team_leader_var,
+            values=leaders or ["(No team leaders available)"],
+        )
+        self.team_leader_menu.grid(row=row + 1, column=0, sticky="ew", pady=(0, 4))
+        row += 2
+
+        ctk.CTkLabel(body, text="Status", font=("Arial", 12), anchor="w").grid(
+            row=row, column=0, sticky="ew", pady=(10, 4)
+        )
+        self.active_var = ctk.StringVar(value="Active")
+        self.status_menu = ctk.CTkOptionMenu(
+            body,
+            variable=self.active_var,
+            values=["Active", "Inactive"],
+        )
+        self.status_menu.grid(row=row + 1, column=0, sticky="ew", pady=(0, 4))
+        row += 2
+
+        btn_row = ctk.CTkFrame(body, fg_color="transparent")
+        btn_row.grid(row=row, column=0, sticky="ew", pady=(16, 8))
+        save_text = "Save Changes" if self.edit_user else "Create User"
+        ctk.CTkButton(btn_row, text=save_text, fg_color=BRAND_ORANGE, command=self._save, width=140).pack(
+            side="left", padx=(0, 8)
+        )
+        ctk.CTkButton(btn_row, text="Cancel", fg_color="#7F8C8D", command=self.destroy, width=100).pack(side="left")
+
+    def _field(self, parent, row: int, label: str) -> ctk.CTkEntry:
+        ctk.CTkLabel(parent, text=label, font=("Arial", 12), anchor="w").grid(
+            row=row, column=0, sticky="ew", pady=(10, 4)
+        )
+        entry = ctk.CTkEntry(parent, height=36, corner_radius=8)
+        entry.grid(row=row + 1, column=0, sticky="ew", pady=(0, 4))
+        return entry
+
+    def _password_field(self, parent, row: int, label: str) -> ctk.CTkEntry:
+        ctk.CTkLabel(parent, text=label, font=("Arial", 12), anchor="w").grid(
+            row=row, column=0, sticky="ew", pady=(10, 4)
+        )
+        frame = ctk.CTkFrame(parent, fg_color="transparent")
+        frame.grid(row=row + 1, column=0, sticky="ew", pady=(0, 4))
+        frame.grid_columnconfigure(0, weight=1)
+        entry = ctk.CTkEntry(frame, height=36, corner_radius=8, show="•")
+        entry.grid(row=0, column=0, sticky="ew")
+        ctk.CTkButton(
+            frame, text="Show", width=64, height=32, command=lambda e=entry: self._toggle_password(e)
+        ).grid(row=0, column=1, padx=(8, 0))
+        return entry
+
+    def _toggle_password(self, entry: ctk.CTkEntry) -> None:
+        entry.configure(show="" if entry.cget("show") == "•" else "•")
+
+    def _team_leader_options(self) -> List[str]:
+        self._team_leader_map.clear()
+        options: List[str] = []
+        for user in list_users():
+            if user.role == "team_leader" and user.is_active:
+                label = f"{user.full_name} ({user.username})"
+                options.append(label)
+                self._team_leader_map[label] = user.user_id
+        return options
+
+    def _role_key(self) -> str:
+        label = self.role_var.get()
+        for key, value in ROLE_LABELS.items():
+            if value == label:
+                return key
+        return ROLE_ENGINEER
+
+    def _on_role_changed(self) -> None:
+        show_tl = self._role_key() == ROLE_ENGINEER
+        if show_tl:
+            self.team_leader_label.grid()
+            self.team_leader_menu.grid()
+        else:
+            self.team_leader_label.grid_remove()
+            self.team_leader_menu.grid_remove()
+
+    def _load_user(self, user: UserRecord) -> None:
+        self.full_name_entry.insert(0, user.full_name)
+        self.username_entry.insert(0, user.username)
+        self.username_entry.configure(state="disabled")
+        self.employee_id_entry.insert(0, user.employee_id)
+        self.role_var.set(ROLE_LABELS.get(user.role, user.role))
+        self.team_entry.insert(0, user.team)
+        self.active_var.set("Active" if user.is_active else "Inactive")
+        if user.team_leader_id:
+            for label, uid in self._team_leader_map.items():
+                if uid == user.team_leader_id:
+                    self.team_leader_var.set(label)
+                    break
+
+    def _set_error(self, message: str) -> None:
+        self.error_label.configure(text=message)
+
+    def _save(self) -> None:
+        self._set_error("")
+        full_name = self.full_name_entry.get().strip()
+        username = self.username_entry.get().strip().lower()
+        employee_id = self.employee_id_entry.get().strip()
+        team = self.team_entry.get().strip()
+        role = self._role_key()
+        is_active = self.active_var.get() == "Active"
+
+        if not full_name:
+            self._set_error("Full Name is required.")
+            return
+        if not username:
+            self._set_error("Username is required.")
+            return
+        if not employee_id:
+            self._set_error("Employee ID is required.")
+            return
+        if not self.edit_user:
+            password = self.password_entry.get() if self.password_entry else ""
+            confirm = self.confirm_password_entry.get() if self.confirm_password_entry else ""
+            if not password:
+                self._set_error("Password is required.")
+                return
+            if password != confirm:
+                self._set_error("Confirm Password must match Password.")
+                return
+        else:
+            password = ""
+
+        if not role:
+            self._set_error("Role is required.")
+            return
+
+        team_leader_id = 0
+        if role == ROLE_ENGINEER:
+            tl_label = self.team_leader_var.get()
+            team_leader_id = self._team_leader_map.get(tl_label, 0)
+
+        exclude_id = self.edit_user.user_id if self.edit_user else 0
+        if username_exists(username, exclude_user_id=exclude_id):
+            self._set_error("Username must be unique.")
+            return
+
+        try:
+            if self.edit_user:
+                update_user(
+                    self.edit_user.user_id,
+                    full_name=full_name,
+                    role=role,
+                    employee_id=employee_id,
+                    team=team,
+                    team_leader_id=team_leader_id,
+                    is_active=is_active,
+                )
+                messagebox.showinfo("User Updated", "User updated successfully.", parent=self)
+            else:
+                create_user(
+                    username,
+                    password,
+                    full_name,
+                    role,
+                    employee_id=employee_id,
+                    team=team,
+                    team_leader_id=team_leader_id,
+                )
+
+                log_audit(ACTION_USER_CREATED, self.actor_username, 0, reason=f"Created {username}")
+                messagebox.showinfo("User Created", "User created successfully.", parent=self)
+            if self.on_saved:
+                self.on_saved()
+            self.destroy()
+        except Exception as exc:
+            self._set_error(str(exc))
+
+
+class ViewUserDialog(ctk.CTkToplevel):
+    """Read-only user details."""
+
+    def __init__(self, master, user: UserRecord) -> None:
+        super().__init__(master)
+        self.title("View User")
+        self.geometry("420x360")
+        self.transient(master.winfo_toplevel())
+        self.grab_set()
+
+        ctk.CTkLabel(self, text="User Details", font=("Arial", 16, "bold"), text_color=BRAND_NAVY).pack(pady=12)
+        leader_name = "—"
+        if user.team_leader_id:
+            leader = next((u for u in list_users(include_inactive=True) if u.user_id == user.team_leader_id), None)
+            if leader:
+                leader_name = f"{leader.full_name} ({leader.username})"
+
+        details = [
+            ("Full Name", user.full_name),
+            ("Username", user.username),
+            ("Employee ID", user.employee_id or "—"),
+            ("Role", ROLE_LABELS.get(user.role, user.role)),
+            ("Team", user.team or "—"),
+            ("Team Leader", leader_name),
+            ("Status", "Active" if user.is_active else "Inactive"),
+            ("Created", (user.created_at or "")[:19].replace("T", " ")),
+        ]
+        frame = ctk.CTkFrame(self, fg_color="transparent")
+        frame.pack(fill="both", expand=True, padx=24, pady=8)
+        for i, (label, value) in enumerate(details):
+            ctk.CTkLabel(frame, text=label, font=("Arial", 11, "bold"), anchor="w").grid(
+                row=i, column=0, sticky="w", pady=4
+            )
+            ctk.CTkLabel(frame, text=value, font=("Arial", 11), anchor="w").grid(
+                row=i, column=1, sticky="w", padx=(12, 0), pady=4
+            )
+        ctk.CTkButton(self, text="Close", command=self.destroy, fg_color=BRAND_ORANGE).pack(pady=16)
+
+
+class ResetPasswordDialog(ctk.CTkToplevel):
+    """Reset a user's password."""
+
+    def __init__(self, master, user: UserRecord, on_saved: Optional[Callable[[], None]] = None) -> None:
+        super().__init__(master)
+        self.user = user
+        self.on_saved = on_saved
+        self.title("Reset Password")
+        self.geometry("420x280")
+        self.transient(master.winfo_toplevel())
+        self.grab_set()
+
+        ctk.CTkLabel(self, text=f"Reset password for {user.username}", font=("Arial", 14, "bold")).pack(pady=12)
+        self.error_label = ctk.CTkLabel(self, text="", text_color="#C0392B")
+        self.error_label.pack()
+        self.password_entry = ctk.CTkEntry(self, width=320, show="•", placeholder_text="New password")
+        self.password_entry.pack(pady=6)
+        self.confirm_entry = ctk.CTkEntry(self, width=320, show="•", placeholder_text="Confirm password")
+        self.confirm_entry.pack(pady=6)
+        ctk.CTkButton(self, text="Reset Password", fg_color=BRAND_ORANGE, command=self._save).pack(pady=12)
+        ctk.CTkButton(self, text="Cancel", fg_color="#7F8C8D", command=self.destroy).pack()
+
+    def _save(self) -> None:
+        password = self.password_entry.get()
+        confirm = self.confirm_entry.get()
+        if not password:
+            self.error_label.configure(text="Password is required.")
+            return
+        if password != confirm:
+            self.error_label.configure(text="Confirm Password must match Password.")
+            return
+        reset_user_password(self.user.user_id, password)
+        messagebox.showinfo("Done", "Password reset successfully.", parent=self)
+        if self.on_saved:
+            self.on_saved()
+        self.destroy()
+
 # ==================== ui/project_assign_dialog.py ====================
 """Dialog for Team Leader to create and assign a project."""
 
@@ -6274,6 +6716,7 @@ class SuperAdminDashboard(ctk.CTkFrame):
         self.on_logout = on_logout
         self._user_list: Optional[ctk.CTkScrollableFrame] = None
         self._audit_list: Optional[ctk.CTkScrollableFrame] = None
+        self._search_var = ctk.StringVar()
         self._build()
 
     def _build(self) -> None:
@@ -6299,20 +6742,47 @@ class SuperAdminDashboard(ctk.CTkFrame):
 
         actions = ctk.CTkFrame(body, fg_color="transparent")
         actions.grid(row=2, column=0, sticky="ew", pady=4)
-        ctk.CTkButton(actions, text="+ Create User", fg_color="#27AE60", command=self._create_user).pack(side="left", padx=4)
-        ctk.CTkButton(actions, text="Refresh", command=self.refresh).pack(side="left", padx=4)
+        ctk.CTkButton(
+            actions, text="+ Create User", fg_color="#27AE60",
+            command=safe_command(self._create_user, parent=self),
+        ).pack(side="left", padx=4)
+        ctk.CTkButton(actions, text="Refresh", command=safe_command(self.refresh, parent=self)).pack(side="left", padx=4)
+
+        search_row = ctk.CTkFrame(body, fg_color="transparent")
+        search_row.grid(row=3, column=0, sticky="ew", pady=(4, 0))
+        ctk.CTkLabel(search_row, text="Search User:", font=("Arial", 11)).pack(side="left", padx=(0, 8))
+        search_entry = ctk.CTkEntry(search_row, textvariable=self._search_var, width=260, placeholder_text="Name, username, role, team...")
+        search_entry.pack(side="left", padx=(0, 8))
+        self._search_var.trace_add("write", lambda *_: self.refresh())
+        ctk.CTkButton(search_row, text="Clear", width=70, command=self._clear_search).pack(side="left")
 
         self._user_list = ctk.CTkScrollableFrame(body, height=200, label_text="Users")
-        self._user_list.grid(row=3, column=0, sticky="ew", pady=8)
+        self._user_list.grid(row=4, column=0, sticky="ew", pady=8)
         self._audit_list = ctk.CTkScrollableFrame(body, height=200, label_text="Audit Log")
-        self._audit_list.grid(row=4, column=0, sticky="ew", pady=8)
+        self._audit_list.grid(row=5, column=0, sticky="ew", pady=8)
         self.refresh()
 
+    def _clear_search(self) -> None:
+        self._search_var.set("")
+
+    def _matches_search(self, user, query: str) -> bool:
+        if not query:
+            return True
+        q = query.lower()
+        haystack = " ".join([
+            user.username, user.full_name, user.employee_id, user.team,
+            ROLE_LABELS.get(user.role, user.role),
+        ]).lower()
+        return q in haystack
+
     def refresh(self) -> None:
+        query = self._search_var.get().strip() if hasattr(self, "_search_var") else ""
         if self._user_list:
             for w in self._user_list.winfo_children():
                 w.destroy()
             for u in list_users(include_inactive=True):
+                if not self._matches_search(u, query):
+                    continue
                 row = ctk.CTkFrame(self._user_list, fg_color="transparent")
                 row.pack(fill="x", pady=2)
                 status = "Active" if u.is_active else "Inactive"
@@ -6321,8 +6791,10 @@ class SuperAdminDashboard(ctk.CTkFrame):
                     text=f"{u.username} | {u.full_name} | {ROLE_LABELS.get(u.role, u.role)} | {u.team} | {status}",
                     font=("Arial", 10), anchor="w",
                 ).pack(side="left", padx=4)
+                ctk.CTkButton(row, text="View", width=56, height=24, command=lambda user=u: self._view_user(user)).pack(side="right", padx=2)
+                ctk.CTkButton(row, text="Edit", width=56, height=24, command=lambda user=u: self._edit_user(user)).pack(side="right", padx=2)
                 if u.is_active and u.user_id != self.user.user_id:
-                    ctk.CTkButton(row, text="Reset Pwd", width=70, height=24, command=lambda uid=u.user_id: self._reset_pwd(uid)).pack(side="right", padx=2)
+                    ctk.CTkButton(row, text="Reset Pwd", width=70, height=24, command=lambda user=u: self._reset_pwd(user)).pack(side="right", padx=2)
                     ctk.CTkButton(row, text="Deactivate", width=80, height=24, fg_color="#C0392B", command=lambda uid=u.user_id: self._deactivate(uid)).pack(side="right", padx=2)
         if self._audit_list:
             for w in self._audit_list.winfo_children():
@@ -6333,43 +6805,30 @@ class SuperAdminDashboard(ctk.CTkFrame):
                 ctk.CTkLabel(self._audit_list, text=line[:120], font=("Arial", 9), anchor="w").pack(anchor="w", padx=4, pady=1)
 
     def _create_user(self) -> None:
-        username = simpledialog.askstring("Create User", "Username:", parent=self)
-        if not username:
-            return
-        password = simpledialog.askstring("Create User", "Password:", parent=self, show="*")
-        if not password:
-            return
-        full_name = simpledialog.askstring("Create User", "Full Name:", parent=self) or username
-        role = simpledialog.askstring("Create User", f"Role ({', '.join(USER_ROLES)}):", parent=self) or "engineer"
-        emp_id = simpledialog.askstring("Create User", "Employee ID:", parent=self) or ""
-        team = simpledialog.askstring("Create User", "Team:", parent=self) or ""
-        tl_id = 0
-        if role == "engineer":
-            leaders = [u for u in list_users() if u.role == "team_leader"]
-            if leaders:
-                tl_id = leaders[0].user_id
-        try:
-            create_user(username, password, full_name, role, employee_id=emp_id, team=team, team_leader_id=tl_id)
-            log_audit(ACTION_USER_CREATED, self.user.username, self.user.user_id, reason=f"Created {username}")
-            messagebox.showinfo("Created", f"User {username} created.")
-            self.refresh()
-        except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+        CreateUserDialog(self.winfo_toplevel(), actor_username=self.user.username, on_saved=self.refresh)
 
-    def _reset_pwd(self, user_id: int) -> None:
-        pwd = simpledialog.askstring("Reset Password", "New password:", parent=self, show="*")
-        if pwd:
-            reset_user_password(user_id, pwd)
-            messagebox.showinfo("Done", "Password reset.")
+    def _edit_user(self, user) -> None:
+        CreateUserDialog(
+            self.winfo_toplevel(),
+            actor_username=self.user.username,
+            on_saved=self.refresh,
+            edit_user=user,
+        )
+
+    def _view_user(self, user) -> None:
+        ViewUserDialog(self.winfo_toplevel(), user)
+
+    def _reset_pwd(self, user) -> None:
+        ResetPasswordDialog(self.winfo_toplevel(), user, on_saved=self.refresh)
 
     def _deactivate(self, user_id: int) -> None:
-        if messagebox.askyesno("Deactivate", "Deactivate this user?"):
+        if messagebox.askyesno("Deactivate", "Deactivate this user?", parent=self.winfo_toplevel()):
             deactivate_user(user_id)
             log_audit(ACTION_USER_DEACTIVATED, self.user.username, self.user.user_id, reason=str(user_id))
             self.refresh()
 
     def _logout(self) -> None:
-        if messagebox.askyesno("Logout", "Logout?"):
+        if messagebox.askyesno("Logout", "Logout?", parent=self.winfo_toplevel()):
             self.on_logout()
 
     def refresh_stats(self) -> None:
@@ -8857,6 +9316,14 @@ class RWHPage(ScrollablePage):
 
 # ==================== _app_sidebar.py ====================
 
+
+
+
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+LOGO_PATH = os.path.join(APP_DIR, "assets", "logo.png")
+if not os.path.exists(LOGO_PATH):
+    LOGO_PATH = os.path.join(os.path.dirname(APP_DIR), "logo.png")
+
 # ============================================================
 # MAIN APPLICATION
 # ============================================================
@@ -8871,7 +9338,9 @@ def _raise_page(page) -> None:
         page.tkraise()
 
 
-class WaterDemandApp(ctk.CTk):
+class WaterDemandApp(ctk.CTkToplevel):
+    """Water Demand calculator — CTkToplevel when embedded, hidden CTk root when standalone."""
+
     NAV = [
         ("Project", "1. Project Details"),
         ("Residential", "2. Residential"),
@@ -8891,8 +9360,20 @@ class WaterDemandApp(ctk.CTk):
         ("Settings", "Settings"),
     ]
 
-    def __init__(self, current_user=None, on_logout=None, initial_state=None, on_autosave=None):
-        super().__init__()
+    def __init__(
+        self,
+        master=None,
+        current_user=None,
+        on_logout=None,
+        initial_state=None,
+        on_autosave=None,
+    ):
+        self._standalone_root = None
+        if master is None:
+            self._standalone_root = ctk.CTk()
+            self._standalone_root.withdraw()
+            master = self._standalone_root
+        super().__init__(master)
         ctk.set_appearance_mode("light")
         ctk.set_default_color_theme("blue")
         self.current_user = current_user
@@ -8921,6 +9402,15 @@ class WaterDemandApp(ctk.CTk):
         self._build_pages()
         self.show("Project")
         self._schedule_autosave()
+
+    def destroy(self) -> None:
+        root = self._standalone_root
+        super().destroy()
+        if root is not None:
+            try:
+                root.destroy()
+            except Exception:
+                pass
 
     def _window_title(self) -> str:
         pid = self.app_state.project.project_id
@@ -9880,10 +10370,10 @@ class Application(ctk.CTk):
         self._active_screen = create_dashboard(
             self,
             user=self.current_user,
-            on_new_project=self._start_new_project,
-            on_open_project=self._open_project,
-            on_launch_water_demand=self._launch_blank,
-            on_logout=self._logout,
+            on_new_project=safe_command(self._start_new_project, parent=self),
+            on_open_project=safe_command(self._open_project, parent=self),
+            on_launch_water_demand=safe_command(self._launch_blank, parent=self),
+            on_logout=safe_command(self._logout, parent=self),
         )
         self._active_screen.grid(row=0, column=0, sticky="nsew")
 
@@ -9915,12 +10405,14 @@ class Application(ctk.CTk):
 
         self.withdraw()
         self._water_app = WaterDemandApp(
+            master=self,
             current_user=self.current_user,
             on_logout=self._on_water_app_logout,
             initial_state=initial_state,
             on_autosave=self._on_project_autosaved,
         )
         self._water_app.protocol("WM_DELETE_WINDOW", self._on_water_app_close)
+        self._water_app.focus_force()
 
     def _on_project_autosaved(self) -> None:
         if hasattr(self._active_screen, "refresh_stats"):
