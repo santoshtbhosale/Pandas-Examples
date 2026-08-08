@@ -72,9 +72,8 @@ class WaterDemandApp(ctk.CTkToplevel):
     def __init__(
         self,
         master=None,
-        current_user=None,
-        on_logout=None,
         initial_state=None,
+        on_close=None,
         on_autosave=None,
     ):
         self._standalone_root = None
@@ -85,8 +84,7 @@ class WaterDemandApp(ctk.CTkToplevel):
         super().__init__(master)
         ctk.set_appearance_mode("light")
         ctk.set_default_color_theme("blue")
-        self.current_user = current_user
-        self.on_logout = on_logout
+        self.on_close = on_close
         self.on_autosave = on_autosave
         self.app_state = initial_state if initial_state is not None else AppState()
         self._last_autosave_at = ""
@@ -97,8 +95,6 @@ class WaterDemandApp(ctk.CTkToplevel):
         init_db()
         init_lookup_tables(DB_PATH)
         self._autosave_job = None
-        self._timer_job = None
-        self._timer_label = None
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
         self.sidebar = self._build_sidebar()
@@ -139,7 +135,7 @@ class WaterDemandApp(ctk.CTkToplevel):
         try:
             self._calc()
             from services.project_service import persist_project_state
-            persist_project_state(self.app_state, self.current_user, DB_PATH)
+            persist_project_state(self.app_state, DB_PATH)
         except Exception:
             pass
 
@@ -152,7 +148,7 @@ class WaterDemandApp(ctk.CTkToplevel):
         try:
             self._calc()
             from services.project_service import persist_project_state
-            persist_project_state(self.app_state, self.current_user, DB_PATH)
+            persist_project_state(self.app_state, DB_PATH)
             self._last_autosave_at = datetime.now().strftime("%H:%M:%S")
             if self.on_autosave:
                 self.on_autosave()
@@ -179,14 +175,6 @@ class WaterDemandApp(ctk.CTkToplevel):
             justify="center",
         ).pack(pady=(20, 5))
         ctk.CTkLabel(sb, text="Water Demand Generator", font=("Arial", 10), text_color="white").pack(pady=(0, 10))
-        if self.current_user:
-            ctk.CTkLabel(
-                sb,
-                text=f"{self.current_user.full_name}\n({self.current_user.role_label})",
-                font=("Arial", 9),
-                text_color="#CCCCCC",
-                justify="center",
-            ).pack(pady=(0, 4))
         pid = self.app_state.project.project_id
         ctk.CTkLabel(
             sb,
@@ -229,18 +217,6 @@ class WaterDemandApp(ctk.CTkToplevel):
             )
             btn.pack(fill="x", padx=8, pady=2)
             self.nav_btns[key] = btn
-        timer_frame = ctk.CTkFrame(sb, fg_color="#1A252F", corner_radius=6)
-        timer_frame.pack(side="bottom", fill="x", padx=8, pady=4)
-        self._timer_label = ctk.CTkLabel(
-            timer_frame, text="Project Timer\n—", font=("Arial", 9), text_color="white", justify="left"
-        )
-        self._timer_label.pack(padx=8, pady=4)
-        ctk.CTkButton(timer_frame, text="Complete Project", height=26, fg_color="#27AE60", command=self._complete_project).pack(fill="x", padx=6, pady=2)
-        pr = ctk.CTkFrame(timer_frame, fg_color="transparent")
-        pr.pack(fill="x", padx=6, pady=(0, 4))
-        ctk.CTkButton(pr, text="Pause", width=70, height=24, command=self._pause_project).pack(side="left", padx=2)
-        ctk.CTkButton(pr, text="Resume", width=70, height=24, command=self._resume_project).pack(side="left", padx=2)
-        self._schedule_timer_refresh()
         ctk.CTkButton(sb, text="Save Project", fg_color=BRAND_ORANGE, command=self._save_db).pack(
             side="bottom", fill="x", padx=10, pady=4
         )
@@ -248,67 +224,17 @@ class WaterDemandApp(ctk.CTkToplevel):
             side="bottom", fill="x", padx=10, pady=4
         )
         ctk.CTkButton(sb, text="New Project", fg_color="#27AE60", command=self._new).pack(
-            side="bottom", fill="x", padx=10, pady=(4, 4 if self.on_logout else 15)
+            side="bottom", fill="x", padx=10, pady=4
         )
-        if self.on_logout:
-            ctk.CTkButton(sb, text="Logout", fg_color="#C0392B", command=self._logout).pack(
+        if self.on_close:
+            ctk.CTkButton(sb, text="Close Project", fg_color="#7F8C8D", command=self._close_project).pack(
                 side="bottom", fill="x", padx=10, pady=(4, 15)
             )
         return sb
 
-    def _logout(self) -> None:
-        if self.on_logout and messagebox.askyesno("Logout", "Return to login screen?"):
-            self.on_logout()
-
-    def _schedule_timer_refresh(self) -> None:
-        if self._timer_job is not None:
-            self.after_cancel(self._timer_job)
-        self._refresh_timer_display()
-        self._timer_job = self.after(30_000, self._schedule_timer_refresh)
-
-    def _refresh_timer_display(self) -> None:
-        if not self._timer_label:
-            return
-        try:
-            from services.project_workflow_service import get_project_workflow
-            from services.project_timer import timer_snapshot
-            wf = get_project_workflow(self.app_state.project.project_id)
-            snap = timer_snapshot(wf)
-            self._timer_label.configure(
-                text=(
-                    f"Status: {snap['status']}\n"
-                    f"Elapsed: {snap['elapsed_display']}\n"
-                    f"Remaining: {snap['remaining_display']}\n"
-                    f"Expected: {(snap['expected_completion_at'] or '—')[:16]}"
-                )
-            )
-        except Exception:
-            self._timer_label.configure(text="Project Timer\n—")
-
-    def _complete_project(self) -> None:
-        if not self.current_user:
-            return
-        from services.project_workflow_service import complete_project
-        wf = complete_project(self.app_state.project.project_id, self.current_user)
-        self._calc()
-        from services.project_service import persist_project_state
-        persist_project_state(self.app_state, self.current_user)
-        self._refresh_timer_display()
-        messagebox.showinfo("Completed", f"Project completed ({wf.completion_outcome or wf.status}).")
-
-    def _pause_project(self) -> None:
-        if not self.current_user:
-            return
-        from services.project_workflow_service import pause_project
-        pause_project(self.app_state.project.project_id, self.current_user)
-        self._refresh_timer_display()
-
-    def _resume_project(self) -> None:
-        if not self.current_user:
-            return
-        from services.project_workflow_service import resume_project
-        resume_project(self.app_state.project.project_id, self.current_user)
-        self._refresh_timer_display()
+    def _close_project(self) -> None:
+        if self.on_close:
+            self.on_close()
 
     def _rebuild_sidebar(self) -> None:
         self.sidebar.destroy()
@@ -910,7 +836,7 @@ class WaterDemandApp(ctk.CTkToplevel):
 
         try:
             from services.project_service import persist_project_state
-            persist_project_state(self.app_state, self.current_user, DB_PATH)
+            persist_project_state(self.app_state, DB_PATH)
             logo = LOGO_PATH if os.path.exists(LOGO_PATH) else None
             export_pdf(pdf_path, self.app_state.project, self.app_state.results, logo)
             export_excel(xlsx_path, self.app_state.project, self.app_state.results)
@@ -938,14 +864,14 @@ class WaterDemandApp(ctk.CTkToplevel):
         except Exception:
             pass
         from services.project_service import create_new_project_state
-        self.app_state = create_new_project_state(self.current_user, DB_PATH)
+        self.app_state = create_new_project_state(DB_PATH)
         self._reload_ui_from_state()
 
     def _save_db(self):
         try:
             self._calc()
             from services.project_service import persist_project_state
-            is_update = persist_project_state(self.app_state, self.current_user, DB_PATH)
+            is_update = persist_project_state(self.app_state, DB_PATH)
             self.title(self._window_title())
             action = "updated" if is_update else "saved"
             messagebox.showinfo("Saved", f"Project {action}.\nID: {self.app_state.project.project_id}")

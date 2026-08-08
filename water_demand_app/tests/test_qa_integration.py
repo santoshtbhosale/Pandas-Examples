@@ -1,4 +1,4 @@
-"""Version 2.0 QA integration tests — workflow, access control, building parser."""
+"""Version 2.0 QA integration tests — project workflow, building parser, calculations."""
 
 from __future__ import annotations
 
@@ -19,8 +19,6 @@ from config.nbc_2026 import (
 )
 from config.page_visibility import visible_pages as vp
 from models.residential import ResidentialWing
-from models.user import ROLE_ENGINEER
-from services.auth_db import authenticate, init_users_table
 from services.database import init_db
 from services.project_service import (
     create_new_project_state,
@@ -31,39 +29,14 @@ from services.project_service import (
 from ui.app_state import AppState
 
 
-class TestQAAuthFlow(unittest.TestCase):
-    def setUp(self) -> None:
-        self._tmpdir = tempfile.mkdtemp()
-        self.db = os.path.join(self._tmpdir, "qa.db")
-        init_db(self.db)
-        init_users_table(self.db)
-
-    def test_invalid_login_rejected(self) -> None:
-        self.assertIsNone(authenticate("akash", "wrong", self.db))
-
-    def test_valid_engineer_login(self) -> None:
-        user = authenticate("akash", "Akash@123", self.db)
-        self.assertIsNotNone(user)
-        self.assertEqual(user.role, ROLE_ENGINEER)
-
-    def test_viewer_cannot_launch(self) -> None:
-        user = authenticate("omkar", "Omkar@123", self.db)
-        self.assertIsNotNone(user)
-        self.assertFalse(user.can_launch_water_demand())
-
-
 class TestQAProjectWorkflow(unittest.TestCase):
     def setUp(self) -> None:
         self._tmpdir = tempfile.mkdtemp()
         self.db = os.path.join(self._tmpdir, "qa.db")
         init_db(self.db)
-        init_users_table(self.db)
-        self.akash = authenticate("akash", "Akash@123", self.db)
-        self.vaibhav = authenticate("vaibhav", "Vaibhav@123", self.db)
-        self.admin = authenticate("admin", "Admin@123", self.db)
 
     def test_create_save_reload_update_no_duplicate(self) -> None:
-        state = create_new_project_state(self.akash, self.db)
+        state = create_new_project_state(self.db)
         state.project.project_name = "QA Residential"
         state.project.client_name = "Test Client"
         state.project.project_location = "Pune"
@@ -73,47 +46,34 @@ class TestQAProjectWorkflow(unittest.TestCase):
         ]
         state.auto_calculate()
         pid = state.project.project_id
-        self.assertFalse(persist_project_state(state, self.akash, self.db))
+        self.assertFalse(persist_project_state(state, self.db))
 
-        loaded = load_project_state(pid, self.db, user=self.akash)
+        loaded = load_project_state(pid, self.db)
         self.assertEqual(loaded.project.project_name, "QA Residential")
         self.assertEqual(len(loaded.residential), 1)
 
         loaded.project.project_name = "QA Residential Updated"
         loaded.residential[0].flats_2bhk = 20
         loaded.auto_calculate()
-        self.assertTrue(persist_project_state(loaded, self.akash, self.db))
+        self.assertTrue(persist_project_state(loaded, self.db))
 
-        again = load_project_state(pid, self.db, user=self.akash)
+        again = load_project_state(pid, self.db)
         self.assertEqual(again.project.project_name, "QA Residential Updated")
         self.assertEqual(again.residential[0].flats_2bhk, 20)
-        all_projects = find_projects(user=self.admin, db_path=self.db)
+        all_projects = find_projects(db_path=self.db)
         self.assertEqual(len([p for p in all_projects if p["project_id"] == pid]), 1)
 
-    def test_engineer_cannot_open_other_engineer_project(self) -> None:
-        state = create_new_project_state(self.akash, self.db)
-        state.project.project_name = "Akash Only"
+    def test_any_user_can_open_any_project(self) -> None:
+        state = create_new_project_state(self.db)
+        state.project.project_name = "Shared Project"
         state.project.client_name = "Client"
         state.project.project_location = "Pune"
         state.residential = [ResidentialWing(plot="Plot-A", wing="A", flats_2bhk=5)]
         state.auto_calculate()
         pid = state.project.project_id
-        persist_project_state(state, self.akash, self.db)
-
-        with self.assertRaises(ValueError):
-            load_project_state(pid, self.db, user=self.vaibhav)
-
-        vaibhav_list = find_projects(user=self.vaibhav, db_path=self.db)
-        self.assertFalse(any(p["project_id"] == pid for p in vaibhav_list))
-
-    def test_admin_sees_all_projects(self) -> None:
-        state = create_new_project_state(self.akash, self.db)
-        state.project.project_name = "Admin Visible"
-        state.project.client_name = "C"
-        state.project.project_location = "L"
-        persist_project_state(state, self.akash, self.db)
-        admin_list = find_projects(user=self.admin, db_path=self.db)
-        self.assertTrue(any(p["project_name"] == "Admin Visible" for p in admin_list))
+        persist_project_state(state, self.db)
+        loaded = load_project_state(pid, self.db)
+        self.assertEqual(loaded.project.project_name, "Shared Project")
 
 
 class TestQAProjectTypes(unittest.TestCase):

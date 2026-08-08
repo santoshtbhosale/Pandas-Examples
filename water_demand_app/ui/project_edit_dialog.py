@@ -5,10 +5,8 @@ from typing import Callable, Optional
 import customtkinter as ctk
 from tkinter import messagebox
 
-from config.nbc_2026 import BRAND_NAVY, BRAND_ORANGE
-from models.user import UserSession
+from config.nbc_2026 import BRAND_ORANGE
 from services.database import get_project_summary, update_project_metadata
-from services.project_service import find_projects
 from ui.components.validation import ValidationError, validate_required
 
 
@@ -19,12 +17,10 @@ class ProjectEditDialog(ctk.CTkToplevel):
         self,
         master,
         project_id: str,
-        user: UserSession,
         on_saved: Optional[Callable[[], None]] = None,
     ) -> None:
         super().__init__(master)
         self.project_id = project_id
-        self.user = user
         self.on_saved = on_saved
         self.title("Edit Project")
         self.geometry("480x360")
@@ -48,7 +44,7 @@ class ProjectEditDialog(ctk.CTkToplevel):
             ("project_name", "Project Name", summary["project_name"]),
             ("client_name", "Client Name", summary["client_name"]),
             ("project_location", "Location", summary["project_location"]),
-            ("engineer_name", "Engineer", summary.get("engineer_name", "")),
+            ("engineer_name", "Prepared By", summary.get("engineer_name", "")),
         ]:
             ctk.CTkLabel(form, text=label, anchor="w").pack(fill="x", pady=(8, 2))
             ent = ctk.CTkEntry(form, width=400)
@@ -69,7 +65,6 @@ class ProjectEditDialog(ctk.CTkToplevel):
                 validate_required(self.entries["client_name"].get(), "Client Name"),
                 validate_required(self.entries["project_location"].get(), "Location"),
                 self.entries["engineer_name"].get().strip(),
-                updated_by=self.user.username,
             )
             messagebox.showinfo("Saved", "Project updated successfully.")
             if self.on_saved:

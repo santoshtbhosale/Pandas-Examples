@@ -256,10 +256,6 @@ def search_projects(
     query: str,
     limit: int = 50,
     db_path: str = DB_PATH,
-    *,
-    username: str = "",
-    role: str = "",
-    full_name: str = "",
 ) -> List[Dict[str, str]]:
     init_db(db_path)
     key = f"%{(query or '').strip()}%"
@@ -267,11 +263,6 @@ def search_projects(
     cursor = conn.cursor()
     conditions: list[str] = []
     params: list = []
-    if role == "engineer" and username:
-        conditions.append(
-            "(created_by = ? OR (COALESCE(created_by, '') = '' AND LOWER(engineer_name) = LOWER(?)))"
-        )
-        params.extend([username, full_name or username])
     if key != "%%":
         conditions.append(
             "(project_id LIKE ? OR project_name LIKE ? OR client_name LIKE ? "
