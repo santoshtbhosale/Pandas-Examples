@@ -8,14 +8,20 @@ from config.nbc_2026 import PROJECT_TYPE_UNSET
 from models.project import ProjectData, RevisionInfo
 from services.database import (
     DB_PATH,
+    delete_project,
+    get_dashboard_projects,
     get_project_history,
     get_project_summary,
+    get_project_workflow_row,
     load_project_from_db,
+    log_audit_event,
     parse_project_snapshot,
     project_exists,
     save_project,
     search_projects,
+    update_project_workflow,
 )
+from services.project_workflow import completion_fields_on_finish, open_fields_on_start
 from services.lookup_db import next_project_number
 from ui.app_state import AppState
 
@@ -92,3 +98,28 @@ def find_projects(query: str = "", limit: int = 50, db_path: str = DB_PATH):
     if query:
         return search_projects(query, limit=limit, db_path=db_path)
     return get_project_history(limit, db_path)
+
+
+def list_dashboard_projects(db_path: str = DB_PATH):
+    return get_dashboard_projects(db_path=db_path)
+
+
+def mark_project_opened(project_id: str, db_path: str = DB_PATH) -> None:
+    row = get_project_workflow_row(project_id, db_path)
+    if not row:
+        return
+    updates = open_fields_on_start(row)
+    if updates:
+        update_project_workflow(project_id, updates, db_path)
+
+
+def mark_project_completed(project_id: str, db_path: str = DB_PATH) -> None:
+    row = get_project_workflow_row(project_id, db_path)
+    if not row:
+        return
+    updates = completion_fields_on_finish(row)
+    update_project_workflow(project_id, updates, db_path)
+
+
+def remove_project(project_id: str, *, username: str = "", db_path: str = DB_PATH) -> bool:
+    return delete_project(project_id, username=username, db_path=db_path)

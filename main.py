@@ -1658,6 +1658,15 @@ _HISTORY_SQL = """
     FROM projects
 """
 
+_DASHBOARD_SQL = """
+    SELECT project_id, project_name, client_name, project_location, project_no,
+           date, created_at, updated_at, total_water_demand, engineer_name, created_by,
+           workflow_status, project_type, project_opened_at, completed_at,
+           expected_completion_at, total_paused_seconds, total_time_taken_seconds,
+           delay_seconds, completion_outcome, assigned_duration_minutes, is_paused
+    FROM projects
+"""
+
 
 def init_db(db_path: str = DB_PATH) -> None:
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
@@ -1731,6 +1740,36 @@ def _migrate_projects_table(cursor: sqlite3.Cursor) -> None:
         cursor.execute("ALTER TABLE projects ADD COLUMN created_by TEXT DEFAULT ''")
     if "updated_by" not in cols:
         cursor.execute("ALTER TABLE projects ADD COLUMN updated_by TEXT DEFAULT ''")
+    workflow_columns = {
+        "workflow_status": "TEXT DEFAULT 'new'",
+        "project_type": "TEXT DEFAULT ''",
+        "project_opened_at": "TEXT",
+        "completed_at": "TEXT",
+        "expected_completion_at": "TEXT",
+        "total_paused_seconds": "INTEGER DEFAULT 0",
+        "total_time_taken_seconds": "INTEGER",
+        "delay_seconds": "INTEGER DEFAULT 0",
+        "completion_outcome": "TEXT DEFAULT ''",
+        "assigned_duration_minutes": "INTEGER",
+        "is_paused": "INTEGER DEFAULT 0",
+    }
+    for name, ddl in workflow_columns.items():
+        if name not in cols:
+            cursor.execute(f"ALTER TABLE projects ADD COLUMN {name} {ddl}")
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type TEXT NOT NULL,
+            project_id TEXT,
+            project_name TEXT,
+            engineer_name TEXT,
+            username TEXT DEFAULT '',
+            details TEXT DEFAULT '',
+            created_at TEXT
+        )
+        """
+    )
 
 
 def project_exists(project_id: str, db_path: str = DB_PATH) -> bool:
@@ -1773,12 +1812,27 @@ def save_project(
             project_id, project_name, client_name, project_location, engineer_name,
             project_no, date, revision_no, description, prepared_by, checked_by,
             approved_by, total_water_demand, stp_capacity_a, stp_capacity_b,
-            json_snapshot, created_at, updated_at, created_by, updated_by
+            json_snapshot, created_at, updated_at, created_by, updated_by,
+            workflow_status, project_type, project_opened_at, completed_at,
+            expected_completion_at, total_paused_seconds, total_time_taken_seconds,
+            delay_seconds, completion_outcome, assigned_duration_minutes, is_paused
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(
             (SELECT created_at FROM projects WHERE project_id = ?), ?
         ), ?, COALESCE(
             (SELECT created_by FROM projects WHERE project_id = ?), ?
-        ), ?)
+        ), ?,
+            COALESCE((SELECT workflow_status FROM projects WHERE project_id = ?), 'new'),
+            ?,
+            (SELECT project_opened_at FROM projects WHERE project_id = ?),
+            (SELECT completed_at FROM projects WHERE project_id = ?),
+            (SELECT expected_completion_at FROM projects WHERE project_id = ?),
+            COALESCE((SELECT total_paused_seconds FROM projects WHERE project_id = ?), 0),
+            (SELECT total_time_taken_seconds FROM projects WHERE project_id = ?),
+            COALESCE((SELECT delay_seconds FROM projects WHERE project_id = ?), 0),
+            COALESCE((SELECT completion_outcome FROM projects WHERE project_id = ?), ''),
+            (SELECT assigned_duration_minutes FROM projects WHERE project_id = ?),
+            COALESCE((SELECT is_paused FROM projects WHERE project_id = ?), 0)
+        )
         """,
         (
             project.project_id,
@@ -1803,6 +1857,17 @@ def save_project(
             project.project_id,
             created_by or updated_by,
             updated_by or created_by,
+            project.project_id,
+            project.project_type or "",
+            project.project_id,
+            project.project_id,
+            project.project_id,
+            project.project_id,
+            project.project_id,
+            project.project_id,
+            project.project_id,
+            project.project_id,
+            project.project_id,
         ),
     )
     cursor.execute("DELETE FROM residential_wings WHERE project_id = ?", (project.project_id,))
@@ -1854,6 +1919,33 @@ def _row_to_summary(row: tuple) -> Dict[str, str]:
     }
 
 
+def _row_to_dashboard(row: tuple) -> Dict[str, Any]:
+    return {
+        "project_id": row[0] or "",
+        "project_name": row[1] or "",
+        "client_name": row[2] or "",
+        "project_location": row[3] or "",
+        "project_no": row[4] or "",
+        "date": row[5] or "",
+        "created_at": row[6] or "",
+        "updated_at": row[7] or "",
+        "total_water_demand": row[8] or 0,
+        "engineer_name": row[9] or "",
+        "created_by": row[10] or "",
+        "workflow_status": row[11] or "new",
+        "project_type": row[12] or "",
+        "project_opened_at": row[13] or "",
+        "completed_at": row[14] or "",
+        "expected_completion_at": row[15] or "",
+        "total_paused_seconds": row[16] or 0,
+        "total_time_taken_seconds": row[17],
+        "delay_seconds": row[18] or 0,
+        "completion_outcome": row[19] or "",
+        "assigned_duration_minutes": row[20],
+        "is_paused": row[21] or 0,
+    }
+
+
 def get_project_history(limit: int = 100, db_path: str = DB_PATH) -> List[Dict[str, str]]:
     init_db(db_path)
     conn = sqlite3.connect(db_path)
@@ -1900,6 +1992,121 @@ def get_project_summary(project_id: str, db_path: str = DB_PATH) -> Optional[Dic
 
 def list_projects(db_path: str = DB_PATH) -> List[Dict[str, str]]:
     return get_project_history(200, db_path)
+
+
+def get_dashboard_projects(limit: int = 500, db_path: str = DB_PATH) -> List[Dict[str, Any]]:
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute(
+        _DASHBOARD_SQL + " ORDER BY updated_at DESC LIMIT ?",
+        (limit,),
+    )
+    rows = [_row_to_dashboard(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
+def get_project_workflow_row(project_id: str, db_path: str = DB_PATH) -> Optional[Dict[str, Any]]:
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute(_DASHBOARD_SQL + " WHERE project_id = ?", (project_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return _row_to_dashboard(row) if row else None
+
+
+def update_project_workflow(project_id: str, fields: Dict[str, Any], db_path: str = DB_PATH) -> None:
+    if not project_id or not fields:
+        return
+    allowed = {
+        "workflow_status",
+        "project_type",
+        "project_opened_at",
+        "completed_at",
+        "expected_completion_at",
+        "total_paused_seconds",
+        "total_time_taken_seconds",
+        "delay_seconds",
+        "completion_outcome",
+        "assigned_duration_minutes",
+        "is_paused",
+    }
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    assignments = ", ".join(f"{key} = ?" for key in updates)
+    values = list(updates.values()) + [datetime.now().isoformat(), project_id]
+    cursor.execute(
+        f"UPDATE projects SET {assignments}, updated_at = ? WHERE project_id = ?",
+        values,
+    )
+    conn.commit()
+    conn.close()
+
+
+def log_audit_event(
+    event_type: str,
+    *,
+    project_id: str = "",
+    project_name: str = "",
+    engineer_name: str = "",
+    username: str = "",
+    details: str = "",
+    db_path: str = DB_PATH,
+) -> None:
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO audit_log (event_type, project_id, project_name, engineer_name, username, details, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            event_type,
+            project_id,
+            project_name,
+            engineer_name,
+            username,
+            details,
+            datetime.now().isoformat(),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def delete_project(project_id: str, *, username: str = "", db_path: str = DB_PATH) -> bool:
+    if not project_id:
+        return False
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute(_DASHBOARD_SQL + " WHERE project_id = ?", (project_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return False
+    summary = _row_to_dashboard(row)
+    cursor.execute("DELETE FROM residential_wings WHERE project_id = ?", (project_id,))
+    cursor.execute("DELETE FROM commercial_units WHERE project_id = ?", (project_id,))
+    cursor.execute("DELETE FROM projects WHERE project_id = ?", (project_id,))
+    conn.commit()
+    conn.close()
+    log_audit_event(
+        "project_deleted",
+        project_id=project_id,
+        project_name=summary.get("project_name", ""),
+        engineer_name=summary.get("engineer_name", ""),
+        username=username,
+        db_path=db_path,
+    )
+    return True
 
 
 def update_project_metadata(
@@ -2163,6 +2370,372 @@ def next_project_number(db_path: str = DB_PATH) -> str:
         seq = 1
     return f"AE-{year}-{seq:03d}"
 
+# ==================== services/project_workflow.py ====================
+"""Project workflow status, timing, and dashboard aggregation helpers."""
+
+
+
+
+STATUS_NEW = "new"
+STATUS_IN_PROGRESS = "in_progress"
+STATUS_COMPLETED = "completed"
+STATUS_PENDING = "pending"
+STATUS_DELAYED = "delayed"
+STATUS_CANCELLED = "cancelled"
+
+STATUS_LABELS = {
+    STATUS_NEW: "New",
+    STATUS_IN_PROGRESS: "In Progress",
+    STATUS_COMPLETED: "Completed",
+    STATUS_PENDING: "Pending",
+    STATUS_DELAYED: "Delayed",
+    STATUS_CANCELLED: "Cancelled",
+}
+
+STATUS_FILTER_OPTIONS = ["All Status"] + [STATUS_LABELS[s] for s in (
+    STATUS_NEW,
+    STATUS_IN_PROGRESS,
+    STATUS_COMPLETED,
+    STATUS_PENDING,
+    STATUS_DELAYED,
+    STATUS_CANCELLED,
+)]
+
+LABEL_TO_STATUS = {v: k for k, v in STATUS_LABELS.items()}
+
+
+def _parse_iso(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(text[:26], fmt)
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")[:26])
+    except ValueError:
+        return None
+
+
+def format_duration(seconds: Optional[int]) -> str:
+    if seconds is None or seconds < 0:
+        return "—"
+    total = int(seconds)
+    hours, rem = divmod(total, 3600)
+    minutes = rem // 60
+    if hours:
+        return f"{hours:02d}h {minutes:02d}m"
+    return f"{minutes:02d}m"
+
+
+def format_duration_or_dash(seconds: Optional[int]) -> str:
+    if seconds is None:
+        return "—"
+    return format_duration(seconds)
+
+
+def _now() -> datetime:
+    return datetime.now()
+
+
+def effective_status(row: Dict[str, Any], *, now: Optional[datetime] = None) -> str:
+    now = now or _now()
+    stored = (row.get("workflow_status") or STATUS_NEW).strip().lower()
+    if stored == STATUS_CANCELLED:
+        return STATUS_CANCELLED
+    if stored == STATUS_COMPLETED or row.get("completed_at"):
+        return STATUS_COMPLETED
+    if stored == STATUS_PENDING or int(row.get("is_paused") or 0):
+        return STATUS_PENDING
+
+    opened = _parse_iso(row.get("project_opened_at"))
+    expected = _parse_iso(row.get("expected_completion_at"))
+    if expected and now > expected and opened and not row.get("completed_at"):
+        return STATUS_DELAYED
+    if stored == STATUS_DELAYED:
+        return STATUS_DELAYED
+
+    if opened or stored == STATUS_IN_PROGRESS:
+        return STATUS_IN_PROGRESS
+    return STATUS_NEW
+
+
+def active_elapsed_seconds(row: Dict[str, Any], *, now: Optional[datetime] = None) -> Optional[int]:
+    now = now or _now()
+    if int(row.get("is_paused") or 0):
+        return max(0, int(row.get("total_time_taken_seconds") or 0))
+
+    if row.get("completed_at"):
+        if row.get("total_time_taken_seconds") is not None:
+            return max(0, int(row["total_time_taken_seconds"]))
+        opened = _parse_iso(row.get("project_opened_at"))
+        completed = _parse_iso(row.get("completed_at"))
+        if opened and completed:
+            paused = int(row.get("total_paused_seconds") or 0)
+            return max(0, int((completed - opened).total_seconds()) - paused)
+        return None
+
+    opened = _parse_iso(row.get("project_opened_at"))
+    if not opened:
+        return None
+    paused = int(row.get("total_paused_seconds") or 0)
+    return max(0, int((now - opened).total_seconds()) - paused)
+
+
+def expected_seconds(row: Dict[str, Any]) -> Optional[int]:
+    minutes = row.get("assigned_duration_minutes")
+    if minutes is not None and str(minutes).strip() != "":
+        return int(minutes) * 60
+    expected = _parse_iso(row.get("expected_completion_at"))
+    opened = _parse_iso(row.get("project_opened_at"))
+    if expected and opened:
+        return max(0, int((expected - opened).total_seconds()))
+    return None
+
+
+def performance_indicator(row: Dict[str, Any], *, now: Optional[datetime] = None) -> Tuple[str, str]:
+    now = now or _now()
+    status = effective_status(row, now=now)
+    elapsed = active_elapsed_seconds(row, now=now)
+    expected = expected_seconds(row)
+
+    if status == STATUS_COMPLETED:
+        outcome = (row.get("completion_outcome") or "").strip().lower()
+        delay = int(row.get("delay_seconds") or 0)
+        if outcome == "early" or delay < 0:
+            detail = f"{format_duration(abs(delay))} early" if delay else "Completed Early"
+            return "✓ Completed Early", detail
+        if outcome == "delayed" or delay > 0:
+            return "⚠ Delayed", f"{format_duration(delay)} late"
+        return "✓ On Time", "On Time"
+
+    if status == STATUS_DELAYED:
+        if expected is not None and elapsed is not None:
+            overdue = max(0, elapsed - expected)
+            return "⚠ Delayed", f"{format_duration(overdue)} overdue"
+        return "⚠ Delayed", "Overdue"
+
+    if status in (STATUS_IN_PROGRESS, STATUS_NEW, STATUS_PENDING):
+        if expected is not None and elapsed is not None:
+            remaining = expected - elapsed
+            if remaining >= 0:
+                return "● In Progress", f"{format_duration(remaining)} remaining"
+            return "⚠ Delayed", f"{format_duration(abs(remaining))} overdue"
+        return "● In Progress", STATUS_LABELS.get(status, "In Progress")
+
+    if status == STATUS_CANCELLED:
+        return "Cancelled", "Cancelled"
+    return STATUS_LABELS.get(status, status.title()), ""
+
+
+def enrich_dashboard_row(row: Dict[str, Any], *, now: Optional[datetime] = None) -> Dict[str, Any]:
+    now = now or _now()
+    status = effective_status(row, now=now)
+    elapsed = active_elapsed_seconds(row, now=now)
+    expected = expected_seconds(row)
+    perf_title, perf_detail = performance_indicator(row, now=now)
+    project_type = (row.get("project_type") or "").strip()
+    return {
+        **row,
+        "status": status,
+        "status_label": STATUS_LABELS.get(status, status.title()),
+        "time_taken_seconds": elapsed,
+        "time_taken_display": format_duration_or_dash(elapsed),
+        "expected_seconds": expected,
+        "expected_display": format_duration_or_dash(expected),
+        "performance_title": perf_title,
+        "performance_detail": perf_detail,
+        "project_type_label": project_type_label(project_type) if project_type else "—",
+        "created_display": _display_date(row.get("created_at") or row.get("date")),
+        "updated_display": _display_date(row.get("updated_at")),
+    }
+
+
+def _display_date(value: Optional[str]) -> str:
+    dt = _parse_iso(value)
+    if dt:
+        return dt.strftime("%d-%m-%Y %H:%M")[:16]
+    return (value or "—")[:16]
+
+
+def is_today(value: Optional[str], *, now: Optional[datetime] = None) -> bool:
+    now = now or _now()
+    dt = _parse_iso(value)
+    if not dt:
+        return False
+    return dt.date() == now.date()
+
+
+def compute_statistics(rows: List[Dict[str, Any]], *, now: Optional[datetime] = None) -> Dict[str, int]:
+    now = now or _now()
+    stats = {
+        "total": 0,
+        "in_progress": 0,
+        "completed": 0,
+        "pending": 0,
+        "delayed": 0,
+        "today": 0,
+    }
+    for raw in rows:
+        row = enrich_dashboard_row(raw, now=now)
+        stats["total"] += 1
+        status = row["status"]
+        if status == STATUS_IN_PROGRESS:
+            stats["in_progress"] += 1
+        elif status == STATUS_COMPLETED:
+            stats["completed"] += 1
+        elif status == STATUS_PENDING:
+            stats["pending"] += 1
+        elif status == STATUS_DELAYED:
+            stats["delayed"] += 1
+        if is_today(raw.get("created_at"), now=now) or is_today(raw.get("project_opened_at"), now=now):
+            stats["today"] += 1
+    return stats
+
+
+def compute_engineer_performance(rows: List[Dict[str, Any]], *, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
+    now = now or _now()
+    buckets: Dict[str, Dict[str, Any]] = {}
+    for raw in rows:
+        row = enrich_dashboard_row(raw, now=now)
+        engineer = (row.get("engineer_name") or "Unassigned").strip() or "Unassigned"
+        bucket = buckets.setdefault(
+            engineer,
+            {
+                "engineer": engineer,
+                "projects": 0,
+                "completed": 0,
+                "in_progress": 0,
+                "delayed": 0,
+                "completed_seconds": [],
+            },
+        )
+        bucket["projects"] += 1
+        status = row["status"]
+        if status == STATUS_COMPLETED:
+            bucket["completed"] += 1
+            if row.get("time_taken_seconds") is not None:
+                bucket["completed_seconds"].append(int(row["time_taken_seconds"]))
+        elif status == STATUS_IN_PROGRESS:
+            bucket["in_progress"] += 1
+        elif status == STATUS_DELAYED:
+            bucket["delayed"] += 1
+
+    result = []
+    for engineer in sorted(buckets, key=lambda k: (-buckets[k]["projects"], k.lower())):
+        bucket = buckets[engineer]
+        seconds = bucket["completed_seconds"]
+        avg = int(sum(seconds) / len(seconds)) if seconds else None
+        result.append(
+            {
+                "engineer": engineer,
+                "projects": bucket["projects"],
+                "completed": bucket["completed"],
+                "in_progress": bucket["in_progress"],
+                "delayed": bucket["delayed"],
+                "avg_time_display": format_duration_or_dash(avg),
+            }
+        )
+    return result
+
+
+def list_engineer_options(rows: List[Dict[str, Any]]) -> List[str]:
+    names = {name for name in STAFF_NAMES}
+    for row in rows:
+        engineer = (row.get("engineer_name") or "").strip()
+        if engineer:
+            names.add(engineer)
+    return ["All Engineers"] + sorted(names, key=str.lower)
+
+
+def filter_rows(
+    rows: List[Dict[str, Any]],
+    *,
+    engineer: str = "All Engineers",
+    status_label: str = "All Status",
+    search: str = "",
+    now: Optional[datetime] = None,
+) -> List[Dict[str, Any]]:
+    now = now or _now()
+    search_key = (search or "").strip().lower()
+    status_key = LABEL_TO_STATUS.get(status_label)
+
+    filtered: List[Dict[str, Any]] = []
+    for raw in rows:
+        row = enrich_dashboard_row(raw, now=now)
+        if engineer and engineer != "All Engineers":
+            eng = (row.get("engineer_name") or "").strip()
+            if eng != engineer:
+                continue
+        if status_key and row["status"] != status_key:
+            continue
+        if search_key:
+            haystack = " ".join(
+                [
+                    row.get("project_id", ""),
+                    row.get("project_name", ""),
+                    row.get("client_name", ""),
+                    row.get("engineer_name", ""),
+                    row.get("project_type_label", ""),
+                    row.get("status_label", ""),
+                    row.get("project_type", ""),
+                ]
+            ).lower()
+            if search_key not in haystack:
+                continue
+        filtered.append(row)
+    return filtered
+
+
+def rows_for_stats(
+    rows: List[Dict[str, Any]],
+    *,
+    engineer: str = "All Engineers",
+    status_label: str = "All Status",
+    now: Optional[datetime] = None,
+) -> List[Dict[str, Any]]:
+    return filter_rows(rows, engineer=engineer, status_label=status_label, search="", now=now)
+
+
+def completion_fields_on_finish(row: Dict[str, Any], *, now: Optional[datetime] = None) -> Dict[str, Any]:
+    now = now or _now()
+    opened = _parse_iso(row.get("project_opened_at")) or now
+    paused = int(row.get("total_paused_seconds") or 0)
+    elapsed = max(0, int((now - opened).total_seconds()) - paused)
+    expected = expected_seconds(row)
+    delay = 0
+    outcome = "on_time"
+    if expected is not None:
+        delay = elapsed - expected
+        if delay < 0:
+            outcome = "early"
+        elif delay > 0:
+            outcome = "delayed"
+    return {
+        "workflow_status": STATUS_COMPLETED,
+        "completed_at": now.isoformat(),
+        "total_time_taken_seconds": elapsed,
+        "delay_seconds": max(0, delay) if delay > 0 else delay,
+        "completion_outcome": outcome,
+        "is_paused": 0,
+    }
+
+
+def open_fields_on_start(row: Dict[str, Any], *, now: Optional[datetime] = None) -> Dict[str, Any]:
+    now = now or _now()
+    updates: Dict[str, Any] = {}
+    if not row.get("project_opened_at"):
+        updates["project_opened_at"] = now.isoformat()
+    status = (row.get("workflow_status") or STATUS_NEW).strip().lower()
+    if status in ("", STATUS_NEW, STATUS_PENDING):
+        updates["workflow_status"] = STATUS_IN_PROGRESS
+        updates["is_paused"] = 0
+    return updates
+
 # ==================== services/project_service.py ====================
 """Project lifecycle helpers — new, open, search, auto ID."""
 
@@ -2242,6 +2815,31 @@ def find_projects(query: str = "", limit: int = 50, db_path: str = DB_PATH):
     if query:
         return search_projects(query, limit=limit, db_path=db_path)
     return get_project_history(limit, db_path)
+
+
+def list_dashboard_projects(db_path: str = DB_PATH):
+    return get_dashboard_projects(db_path=db_path)
+
+
+def mark_project_opened(project_id: str, db_path: str = DB_PATH) -> None:
+    row = get_project_workflow_row(project_id, db_path)
+    if not row:
+        return
+    updates = open_fields_on_start(row)
+    if updates:
+        update_project_workflow(project_id, updates, db_path)
+
+
+def mark_project_completed(project_id: str, db_path: str = DB_PATH) -> None:
+    row = get_project_workflow_row(project_id, db_path)
+    if not row:
+        return
+    updates = completion_fields_on_finish(row)
+    update_project_workflow(project_id, updates, db_path)
+
+
+def remove_project(project_id: str, *, username: str = "", db_path: str = DB_PATH) -> bool:
+    return delete_project(project_id, username=username, db_path=db_path)
 
 # ==================== services/automation.py ====================
 """Live automation — sync UI inputs to state and apply building parser rules."""
@@ -5209,7 +5807,7 @@ class SplashScreen(ctk.CTkFrame):
 
 
 class MainDashboard(ctk.CTkFrame):
-    """Professional, simplified Project Home dashboard."""
+    """Professional Project Home dashboard."""
 
     def __init__(
         self,
@@ -5223,7 +5821,7 @@ class MainDashboard(ctk.CTkFrame):
         self.on_open_project = on_open_project
         self.on_exit = on_exit
         self.project_hub: Optional[ProjectHub] = None
-        self._project_count = 0
+        self._stat_labels: dict[str, ctk.CTkLabel] = {}
         self._build()
 
     def _build(self) -> None:
@@ -5237,10 +5835,10 @@ class MainDashboard(ctk.CTkFrame):
             scrollbar_button_color="#AAB4BE",
             scrollbar_button_hover_color="#7F8C97",
         )
-        content.grid(row=0, column=0, sticky="nsew", padx=0, pady=0)
+        content.grid(row=0, column=0, sticky="nsew")
         content.grid_columnconfigure(0, weight=1)
 
-        hero = ctk.CTkFrame(content, fg_color=BRAND_NAVY, corner_radius=16, border_width=0)
+        hero = ctk.CTkFrame(content, fg_color=BRAND_NAVY, corner_radius=16)
         hero.grid(row=0, column=0, sticky="ew", padx=28, pady=(26, 18))
         hero.grid_columnconfigure(0, weight=1)
         hero.grid_columnconfigure(1, weight=0)
@@ -5249,112 +5847,73 @@ class MainDashboard(ctk.CTkFrame):
         left.grid(row=0, column=0, sticky="w", padx=(28, 20), pady=24)
         ctk.CTkLabel(
             left,
-            text="Project Home",
-            font=("Arial", 25, "bold"),
-            text_color="white",
+            text="AMERICAN EDGE ENGINEERS",
+            font=("Arial", 11, "bold"),
+            text_color="#AFC3D6",
             anchor="w",
         ).pack(anchor="w")
         ctk.CTkLabel(
             left,
-            text="Create, open and manage your engineering projects.",
+            text="Project Home",
+            font=("Arial", 25, "bold"),
+            text_color="white",
+            anchor="w",
+        ).pack(anchor="w", pady=(4, 0))
+        ctk.CTkLabel(
+            left,
+            text="Manage and monitor your engineering projects.",
             font=("Arial", 12),
             text_color="#D7E1EA",
             anchor="w",
         ).pack(anchor="w", pady=(7, 0))
-        ctk.CTkLabel(
-            left,
-            text="To start a new engineering report, click New Project.",
-            font=("Arial", 11),
-            text_color="#AFC3D6",
-            anchor="w",
-        ).pack(anchor="w", pady=(7, 0))
 
-        version = ctk.CTkLabel(
+        ctk.CTkButton(
             hero,
-            text="v2.0",
-            font=("Arial", 11, "bold"),
-            text_color=BRAND_ORANGE,
-            fg_color="#102E4B",
-            corner_radius=12,
-            width=64,
-            height=30,
-        )
-        version.grid(row=0, column=1, padx=(10, 28), pady=24, sticky="e")
-
-        actions_card = ctk.CTkFrame(
-            content,
-            fg_color="white",
-            corner_radius=14,
-            border_width=1,
-            border_color="#E0E5EA",
-        )
-        actions_card.grid(row=1, column=0, sticky="ew", padx=28, pady=(0, 16))
-        actions_card.grid_columnconfigure((0, 1, 2, 3), weight=1)
+            text="+ New Project",
+            command=safe_command(self.on_new_project, parent=self),
+            fg_color="#20A968",
+            hover_color="#1B8F58",
+            width=150,
+            height=40,
+            font=("Arial", 12, "bold"),
+        ).grid(row=0, column=1, padx=(10, 28), pady=24, sticky="e")
 
         ctk.CTkLabel(
-            actions_card,
-            text="Quick Start",
-            font=("Arial", 15, "bold"),
+            content,
+            text="PROJECT OVERVIEW",
+            font=("Arial", 12, "bold"),
             text_color=BRAND_NAVY,
-        ).grid(row=0, column=0, columnspan=4, sticky="w", padx=20, pady=(16, 10))
+        ).grid(row=1, column=0, sticky="w", padx=28, pady=(0, 8))
 
-        quick = [
-            ("+  New Project", "Start a new engineering calculation", "#20A968", self.on_new_project),
-            ("Open Project", "Continue an existing project", BRAND_ORANGE, self._open_selected_prompt),
-            ("Search Projects", "Find saved projects quickly", "#2F80B8", self._focus_search),
-            ("Reports", "Generate PDF and Excel reports", "#7F8C8D", self._reports_info),
+        stats_row_1 = ctk.CTkFrame(content, fg_color="transparent")
+        stats_row_1.grid(row=2, column=0, sticky="ew", padx=28, pady=(0, 8))
+        stats_row_1.grid_columnconfigure((0, 1, 2), weight=1)
+
+        stats_row_2 = ctk.CTkFrame(content, fg_color="transparent")
+        stats_row_2.grid(row=3, column=0, sticky="ew", padx=28, pady=(0, 16))
+        stats_row_2.grid_columnconfigure((0, 1, 2), weight=1)
+
+        stat_defs = [
+            ("total", "TOTAL PROJECTS", stats_row_1, 0),
+            ("in_progress", "IN PROGRESS", stats_row_1, 1),
+            ("completed", "COMPLETED", stats_row_1, 2),
+            ("pending", "PENDING", stats_row_2, 0),
+            ("delayed", "DELAYED", stats_row_2, 1),
+            ("today", "TODAY'S PROJECTS", stats_row_2, 2),
         ]
-        for i, (title, subtitle, color, cmd) in enumerate(quick):
-            card = ctk.CTkFrame(
-                actions_card,
-                fg_color="#F7F9FB",
-                corner_radius=10,
-                border_width=1,
-                border_color="#E4E9EE",
-            )
-            card.grid(
-                row=1,
-                column=i,
-                sticky="ew",
-                padx=(20 if i == 0 else 7, 7 if i < 3 else 20),
-                pady=(0, 18),
-            )
-            card.grid_columnconfigure(0, weight=1)
-            ctk.CTkButton(
-                card,
-                text=title,
-                command=safe_command(cmd, parent=self),
-                fg_color=color,
-                hover_color=color,
-                height=42,
-                corner_radius=8,
-                font=("Arial", 12, "bold"),
-            ).grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 7))
-            ctk.CTkLabel(
-                card,
-                text=subtitle,
-                font=("Arial", 10),
-                text_color="#6B7280",
-            ).grid(row=1, column=0, pady=(0, 12))
-
-        stats_row = ctk.CTkFrame(content, fg_color="transparent")
-        stats_row.grid(row=2, column=0, sticky="ew", padx=28, pady=(0, 16))
-        stats_row.grid_columnconfigure((0, 1, 2), weight=1)
-
-        self._stat_total = self._make_stat_card(stats_row, 0, "TOTAL PROJECTS", "0", "All saved projects")
-        self._stat_latest = self._make_stat_card(stats_row, 1, "LATEST PROJECT", "—", "Most recently updated")
-        self._stat_info = self._make_stat_card(stats_row, 2, "WORKFLOW", "Auto", "Calculations update automatically")
+        for key, title, parent, column in stat_defs:
+            self._stat_labels[key] = self._make_stat_card(parent, column, title, "0")
 
         self.project_hub = ProjectHub(
             content,
             on_new_project=self.on_new_project,
             on_open_project=self.on_open_project,
+            on_edit_project=self.on_open_project,
+            on_stats_changed=self._update_stats,
         )
-        self.project_hub.grid(row=3, column=0, sticky="nsew", padx=28, pady=(0, 26))
+        self.project_hub.grid(row=4, column=0, sticky="nsew", padx=28, pady=(0, 26))
 
-        self._refresh_stats()
-
-    def _make_stat_card(self, parent, column: int, title: str, value: str, subtitle: str):
+    def _make_stat_card(self, parent, column: int, title: str, value: str):
         card = ctk.CTkFrame(
             parent,
             fg_color="white",
@@ -5365,53 +5924,28 @@ class MainDashboard(ctk.CTkFrame):
         )
         card.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 6, 6 if column < 2 else 0))
         card.grid_propagate(False)
-        card.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(card, text=title, font=("Arial", 9, "bold"), text_color="#7A8794").grid(
-            row=0, column=0, sticky="w", padx=16, pady=(11, 0)
+        ctk.CTkLabel(card, text=title, font=("Arial", 9, "bold"), text_color="#7A8794").pack(
+            anchor="w", padx=16, pady=(12, 0)
         )
-        value_label = ctk.CTkLabel(card, text=value, font=("Arial", 17, "bold"), text_color=BRAND_NAVY)
-        value_label.grid(row=1, column=0, sticky="w", padx=16)
-        ctk.CTkLabel(card, text=subtitle, font=("Arial", 9), text_color="#8A949E").grid(
-            row=2, column=0, sticky="w", padx=16, pady=(0, 8)
-        )
+        value_label = ctk.CTkLabel(card, text=value, font=("Arial", 22, "bold"), text_color=BRAND_NAVY)
+        value_label.pack(anchor="w", padx=16, pady=(2, 12))
         return value_label
 
-    def _open_selected_prompt(self) -> None:
-        if self.project_hub and self.project_hub._selected_id:
-            self.on_open_project(self.project_hub._selected_id)
-        else:
-            if self.project_hub:
-                self.project_hub.focus_search()
-            messagebox.showinfo(
-                "Open Project",
-                "Select a project from the list below, then click Open Project.",
-            )
-
-    def _focus_search(self) -> None:
-        if self.project_hub:
-            self.project_hub.focus_search()
-
-    def _reports_info(self) -> None:
-        messagebox.showinfo(
-            "Reports",
-            "Open a project and use Preview → Generate Report to create PDF and Excel outputs.",
-        )
-
-    def _refresh_stats(self) -> None:
-        projects = find_projects()
-        self._project_count = len(projects)
-        if hasattr(self, "_stat_total"):
-            self._stat_total.configure(text=str(self._project_count))
-        if hasattr(self, "_stat_latest"):
-            if projects:
-                latest = projects[0]
-                name = (latest.get("project_name") or "Untitled").strip()
-                self._stat_latest.configure(text=name[:22] + ("…" if len(name) > 22 else ""))
-            else:
-                self._stat_latest.configure(text="—")
+    def _update_stats(self, stats: dict) -> None:
+        mapping = {
+            "total": stats.get("total", 0),
+            "in_progress": stats.get("in_progress", 0),
+            "completed": stats.get("completed", 0),
+            "pending": stats.get("pending", 0),
+            "delayed": stats.get("delayed", 0),
+            "today": stats.get("today", 0),
+        }
+        for key, value in mapping.items():
+            label = self._stat_labels.get(key)
+            if label is not None:
+                label.configure(text=str(value))
 
     def refresh_stats(self) -> None:
-        self._refresh_stats()
         if self.project_hub:
             self.project_hub.refresh()
 
@@ -5425,151 +5959,353 @@ DashboardScreen = MainDashboard
 
 
 class ProjectHub(ctk.CTkFrame):
-    """Dashboard project management: new, open, search, history, edit."""
+    """Professional project management table with filters, timing, and actions."""
 
     def __init__(
         self,
         master,
         on_new_project: Callable[[], None],
         on_open_project: Callable[[str], None],
+        on_edit_project: Optional[Callable[[str], None]] = None,
+        on_stats_changed: Optional[Callable[[dict], None]] = None,
     ) -> None:
-        super().__init__(master, fg_color="white", corner_radius=10, border_width=1, border_color="#DDDDDD")
+        super().__init__(master, fg_color="white", corner_radius=14, border_width=1, border_color="#E0E5EA")
         self.on_new_project = on_new_project
         self.on_open_project = on_open_project
-        self._selected_id: Optional[str] = None
+        self.on_edit_project = on_edit_project or on_open_project
+        self.on_stats_changed = on_stats_changed
+        self._all_rows: list[dict] = []
+        self._filtered_rows: list[dict] = []
         self._row_widgets: dict[str, ctk.CTkFrame] = {}
+        self._selected_id: Optional[str] = None
+        self._search_job = None
         self._build()
         self.refresh()
 
     def _build(self) -> None:
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
+        self.grid_rowconfigure(3, weight=1)
 
-        header = ctk.CTkFrame(self, fg_color="transparent")
-        header.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 8))
-        header.grid_columnconfigure(1, weight=1)
+        filters = ctk.CTkFrame(self, fg_color="#F8FAFB", corner_radius=10)
+        filters.grid(row=0, column=0, sticky="ew", padx=18, pady=(18, 10))
+        filters.grid_columnconfigure(2, weight=1)
 
         ctk.CTkLabel(
-            header,
-            text="Project History",
-            font=("Arial", 16, "bold"),
+            filters,
+            text="PROJECT FILTERS",
+            font=("Arial", 11, "bold"),
             text_color=BRAND_NAVY,
-        ).grid(row=0, column=0, sticky="w")
+        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=14, pady=(12, 8))
 
+        ctk.CTkLabel(filters, text="Engineer:", font=("Arial", 11, "bold")).grid(
+            row=1, column=0, padx=(14, 6), pady=(0, 12), sticky="w"
+        )
+        self.engineer_var = ctk.StringVar(value="All Engineers")
+        self.engineer_combo = ctk.CTkComboBox(
+            filters,
+            values=["All Engineers"],
+            variable=self.engineer_var,
+            command=self._on_filter_change,
+            width=180,
+            height=32,
+        )
+        self.engineer_combo.grid(row=1, column=1, padx=(0, 16), pady=(0, 12), sticky="w")
+
+        ctk.CTkLabel(filters, text="Status:", font=("Arial", 11, "bold")).grid(
+            row=1, column=2, padx=(0, 6), pady=(0, 12), sticky="w"
+        )
+        self.status_var = ctk.StringVar(value="All Status")
+        self.status_combo = ctk.CTkComboBox(
+            filters,
+            values=STATUS_FILTER_OPTIONS,
+            variable=self.status_var,
+            command=self._on_filter_change,
+            width=170,
+            height=32,
+        )
+        self.status_combo.grid(row=1, column=3, padx=(0, 16), pady=(0, 12), sticky="w")
+
+        ctk.CTkLabel(filters, text="Search Projects:", font=("Arial", 11, "bold")).grid(
+            row=2, column=0, padx=(14, 6), pady=(0, 14), sticky="w"
+        )
         self.search_var = ctk.StringVar()
-        self.search_var.trace_add("write", lambda *_: self._on_search())
-        search_frame = ctk.CTkFrame(header, fg_color="transparent")
-        search_frame.grid(row=0, column=1, sticky="e")
+        self.search_var.trace_add("write", lambda *_: self._schedule_search())
         self.search_entry = ctk.CTkEntry(
-            search_frame,
+            filters,
             textvariable=self.search_var,
-            placeholder_text="Search by ID, name, client, type, date...",
-            width=300,
+            placeholder_text="Search by Project ID, Project Name, Client Name or Engineer...",
+            height=34,
         )
-        self.search_entry.pack(side="left", padx=(0, 8))
-        ctk.CTkButton(search_frame, text="Clear", width=60, command=self._clear_search).pack(side="left")
+        self.search_entry.grid(row=2, column=1, columnspan=3, sticky="ew", padx=(0, 14), pady=(0, 14))
 
-        actions = ctk.CTkFrame(self, fg_color="transparent")
-        actions.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 8))
-        ctk.CTkButton(actions, text="+ New Project", fg_color="#27AE60", command=self._new_project, width=120).pack(
-            side="left", padx=(0, 8)
-        )
-        ctk.CTkButton(actions, text="Open Project", fg_color=BRAND_ORANGE, command=self._open_selected, width=120).pack(
-            side="left", padx=(0, 8)
-        )
-        ctk.CTkButton(actions, text="Edit Project", fg_color="#2980B9", command=self._edit_selected, width=110).pack(
-            side="left", padx=(0, 8)
-        )
-        ctk.CTkButton(actions, text="Refresh", fg_color="#7F8C8D", command=self.refresh, width=80).pack(side="left")
+        ctk.CTkLabel(
+            self,
+            text="PROJECTS",
+            font=("Arial", 12, "bold"),
+            text_color=BRAND_NAVY,
+        ).grid(row=1, column=0, sticky="w", padx=20, pady=(4, 6))
 
-        self.history_frame = ctk.CTkScrollableFrame(self, label_text="Projects")
-        self.history_frame.grid(row=2, column=0, sticky="nsew", padx=16, pady=(0, 16))
+        self.table_wrap = ctk.CTkScrollableFrame(self, fg_color="transparent", height=320)
+        self.table_wrap.grid(row=3, column=0, sticky="nsew", padx=16, pady=(0, 10))
+        self.table_wrap.grid_columnconfigure(0, weight=1)
 
-        cols = ctk.CTkFrame(self.history_frame, fg_color="#E8ECF0", corner_radius=4)
-        cols.pack(fill="x", pady=(0, 4))
-        for i, (text, width) in enumerate([
-            ("Project ID", 130), ("Name", 180), ("Client", 120), ("Location", 120),
-            ("No.", 90), ("Updated", 140),
-        ]):
-            ctk.CTkLabel(cols, text=text, font=("Arial", 10, "bold"), width=width, anchor="w").grid(
-                row=0, column=i, padx=4, pady=4, sticky="w"
+        self._header_columns = [
+            ("Project ID", 120),
+            ("Project Name", 170),
+            ("Type", 110),
+            ("Engineer", 100),
+            ("Created", 110),
+            ("Updated", 110),
+            ("Status", 95),
+            ("Time Taken", 90),
+            ("Expected", 80),
+            ("Performance", 130),
+            ("Actions", 150),
+        ]
+        header = ctk.CTkFrame(self.table_wrap, fg_color="#E8ECF0", corner_radius=4)
+        header.pack(fill="x", pady=(0, 4))
+        for i, (text, width) in enumerate(self._header_columns):
+            ctk.CTkLabel(header, text=text, font=("Arial", 9, "bold"), width=width, anchor="w").grid(
+                row=0, column=i, padx=3, pady=4, sticky="w"
             )
 
-        self.status_label = ctk.CTkLabel(self, text="", font=("Arial", 10), text_color="#888888", anchor="w")
-        self.status_label.grid(row=3, column=0, sticky="w", padx=16, pady=(0, 12))
+        self.status_label = ctk.CTkLabel(self, text="", font=("Arial", 10), text_color="#7A8794", anchor="w")
+        self.status_label.grid(row=4, column=0, sticky="w", padx=20, pady=(0, 8))
+
+        self.performance_frame = ctk.CTkFrame(self, fg_color="#F8FAFB", corner_radius=10)
+        self.performance_frame.grid(row=5, column=0, sticky="ew", padx=16, pady=(0, 16))
+        self.performance_frame.grid_columnconfigure(0, weight=1)
+
+        perf_header = ctk.CTkFrame(self.performance_frame, fg_color="transparent")
+        perf_header.grid(row=0, column=0, sticky="ew", padx=12, pady=(10, 4))
+        ctk.CTkLabel(
+            perf_header,
+            text="ENGINEER PERFORMANCE",
+            font=("Arial", 11, "bold"),
+            text_color=BRAND_NAVY,
+        ).pack(side="left")
+        self._perf_body = ctk.CTkFrame(self.performance_frame, fg_color="transparent")
+        self._perf_body.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 10))
 
     def focus_search(self) -> None:
         self.search_entry.focus_set()
         self.search_entry.icursor("end")
 
-    def _clear_search(self) -> None:
-        self.search_var.set("")
+    def _schedule_search(self) -> None:
+        if self._search_job is not None:
+            try:
+                self.after_cancel(self._search_job)
+            except Exception:
+                pass
+        self._search_job = self.after(180, self._apply_filters)
 
-    def _on_search(self) -> None:
-        self.refresh(self.search_var.get())
+    def _on_filter_change(self, *_args) -> None:
+        self._apply_filters()
 
-    def refresh(self, query: str = "") -> None:
-        for w in list(self.history_frame.winfo_children())[1:]:
-            w.destroy()
+    def refresh(self) -> None:
+        self._all_rows = list_dashboard_projects()
+        engineers = list_engineer_options(self._all_rows)
+        self.engineer_combo.configure(values=engineers)
+        if self.engineer_var.get() not in engineers:
+            self.engineer_var.set("All Engineers")
+        self._apply_filters()
+
+    def _apply_filters(self) -> None:
+        engineer = self.engineer_var.get()
+        status = self.status_var.get()
+        search = self.search_var.get()
+        self._filtered_rows = filter_rows(
+            self._all_rows,
+            engineer=engineer,
+            status_label=status,
+            search=search,
+        )
+        stats_rows = rows_for_stats(self._all_rows, engineer=engineer, status_label=status)
+        stats = compute_statistics(stats_rows)
+        if self.on_stats_changed:
+            self.on_stats_changed(stats)
+        self._render_table()
+        self._render_performance(stats_rows)
+        self.status_label.configure(
+            text=f"Showing {len(self._filtered_rows)} of {len(self._all_rows)} project(s)"
+        )
+
+    def _render_table(self) -> None:
+        for widget in list(self.table_wrap.winfo_children())[1:]:
+            widget.destroy()
         self._row_widgets.clear()
         self._selected_id = None
 
-        projects = find_projects(query)
-        if not projects:
+        if not self._filtered_rows:
             ctk.CTkLabel(
-                self.history_frame,
+                self.table_wrap,
                 text="No projects found. Click '+ New Project' to create one.",
                 font=("Arial", 11),
-                text_color="#888888",
-            ).pack(pady=20)
-            self.status_label.configure(text="0 projects")
+                text_color="#8A949E",
+            ).pack(pady=24)
             return
 
-        for proj in projects:
-            self._add_row(proj)
-        self.status_label.configure(text=f"{len(projects)} project(s) — select a row, then Open or Edit")
+        for row in self._filtered_rows:
+            self._add_row(row)
 
-    def _add_row(self, proj: dict) -> None:
-        pid = proj["project_id"]
-        row = ctk.CTkFrame(self.history_frame, fg_color="transparent", corner_radius=4)
-        row.pack(fill="x", pady=1)
-        self._row_widgets[pid] = row
-        updated = (proj.get("updated_at") or "")[:16].replace("T", " ")
+    def _add_row(self, row: dict) -> None:
+        pid = row["project_id"]
+        frame = ctk.CTkFrame(self.table_wrap, fg_color="transparent", corner_radius=4)
+        frame.pack(fill="x", pady=1)
+        self._row_widgets[pid] = frame
+
         values = [
             pid,
-            proj.get("project_name", ""),
-            proj.get("client_name", ""),
-            proj.get("project_location", ""),
-            proj.get("project_no", ""),
-            updated,
+            row.get("project_name", ""),
+            row.get("project_type_label", "—"),
+            row.get("engineer_name", "") or "—",
+            row.get("created_display", "—"),
+            row.get("updated_display", "—"),
+            row.get("status_label", ""),
+            row.get("time_taken_display", "—"),
+            row.get("expected_display", "—"),
+            f"{row.get('performance_title', '')} {row.get('performance_detail', '')}".strip(),
         ]
-        widths = [130, 180, 120, 120, 90, 140]
-        for i, (val, width) in enumerate(zip(values, widths)):
-            lbl = ctk.CTkLabel(row, text=val[:28], font=("Arial", 10), width=width, anchor="w")
-            lbl.grid(row=0, column=i, padx=4, pady=3, sticky="w")
-            lbl.bind("<Button-1>", lambda e, p=pid: self._select_row(p))
-            row.bind("<Button-1>", lambda e, p=pid: self._select_row(p))
-        row.bind("<Double-Button-1>", lambda e, p=pid: self.on_open_project(p))
+        widths = [w for _, w in self._header_columns[:-1]]
+        for i, (value, width) in enumerate(zip(values, widths)):
+            text = (value or "")[:34]
+            lbl = ctk.CTkLabel(frame, text=text, font=("Arial", 9), width=width, anchor="w")
+            lbl.grid(row=0, column=i, padx=3, pady=3, sticky="w")
+            lbl.bind("<Button-1>", lambda _e, p=pid: self._select_row(p))
+            frame.bind("<Button-1>", lambda _e, p=pid: self._select_row(p))
+        frame.bind("<Double-Button-1>", lambda _e, p=pid: self._open_project(p))
+
+        actions = ctk.CTkFrame(frame, fg_color="transparent")
+        actions.grid(row=0, column=len(values), padx=2, pady=2, sticky="w")
+        ctk.CTkButton(
+            actions,
+            text="Open",
+            width=48,
+            height=24,
+            font=("Arial", 9),
+            fg_color=BRAND_ORANGE,
+            command=safe_command(lambda p=pid: self._open_project(p), parent=self),
+        ).pack(side="left", padx=1)
+        ctk.CTkButton(
+            actions,
+            text="Edit",
+            width=48,
+            height=24,
+            font=("Arial", 9),
+            fg_color="#2980B9",
+            command=safe_command(lambda p=pid: self._edit_project(p), parent=self),
+        ).pack(side="left", padx=1)
+        ctk.CTkButton(
+            actions,
+            text="Delete",
+            width=52,
+            height=24,
+            font=("Arial", 9),
+            fg_color="#C0392B",
+            command=safe_command(lambda p=pid, r=row: self._delete_project(p, r), parent=self),
+        ).pack(side="left", padx=1)
 
     def _select_row(self, project_id: str) -> None:
         self._selected_id = project_id
         for pid, row in self._row_widgets.items():
             row.configure(fg_color="#D6EAF8" if pid == project_id else "transparent")
 
-    def _new_project(self) -> None:
-        self.on_new_project()
+    def _open_project(self, project_id: str) -> None:
+        mark_project_opened(project_id)
+        self.on_open_project(project_id)
 
-    def _open_selected(self) -> None:
-        if not self._selected_id:
-            messagebox.showinfo("Select Project", "Select a project from the history list first.")
-            return
-        self.on_open_project(self._selected_id)
+    def _edit_project(self, project_id: str) -> None:
+        mark_project_opened(project_id)
+        self.on_edit_project(project_id)
 
-    def _edit_selected(self) -> None:
-        if not self._selected_id:
-            messagebox.showinfo("Select Project", "Select a project to edit.")
+    def _delete_project(self, project_id: str, row: dict) -> None:
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Delete Project")
+        dialog.geometry("460x260")
+        dialog.transient(self.winfo_toplevel())
+        dialog.grab_set()
+
+        body = ctk.CTkFrame(dialog, fg_color="white")
+        body.pack(fill="both", expand=True, padx=16, pady=16)
+        ctk.CTkLabel(body, text="Delete Project?", font=("Arial", 18, "bold"), text_color=BRAND_NAVY).pack(
+            anchor="w", pady=(4, 10)
+        )
+        ctk.CTkLabel(body, text=f"Project:\n{row.get('project_name', '')}", font=("Arial", 12), justify="left").pack(
+            anchor="w", pady=(0, 6)
+        )
+        ctk.CTkLabel(
+            body,
+            text=f"Engineer:\n{row.get('engineer_name', '') or '—'}",
+            font=("Arial", 12),
+            justify="left",
+        ).pack(anchor="w", pady=(0, 10))
+        ctk.CTkLabel(
+            body,
+            text="Are you sure you want to permanently delete this project?",
+            font=("Arial", 11),
+            text_color="#6B7280",
+            justify="left",
+        ).pack(anchor="w", pady=(0, 14))
+
+        buttons = ctk.CTkFrame(body, fg_color="transparent")
+        buttons.pack(fill="x")
+
+        def _cancel() -> None:
+            dialog.grab_release()
+            dialog.destroy()
+
+        def _confirm() -> None:
+            if remove_project(project_id):
+                dialog.grab_release()
+                dialog.destroy()
+                self.refresh()
+                messagebox.showinfo("Delete Project", "Project deleted successfully.")
+            else:
+                messagebox.showerror("Delete Project", "Unable to delete the selected project.")
+
+        ctk.CTkButton(buttons, text="Cancel", width=120, fg_color="#95A5A6", command=_cancel).pack(
+            side="left", padx=(0, 8)
+        )
+        ctk.CTkButton(buttons, text="Delete Project", width=140, fg_color="#C0392B", command=_confirm).pack(
+            side="right"
+        )
+
+    def _render_performance(self, rows: list[dict]) -> None:
+        for child in self._perf_body.winfo_children():
+            child.destroy()
+        summary = compute_engineer_performance(rows)
+        if not summary:
+            ctk.CTkLabel(
+                self._perf_body,
+                text="No engineer performance data available yet.",
+                font=("Arial", 10),
+                text_color="#8A949E",
+            ).pack(anchor="w", padx=8, pady=8)
             return
-        ProjectEditDialog(self.winfo_toplevel(), self._selected_id, on_saved=self.refresh)
+
+        header = ctk.CTkFrame(self._perf_body, fg_color="#E8ECF0", corner_radius=4)
+        header.pack(fill="x", padx=4, pady=(0, 4))
+        perf_cols = [("Engineer", 140), ("Projects", 80), ("Completed", 90), ("In Progress", 90), ("Delayed", 80), ("Avg. Time", 90)]
+        for i, (text, width) in enumerate(perf_cols):
+            ctk.CTkLabel(header, text=text, font=("Arial", 9, "bold"), width=width, anchor="w").grid(
+                row=0, column=i, padx=4, pady=4, sticky="w"
+            )
+
+        for item in summary:
+            row = ctk.CTkFrame(self._perf_body, fg_color="transparent")
+            row.pack(fill="x", padx=4, pady=1)
+            values = [
+                item["engineer"],
+                str(item["projects"]),
+                str(item["completed"]),
+                str(item["in_progress"]),
+                str(item["delayed"]),
+                item["avg_time_display"],
+            ]
+            for i, (value, (text, width)) in enumerate(zip(values, perf_cols)):
+                ctk.CTkLabel(row, text=value, font=("Arial", 9), width=width, anchor="w").grid(
+                    row=0, column=i, padx=4, pady=2, sticky="w"
+                )
 
 # ==================== ui/project_edit_dialog.py ====================
 
@@ -8186,6 +8922,7 @@ class ProjectWorkspace(ctk.CTkFrame):
             logo = LOGO_PATH if os.path.exists(LOGO_PATH) else None
             export_pdf(pdf_path, self.app_state.project, self.app_state.results, logo)
             export_excel(xlsx_path, self.app_state.project, self.app_state.results)
+            mark_project_completed(project.project_id, db_path=DB_PATH)
         except Exception as exc:
             messagebox.showerror("Generate Report", str(exc))
             return
@@ -8533,6 +9270,11 @@ class Application(ctk.CTk):
         ws.show("Project")
 
         self._mode = "project"
+        if state.project.project_id:
+            try:
+                mark_project_opened(state.project.project_id, DB_PATH)
+            except Exception:
+                traceback.print_exc()
 
         try:
             self.state("zoomed")

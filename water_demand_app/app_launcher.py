@@ -22,7 +22,7 @@ from config.nbc_2026 import (
 )
 from services.database import DB_PATH, init_db
 from services.lookup_db import init_lookup_tables
-from services.project_service import create_new_project_state, load_project_state
+from services.project_service import create_new_project_state, load_project_state, mark_project_opened
 from ui.app_state import AppState
 from ui.dashboard import MainDashboard
 from ui.gui_safe import safe_command
@@ -239,6 +239,11 @@ class Application(ctk.CTk):
         ws.show("Project")
 
         self._mode = "project"
+        if state.project.project_id:
+            try:
+                mark_project_opened(state.project.project_id, DB_PATH)
+            except Exception:
+                traceback.print_exc()
 
         try:
             self.state("zoomed")

@@ -26,7 +26,13 @@ from services.database import DB_PATH, build_project_snapshot, init_db, parse_pr
 from services.excel_exporter import export_excel
 from services.lookup_db import init_lookup_tables
 from services.pdf_exporter import export_pdf
-from services.project_service import create_new_project_state, find_projects, load_project_state, persist_project_state
+from services.project_service import (
+    create_new_project_state,
+    find_projects,
+    load_project_state,
+    mark_project_completed,
+    persist_project_state,
+)
 from services.result_tables import (
     build_oht_table_sections,
     build_preview_table_sections,
@@ -1107,6 +1113,7 @@ class ProjectWorkspace(ctk.CTkFrame):
             logo = LOGO_PATH if os.path.exists(LOGO_PATH) else None
             export_pdf(pdf_path, self.app_state.project, self.app_state.results, logo)
             export_excel(xlsx_path, self.app_state.project, self.app_state.results)
+            mark_project_completed(project.project_id, db_path=DB_PATH)
         except Exception as exc:
             messagebox.showerror("Generate Report", str(exc))
             return

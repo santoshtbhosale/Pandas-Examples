@@ -92,6 +92,7 @@ FILES = [
     "services/calculator.py",
     "services/database.py",
     "services/lookup_db.py",
+    "services/project_workflow.py",
     "services/project_service.py",
     "services/automation.py",
     "services/environmental_calculator.py",
