@@ -49,3 +49,18 @@ class ScrollablePage(ctk.CTkScrollableFrame):
         height = parent.winfo_height()
         if width > 20 and height > 20:
             self.configure(width=width, height=height)
+
+    def schedule_auto_calculate(self, state, delay_ms: int = 300, callback: Optional[Callable[[], None]] = None) -> None:
+        """Debounce rapid input changes before running the full calculation engine."""
+        job_attr = "_auto_calc_after_id"
+        existing = getattr(self, job_attr, None)
+        if existing is not None:
+            self.after_cancel(existing)
+
+        def _run() -> None:
+            setattr(self, job_attr, None)
+            state.auto_calculate()
+            if callback:
+                callback()
+
+        setattr(self, job_attr, self.after(delay_ms, _run))

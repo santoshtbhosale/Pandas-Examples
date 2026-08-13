@@ -7,11 +7,11 @@ import sys
 import unittest
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-WORKSPACE_ROOT = os.path.dirname(APP_DIR)
 if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
 REMOVED_FIELDS = (
+    "project_location",
     "client_address",
     "client_contact",
     "client_email",
@@ -28,7 +28,6 @@ class TestProjectDetailsCleanup(unittest.TestCase):
     def setUpClass(cls) -> None:
         try:
             import customtkinter as ctk
-            import importlib.util
 
             from ui.app_state import AppState
             from ui.pages.project_page import ProjectPage
@@ -44,38 +43,24 @@ class TestProjectDetailsCleanup(unittest.TestCase):
         except Exception as exc:
             raise unittest.SkipTest(f"GUI not available: {exc}") from exc
 
-    def test_client_address_not_displayed(self) -> None:
-        self.assertNotIn("client_address", self.page.entries)
-
-    def test_contact_not_displayed(self) -> None:
-        self.assertNotIn("client_contact", self.page.entries)
-
-    def test_email_not_displayed(self) -> None:
-        self.assertNotIn("client_email", self.page.entries)
-
-    def test_gst_not_displayed(self) -> None:
-        self.assertNotIn("client_gst", self.page.entries)
-
-    def test_city_not_displayed(self) -> None:
-        self.assertNotIn("city", self.page.entries)
-
-    def test_state_not_displayed(self) -> None:
-        self.assertNotIn("state", self.page.entries)
-
-    def test_rainfall_zone_not_displayed(self) -> None:
-        self.assertNotIn("rainfall_zone", self.page.entries)
-
-    def test_climate_not_displayed(self) -> None:
-        self.assertNotIn("climate", self.page.entries)
-
     def test_removed_fields_not_in_entries(self) -> None:
         for field in REMOVED_FIELDS:
             with self.subTest(field=field):
                 self.assertNotIn(field, self.page.entries)
 
     def test_core_fields_remain(self) -> None:
-        for field in ("project_name", "client_name", "project_location"):
+        for field in ("project_name", "client_name"):
             self.assertIn(field, self.page.entries)
+
+    def test_has_project_type_combo(self) -> None:
+        self.assertTrue(hasattr(self.page, "type_combo"))
+
+    def test_has_reference_and_date_labels(self) -> None:
+        self.assertTrue(hasattr(self.page, "project_no_label"))
+        self.assertTrue(hasattr(self.page, "date_label"))
+
+    def test_no_plot_mode_widget(self) -> None:
+        self.assertFalse(hasattr(self.page, "plot_mode_var"))
 
 
 if __name__ == "__main__":

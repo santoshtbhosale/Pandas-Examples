@@ -255,7 +255,7 @@ class ResidentialPage(ScrollablePage):
     def _sync_and_calculate(self) -> None:
         from services.automation import wings_from_ui_rows
         self.state.residential = wings_from_ui_rows(self.rows, self.state.project.plot_mode)
-        self.state.auto_calculate()
+        self.schedule_auto_calculate(self.state)
 
     def _save_and_next(self) -> None:
         wings: list = []

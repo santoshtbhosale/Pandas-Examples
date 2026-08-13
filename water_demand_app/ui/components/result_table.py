@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable, List, Sequence, Tuple
+from typing import Callable, Iterable, List, Optional, Sequence, Tuple
 
 import customtkinter as ctk
 
@@ -20,13 +20,19 @@ _VALUE_FG = "#1A5276"
 
 
 class ResultTableView(ctk.CTkFrame):
-    """Renders one or more titled result tables inside a scrollable host."""
+    """Renders one or more titled result tables inside a scrollable or plain host."""
 
-    def __init__(self, master, **kwargs) -> None:
+    def __init__(self, master, embedded: bool = True, **kwargs) -> None:
         kwargs.setdefault("fg_color", "transparent")
         super().__init__(master, **kwargs)
-        self._host = ctk.CTkScrollableFrame(self, fg_color="transparent", label_text="")
+        self._embedded = embedded
+        if embedded:
+            self._host = ctk.CTkFrame(self, fg_color="transparent")
+        else:
+            self._host = ctk.CTkScrollableFrame(self, fg_color="transparent", label_text="")
         self._host.pack(fill="both", expand=True)
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
 
     def set_sections(self, sections: Sequence[TableSection]) -> None:
         for child in self._host.winfo_children():
@@ -49,11 +55,11 @@ class ResultTableView(ctk.CTkFrame):
             font=("Arial", 12),
             text_color="#666666",
             anchor="w",
-        ).pack(fill="x", padx=12, pady=8)
+        ).pack(fill="x", padx=4, pady=8)
 
     def _render_section(self, title: str, rows: Sequence[TableRow]) -> None:
         wrapper = ctk.CTkFrame(self._host, fg_color="transparent")
-        wrapper.pack(fill="x", padx=8, pady=(10, 4))
+        wrapper.pack(fill="x", expand=True, padx=2, pady=(8, 4))
 
         ctk.CTkLabel(
             wrapper,
@@ -61,13 +67,13 @@ class ResultTableView(ctk.CTkFrame):
             font=("Arial", 13, "bold"),
             text_color=BRAND_NAVY,
             anchor="w",
-        ).pack(fill="x", padx=4, pady=(0, 6))
+        ).pack(fill="x", padx=2, pady=(0, 6))
 
         table = ctk.CTkFrame(wrapper, fg_color="white", corner_radius=6, border_width=1, border_color=_BORDER)
-        table.pack(fill="x", padx=2, pady=2)
-        table.columnconfigure(0, weight=3, uniform="cols")
-        table.columnconfigure(1, weight=1, uniform="cols")
-        table.columnconfigure(2, weight=1, uniform="cols")
+        table.pack(fill="x", expand=True, padx=0, pady=0)
+        table.grid_columnconfigure(0, weight=13, uniform="result_cols")
+        table.grid_columnconfigure(1, weight=4, uniform="result_cols")
+        table.grid_columnconfigure(2, weight=3, uniform="result_cols")
 
         headers = ("Description", "Value", "Unit")
         for col, label in enumerate(headers):
@@ -102,4 +108,5 @@ class ResultTableView(ctk.CTkFrame):
                     font=font,
                     text_color=fg,
                     anchor=anchor,
+                    wraplength=900 if col == 0 else 0,
                 ).pack(fill="x", padx=10, pady=5)

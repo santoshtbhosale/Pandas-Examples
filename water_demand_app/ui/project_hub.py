@@ -46,12 +46,13 @@ class ProjectHub(ctk.CTkFrame):
         self.search_var.trace_add("write", lambda *_: self._on_search())
         search_frame = ctk.CTkFrame(header, fg_color="transparent")
         search_frame.grid(row=0, column=1, sticky="e")
-        ctk.CTkEntry(
+        self.search_entry = ctk.CTkEntry(
             search_frame,
             textvariable=self.search_var,
             placeholder_text="Search by ID, name, client, type, date...",
             width=300,
-        ).pack(side="left", padx=(0, 8))
+        )
+        self.search_entry.pack(side="left", padx=(0, 8))
         ctk.CTkButton(search_frame, text="Clear", width=60, command=self._clear_search).pack(side="left")
 
         actions = ctk.CTkFrame(self, fg_color="transparent")
@@ -67,7 +68,7 @@ class ProjectHub(ctk.CTkFrame):
         )
         ctk.CTkButton(actions, text="Refresh", fg_color="#7F8C8D", command=self.refresh, width=80).pack(side="left")
 
-        self.history_frame = ctk.CTkScrollableFrame(self, height=220, label_text="Projects")
+        self.history_frame = ctk.CTkScrollableFrame(self, label_text="Projects")
         self.history_frame.grid(row=2, column=0, sticky="nsew", padx=16, pady=(0, 16))
 
         cols = ctk.CTkFrame(self.history_frame, fg_color="#E8ECF0", corner_radius=4)
@@ -82,6 +83,10 @@ class ProjectHub(ctk.CTkFrame):
 
         self.status_label = ctk.CTkLabel(self, text="", font=("Arial", 10), text_color="#888888", anchor="w")
         self.status_label.grid(row=3, column=0, sticky="w", padx=16, pady=(0, 12))
+
+    def focus_search(self) -> None:
+        self.search_entry.focus_set()
+        self.search_entry.icursor("end")
 
     def _clear_search(self) -> None:
         self.search_var.set("")

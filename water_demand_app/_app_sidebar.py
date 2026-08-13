@@ -113,6 +113,9 @@ class ProjectWorkspace(ctk.CTkFrame):
         self.container.grid_columnconfigure(0, weight=1)
         self.pages: dict = {}
         self._current_page = "Project"
+        self._calc_job = None
+        self._calc_dirty = True
+        self._project_list_cache: list | None = None
 
     def ensure_pages_built(self) -> None:
         if self._pages_built:
@@ -124,6 +127,7 @@ class ProjectWorkspace(ctk.CTkFrame):
     def apply_state(self, state: AppState) -> None:
         """Reset project data and refresh widgets without destroying pages."""
         self.app_state = state
+        self._calc_dirty = True
         for page in self.pages.values():
             if hasattr(page, "state"):
                 page.state = state
@@ -210,25 +214,24 @@ class ProjectWorkspace(ctk.CTkFrame):
             wraplength=200,
         ).pack(pady=(0, 4))
         if is_project_type_set(self.app_state.project.project_type):
-            ctk.CTkLabel(
+            self._project_type_label = ctk.CTkLabel(
                 sb,
                 text=project_type_label(self.app_state.project.project_type),
                 font=("Arial", 9, "bold"),
                 text_color=BRAND_ORANGE,
                 wraplength=200,
-            ).pack(pady=(0, 8))
+            )
         else:
-            ctk.CTkLabel(
+            self._project_type_label = ctk.CTkLabel(
                 sb,
                 text="Select project type",
                 font=("Arial", 9, "italic"),
                 text_color="#AAAAAA",
                 wraplength=200,
-            ).pack(pady=(0, 8))
+            )
+        self._project_type_label.pack(pady=(0, 8))
         self.nav_btns = {}
         for key, label in self.NAV:
-            if not self._nav_visible(key):
-                continue
             btn = ctk.CTkButton(
                 sb,
                 text=label,
@@ -240,8 +243,9 @@ class ProjectWorkspace(ctk.CTkFrame):
                 font=("Arial", 12),
                 command=lambda k=key: self.show(k),
             )
-            btn.pack(fill="x", padx=8, pady=2)
             self.nav_btns[key] = btn
+            if self._nav_visible(key):
+                btn.pack(fill="x", padx=8, pady=2)
         ctk.CTkButton(sb, text="Save Project", fg_color=BRAND_ORANGE, command=self._save_db).pack(
             side="bottom", fill="x", padx=10, pady=4
         )
@@ -262,8 +266,26 @@ class ProjectWorkspace(ctk.CTkFrame):
             self.on_logout()
 
     def _rebuild_sidebar(self) -> None:
-        self.sidebar.destroy()
-        self.sidebar = self._build_sidebar()
+        allowed = set(visible_pages(self.app_state.project.project_type))
+        for key, btn in self.nav_btns.items():
+            if key in allowed:
+                if not btn.winfo_ismapped():
+                    btn.pack(fill="x", padx=8, pady=2)
+            else:
+                btn.pack_forget()
+        if hasattr(self, "_project_type_label"):
+            if is_project_type_set(self.app_state.project.project_type):
+                self._project_type_label.configure(
+                    text=project_type_label(self.app_state.project.project_type),
+                    font=("Arial", 9, "bold"),
+                    text_color=BRAND_ORANGE,
+                )
+            else:
+                self._project_type_label.configure(
+                    text="Select project type",
+                    font=("Arial", 9, "italic"),
+                    text_color="#AAAAAA",
+                )
 
     def _build_pages(self) -> None:
         self.pages["Project"] = ProjectPage(
@@ -372,7 +394,7 @@ class ProjectWorkspace(ctk.CTkFrame):
             entry = ctk.CTkEntry(form, width=220)
             entry.insert(0, str(self.app_state.other.landscape_area.get(plot, 765 if plot == "Plot-A" else 762)))
             entry.grid(row=i, column=1, padx=10, pady=8, sticky="w")
-            entry.bind("<KeyRelease>", lambda *_: (self._sync_landscape_live(), self._calc()))
+            entry.bind("<KeyRelease>", lambda *_: (self._sync_landscape_live(), self._schedule_calc()))
             self._le[plot] = entry
         ctk.CTkLabel(parent, text="Auto: 6 L/sq.m/day per NBC-2026 (live)", font=("Arial", 11, "italic")).pack(anchor="w", padx=20)
         ctk.CTkButton(parent, text="Next ->", fg_color=BRAND_ORANGE, command=self._save_landscape).pack(pady=12)
@@ -409,13 +431,13 @@ class ProjectWorkspace(ctk.CTkFrame):
                 values=list(POOL_STATUS_LABELS.keys()),
                 variable=status_var,
                 width=180,
-                command=lambda *_: (self._sync_pool_live(), self._calc()),
+                command=lambda *_: (self._sync_pool_live(), self._schedule_calc()),
             ).grid(row=i, column=1, padx=10, pady=8, sticky="w")
             self._pool_status[plot] = status_var
             entry = ctk.CTkEntry(form, width=180)
             entry.insert(0, str(int(self.app_state.other.swimming_pool.get(plot, 0))))
             entry.grid(row=i, column=2, padx=10, pady=8, sticky="w")
-            entry.bind("<KeyRelease>", lambda *_: (self._sync_pool_live(), self._calc()))
+            entry.bind("<KeyRelease>", lambda *_: (self._sync_pool_live(), self._schedule_calc()))
             self._pe[plot] = entry
         ctk.CTkButton(parent, text="Next ->", fg_color=BRAND_ORANGE, command=self._save_pool).pack(pady=12)
 
@@ -446,7 +468,7 @@ class ProjectWorkspace(ctk.CTkFrame):
             entry = ctk.CTkEntry(form, width=220)
             entry.insert(0, str(int(self.app_state.other.hvac_water.get(plot, 0))))
             entry.grid(row=i, column=1, padx=10, pady=8, sticky="w")
-            entry.bind("<KeyRelease>", lambda *_: (self._sync_hvac_live(), self._calc()))
+            entry.bind("<KeyRelease>", lambda *_: (self._sync_hvac_live(), self._schedule_calc()))
             self._he[plot] = entry
         ctk.CTkButton(
             parent,
@@ -519,18 +541,21 @@ class ProjectWorkspace(ctk.CTkFrame):
             self.app_state.other.fire_tank[plot] = float(auto_val)
             lbl.configure(text=f"{auto_val:,} (auto — NBC Table 7)")
 
-    def _sewage_page(self):
+    def _result_page(self, title: str, subtitle: str, table_attr: str):
         frame = ScrollablePage(self.container)
+        frame.grid_rowconfigure(1, weight=1)
         header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
         header.pack(fill="x", padx=5, pady=5)
-        ctk.CTkLabel(header, text="Sewage Generation", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
+        ctk.CTkLabel(header, text=title, font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
         ctk.CTkLabel(
             frame,
-            text="Population-based sewage generation — auto-calculated from residential/commercial data.",
+            text=subtitle,
             font=("Arial", 11, "italic"),
-        ).pack(anchor="w", padx=20, pady=(0, 5))
-        self.sewage_table = ResultTableView(frame)
-        self.sewage_table.pack(fill="both", expand=True, padx=15, pady=10)
+            text_color="#555555",
+        ).pack(anchor="w", padx=16, pady=(0, 4))
+        table = ResultTableView(frame, embedded=True)
+        table.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        setattr(self, table_attr, table)
         ctk.CTkLabel(
             frame,
             text="Updates automatically as you enter data on other pages.",
@@ -538,6 +563,13 @@ class ProjectWorkspace(ctk.CTkFrame):
             text_color="#666666",
         ).pack(pady=(0, 8))
         return frame
+
+    def _sewage_page(self):
+        return self._result_page(
+            "Sewage Generation",
+            "Sewage Generation Calculations — auto-calculated from residential/commercial data.",
+            "sewage_table",
+        )
 
     def _refresh_sewage(self, silent: bool = False) -> None:
         if not hasattr(self, "sewage_table"):
@@ -552,24 +584,11 @@ class ProjectWorkspace(ctk.CTkFrame):
         self.sewage_table.set_sections(sections)
 
     def _solid_waste_page(self):
-        frame = ScrollablePage(self.container)
-        header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
-        header.pack(fill="x", padx=5, pady=5)
-        ctk.CTkLabel(header, text="Solid Waste Generation", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
-        ctk.CTkLabel(
-            frame,
-            text="Solid waste and e-waste calculations — auto-calculated from population and STP data.",
-            font=("Arial", 11, "italic"),
-        ).pack(anchor="w", padx=20, pady=(0, 5))
-        self.solid_waste_table = ResultTableView(frame)
-        self.solid_waste_table.pack(fill="both", expand=True, padx=15, pady=10)
-        ctk.CTkLabel(
-            frame,
-            text="Updates automatically as you enter data on other pages.",
-            font=("Arial", 10, "italic"),
-            text_color="#666666",
-        ).pack(pady=(0, 8))
-        return frame
+        return self._result_page(
+            "Solid Waste Generation",
+            "Solid waste and e-waste calculations — auto-calculated from population and STP data.",
+            "solid_waste_table",
+        )
 
     def _refresh_solid_waste(self, silent: bool = False) -> None:
         if not hasattr(self, "solid_waste_table"):
@@ -584,24 +603,11 @@ class ProjectWorkspace(ctk.CTkFrame):
         self.solid_waste_table.set_sections(sections)
 
     def _oht_page(self):
-        frame = ScrollablePage(self.container)
-        header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
-        header.pack(fill="x", padx=5, pady=5)
-        ctk.CTkLabel(header, text="OHT Details", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
-        ctk.CTkLabel(
-            frame,
-            text="Overhead tank capacities auto-calculate from residential/commercial demand.",
-            font=("Arial", 11, "italic"),
-        ).pack(anchor="w", padx=20, pady=(0, 5))
-        self.oht_table = ResultTableView(frame)
-        self.oht_table.pack(fill="both", expand=True, padx=15, pady=10)
-        ctk.CTkLabel(
-            frame,
-            text="Updates automatically as you enter data on other pages.",
-            font=("Arial", 10, "italic"),
-            text_color="#666666",
-        ).pack(pady=(0, 8))
-        return frame
+        return self._result_page(
+            "OHT Details",
+            "Overhead tank capacities auto-calculate from residential/commercial demand.",
+            "oht_table",
+        )
 
     def _refresh_oht(self, silent: bool = False) -> None:
         if not hasattr(self, "oht_table"):
@@ -617,19 +623,11 @@ class ProjectWorkspace(ctk.CTkFrame):
             target[plot] = float(entry.get() or 0)
 
     def _stp_page(self):
-        frame = ScrollablePage(self.container)
-        header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
-        header.pack(fill="x", padx=5, pady=5)
-        ctk.CTkLabel(header, text="STP Summary", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
-        self.stp_table = ResultTableView(frame)
-        self.stp_table.pack(fill="both", expand=True, padx=15, pady=10)
-        ctk.CTkLabel(
-            frame,
-            text="Updates automatically as you enter data on other pages.",
-            font=("Arial", 10, "italic"),
-            text_color="#666666",
-        ).pack(pady=(0, 8))
-        return frame
+        return self._result_page(
+            "STP Summary",
+            "Sewage treatment summary — auto-calculated from project inputs.",
+            "stp_table",
+        )
 
     def _refresh_stp(self, silent: bool = False):
         if not hasattr(self, "stp_table"):
@@ -642,11 +640,12 @@ class ProjectWorkspace(ctk.CTkFrame):
 
     def _preview_page(self):
         frame = ScrollablePage(self.container)
+        frame.grid_rowconfigure(1, weight=1)
         header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
         header.pack(fill="x", padx=5, pady=5)
         ctk.CTkLabel(header, text="Report Preview", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
-        self.preview_table = ResultTableView(frame)
-        self.preview_table.pack(fill="both", expand=True, padx=15, pady=10)
+        self.preview_table = ResultTableView(frame, embedded=True)
+        self.preview_table.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         ctk.CTkLabel(
             frame,
             text="Summary updates live — no Calculate button required.",
@@ -744,7 +743,7 @@ class ProjectWorkspace(ctk.CTkFrame):
         self._current_page = name
         page = self.pages[name]
         _raise_page(page)
-        if hasattr(page, "refresh"):
+        if name == "Project" and hasattr(page, "refresh"):
             page.refresh()
         if name == "STP":
             self._refresh_stp()
@@ -755,7 +754,8 @@ class ProjectWorkspace(ctk.CTkFrame):
         elif name == "OHT":
             self._refresh_oht()
         elif name == "Preview":
-            self._calc()
+            if self._calc_dirty:
+                self._calc()
             self._refresh_preview(silent=True)
         elif name == "UGT":
             self._refresh_ugt()
@@ -764,10 +764,21 @@ class ProjectWorkspace(ctk.CTkFrame):
         for key, btn in self.nav_btns.items():
             btn.configure(fg_color=BRAND_ORANGE if key == name else "transparent")
 
+    def _schedule_calc(self, delay_ms: int = 300) -> None:
+        self._calc_dirty = True
+        if self._calc_job is not None:
+            self.after_cancel(self._calc_job)
+        self._calc_job = self.after(delay_ms, self._run_scheduled_calc)
+
+    def _run_scheduled_calc(self) -> None:
+        self._calc_job = None
+        self._calc()
+
     def _calc(self):
         try:
             sync_pages_to_state(self)
             self.app_state.auto_calculate()
+            self._calc_dirty = False
             self._refresh_live_panels()
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
@@ -802,7 +813,6 @@ class ProjectWorkspace(ctk.CTkFrame):
         try:
             validate_required(project.project_name, "Project Name")
             validate_required(project.client_name, "Client Name")
-            validate_required(project.project_location, "Location")
             validate_required(project.engineer_name, "Engineer Name")
         except ValidationError as exc:
             messagebox.showerror("Validation Error", exc.message)

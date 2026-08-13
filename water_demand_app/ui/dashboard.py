@@ -26,28 +26,35 @@ class MainDashboard(ctk.CTkFrame):
         self.on_open_project = on_open_project
         self.on_exit = on_exit
         self.project_hub: Optional[ProjectHub] = None
+        self._project_count = 0
         self._build()
 
     def _build(self) -> None:
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
-        top = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=0, height=72)
+        top = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=0, height=64)
         top.grid(row=0, column=0, sticky="ew")
         top.grid_propagate(False)
         top.grid_columnconfigure(1, weight=1)
+
+        title_frame = ctk.CTkFrame(top, fg_color="transparent")
+        title_frame.grid(row=0, column=0, padx=20, pady=10, sticky="w")
         ctk.CTkLabel(
-            top,
+            title_frame,
             text="PLANETCODE ENGINEERING SUITE",
-            font=("Arial", 16, "bold"),
+            font=("Arial", 15, "bold"),
             text_color=BRAND_ORANGE,
-        ).grid(row=0, column=0, padx=24, pady=20, sticky="w")
+            anchor="w",
+        ).pack(anchor="w")
         ctk.CTkLabel(
-            top,
-            text="Engineering Design & Reporting",
+            title_frame,
+            text="Water Demand Report Generator",
             font=("Arial", 11),
             text_color="#CCCCCC",
-        ).grid(row=0, column=1, padx=16, sticky="w")
+            anchor="w",
+        ).pack(anchor="w", pady=(2, 0))
+
         ctk.CTkButton(
             top,
             text="Exit",
@@ -55,11 +62,12 @@ class MainDashboard(ctk.CTkFrame):
             fg_color="#C0392B",
             width=80,
             height=32,
-        ).grid(row=0, column=2, padx=24, sticky="e")
+        ).grid(row=0, column=2, padx=20, pady=16, sticky="e")
 
-        body = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        body.grid(row=1, column=0, sticky="nsew", padx=24, pady=16)
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.grid(row=1, column=0, sticky="nsew", padx=20, pady=12)
         body.grid_columnconfigure(0, weight=1)
+        body.grid_rowconfigure(4, weight=1)
 
         ctk.CTkLabel(
             body,
@@ -74,10 +82,10 @@ class MainDashboard(ctk.CTkFrame):
             font=("Arial", 13),
             text_color="#666666",
             anchor="w",
-        ).grid(row=1, column=0, sticky="ew", pady=(0, 16))
+        ).grid(row=1, column=0, sticky="ew", pady=(0, 12))
 
         actions = ctk.CTkFrame(body, fg_color="transparent")
-        actions.grid(row=2, column=0, sticky="ew", pady=(0, 16))
+        actions.grid(row=2, column=0, sticky="ew", pady=(0, 12))
         for i, (text, color, cmd) in enumerate([
             ("+ New Project", "#27AE60", self.on_new_project),
             ("Open Existing Project", BRAND_ORANGE, self._open_selected_prompt),
@@ -94,21 +102,22 @@ class MainDashboard(ctk.CTkFrame):
             actions.grid_columnconfigure(i, weight=1)
 
         stats = ctk.CTkFrame(body, fg_color="white", corner_radius=10, border_width=1, border_color="#DDDDDD")
-        stats.grid(row=3, column=0, sticky="ew", pady=(0, 16))
-        count = len(find_projects())
-        ctk.CTkLabel(
+        stats.grid(row=3, column=0, sticky="ew", pady=(0, 12))
+        self.stats_label = ctk.CTkLabel(
             stats,
-            text=f"Saved Projects: {count}",
+            text="Saved Projects: 0",
             font=("Arial", 14, "bold"),
             text_color=BRAND_NAVY,
-        ).pack(anchor="w", padx=20, pady=16)
+        )
+        self.stats_label.pack(anchor="w", padx=20, pady=14)
 
         self.project_hub = ProjectHub(
             body,
             on_new_project=self.on_new_project,
             on_open_project=self.on_open_project,
         )
-        self.project_hub.grid(row=4, column=0, sticky="ew", pady=(0, 16))
+        self.project_hub.grid(row=4, column=0, sticky="nsew")
+        self._refresh_stats()
 
     def _open_selected_prompt(self) -> None:
         if self.project_hub and self.project_hub._selected_id:
@@ -118,7 +127,7 @@ class MainDashboard(ctk.CTkFrame):
 
     def _focus_search(self) -> None:
         if self.project_hub:
-            self.project_hub.refresh()
+            self.project_hub.focus_search()
 
     def _reports_info(self) -> None:
         messagebox.showinfo(
@@ -126,7 +135,12 @@ class MainDashboard(ctk.CTkFrame):
             "Open a project and use Preview → Generate Report to create PDF and Excel outputs.",
         )
 
+    def _refresh_stats(self) -> None:
+        self._project_count = len(find_projects())
+        self.stats_label.configure(text=f"Saved Projects: {self._project_count}")
+
     def refresh_stats(self) -> None:
+        self._refresh_stats()
         if self.project_hub:
             self.project_hub.refresh()
 
