@@ -24,6 +24,7 @@ from services.lookup_db import next_project_number, upsert_client
 from ui.app_state import AppState
 from ui.components.scrollable_frame import ScrollablePage
 from ui.components.validation import ValidationError, validate_positive_int, validate_required
+from ui.scheduled_callbacks import cancel_after, widget_is_alive
 
 FORM_PAD_X = 16
 FORM_ROW_PAD_Y = 6
@@ -82,7 +83,13 @@ class ProjectPage(ScrollablePage):
         self._engineering_widgets: list = []
         self._signoff_widgets: list = []
         self._details_visible = False
+        self._deferred_sync_job = None
         self._build()
+
+    def cancel_pending_callbacks(self) -> None:
+        super().cancel_pending_callbacks()
+        cancel_after(self, self._deferred_sync_job)
+        self._deferred_sync_job = None
 
     def _add_label(self, parent, row: int, text: str, *, bold: bool = False, section: bool = False) -> ctk.CTkLabel:
         font = ("Arial", 14, "bold") if section else ("Arial", 13, "bold" if bold else "normal")
@@ -339,7 +346,9 @@ class ProjectPage(ScrollablePage):
         self._update_workflow_hint()
 
     def _sync_building_height(self) -> None:
-        if not self._details_visible:
+        if not self._details_visible or not widget_is_alive(self):
+            return
+        if not widget_is_alive(getattr(self, "height_entry", None)):
             return
         config = self.building_config_var.get().strip()
         _, height = parse_building_config(config)
@@ -400,10 +409,8 @@ class ProjectPage(ScrollablePage):
 
             self.on_next()
 
-            try:
-                self.after(100, self._deferred_post_navigation_sync)
-            except Exception:
-                pass
+            cancel_after(self, self._deferred_sync_job)
+            self._deferred_sync_job = self.after(100, self._deferred_post_navigation_sync)
         except ValidationError as exc:
             messagebox.showerror("Validation Error", exc.message)
         except (ValueError, TypeError) as exc:
@@ -416,6 +423,9 @@ class ProjectPage(ScrollablePage):
             )
 
     def _deferred_post_navigation_sync(self) -> None:
+        self._deferred_sync_job = None
+        if not widget_is_alive(self):
+            return
         try:
             self.state.sync_building_defaults()
         except Exception:
@@ -426,6 +436,8 @@ class ProjectPage(ScrollablePage):
             pass
 
     def refresh(self) -> None:
+        if not widget_is_alive(self):
+            return
         project = self.state.project
 
         for key in ("project_name", "client_name"):

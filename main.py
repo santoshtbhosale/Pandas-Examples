@@ -5300,6 +5300,43 @@ def safe_command(callback: F, parent: Optional[Any] = None, title: str = "Error"
     wrapper.__name__ = getattr(callback, "__name__", "safe_command")
     return wrapper  # type: ignore[return-value]
 
+# ==================== ui/scheduled_callbacks.py ====================
+"""Safe scheduling helpers for Tk/CustomTkinter widget callbacks."""
+
+
+
+F = TypeVar("F", bound=Callable[..., Any])
+
+
+def widget_is_alive(widget: Any) -> bool:
+    """Return True when a Tk widget still exists and can be accessed."""
+    if widget is None:
+        return False
+    try:
+        return bool(widget.winfo_exists())
+    except (tk.TclError, AttributeError, RuntimeError, ValueError):
+        return False
+
+
+def cancel_after(widget: Any, job_id: Any) -> None:
+    if widget is None or job_id is None:
+        return
+    try:
+        widget.after_cancel(job_id)
+    except (tk.TclError, AttributeError, RuntimeError, ValueError):
+        pass
+
+
+def safe_widget_callback(widget: Any, callback: Callable[[], None]) -> Callable[[], None]:
+    """Wrap a no-arg callback so it never touches a destroyed widget."""
+
+    def wrapper() -> None:
+        if not widget_is_alive(widget):
+            return
+        callback()
+
+    return wrapper
+
 # ==================== ui/app_state.py ====================
 
 
@@ -5401,11 +5438,15 @@ class AppState:
 # ==================== ui/components/scrollable_frame.py ====================
 
 
+
+
 PAGE_BG = "#F0F2F5"
 
 
 class ScrollablePage(ctk.CTkScrollableFrame):
     """Full-size scrollable page shell used by every wizard screen."""
+
+    _PENDING_JOB_ATTRS = ("_resize_after_id", "_auto_calc_after_id")
 
     def __init__(self, master, **kwargs) -> None:
         kwargs.setdefault("fg_color", PAGE_BG)
@@ -5414,10 +5455,22 @@ class ScrollablePage(ctk.CTkScrollableFrame):
         kwargs.setdefault("label_text", "")
         super().__init__(master, **kwargs)
         self._resize_after_id: str | None = None
+        self._auto_calc_after_id: str | None = None
+        self.bind("<Configure>", self._on_self_configure, add="+")
         self.bind("<Map>", self._schedule_resize, add="+")
-        if master is not None:
-            master.bind("<Configure>", self._on_master_configure, add="+")
-        self.after_idle(self._sync_to_parent)
+        self._schedule_after_idle(self._sync_to_parent)
+
+    def cancel_pending_callbacks(self) -> None:
+        for attr in self._PENDING_JOB_ATTRS:
+            cancel_after(self, getattr(self, attr, None))
+            setattr(self, attr, None)
+
+    def destroy(self) -> None:
+        self.cancel_pending_callbacks()
+        try:
+            super().destroy()
+        except Exception:
+            pass
 
     def grid(self, **kwargs):
         kwargs.setdefault("sticky", "nsew")
@@ -5430,39 +5483,57 @@ class ScrollablePage(ctk.CTkScrollableFrame):
         super().pack(**kwargs)
         self._schedule_resize()
 
-    def _schedule_resize(self, _event=None) -> None:
-        if self._resize_after_id is not None:
-            self.after_cancel(self._resize_after_id)
-        self._resize_after_id = self.after_idle(self._sync_to_parent)
+    def _schedule_after_idle(self, callback: Callable[[], None]) -> None:
+        cancel_after(self, self._resize_after_id)
+        wrapped = safe_widget_callback(self, callback)
+        self._resize_after_id = self.after_idle(wrapped)
 
-    def _on_master_configure(self, event) -> None:
-        if event.widget is self.master:
-            self._schedule_resize()
+    def _on_self_configure(self, event) -> None:
+        if event.widget is not self or not widget_is_alive(self):
+            return
+        self._schedule_resize()
+
+    def _schedule_resize(self, _event=None) -> None:
+        if not widget_is_alive(self):
+            return
+        cancel_after(self, self._resize_after_id)
+        self._resize_after_id = self.after_idle(safe_widget_callback(self, self._sync_to_parent))
 
     def _sync_to_parent(self) -> None:
         self._resize_after_id = None
+        if not widget_is_alive(self):
+            return
         parent = self.master
-        if parent is None:
+        if parent is None or not widget_is_alive(parent):
             return
         width = parent.winfo_width()
         height = parent.winfo_height()
         if width > 20 and height > 20:
-            self.configure(width=width, height=height)
+            try:
+                self.configure(width=width, height=height)
+            except Exception:
+                pass
 
-    def schedule_auto_calculate(self, state, delay_ms: int = 300, callback: Optional[Callable[[], None]] = None) -> None:
+    def schedule_auto_calculate(
+        self,
+        state,
+        delay_ms: int = 300,
+        callback: Optional[Callable[[], None]] = None,
+    ) -> None:
         """Debounce rapid input changes before running the full calculation engine."""
-        job_attr = "_auto_calc_after_id"
-        existing = getattr(self, job_attr, None)
-        if existing is not None:
-            self.after_cancel(existing)
+        if not widget_is_alive(self):
+            return
+        cancel_after(self, self._auto_calc_after_id)
 
         def _run() -> None:
-            setattr(self, job_attr, None)
+            self._auto_calc_after_id = None
+            if not widget_is_alive(self):
+                return
             state.auto_calculate()
             if callback:
                 callback()
 
-        setattr(self, job_attr, self.after(delay_ms, _run))
+        self._auto_calc_after_id = self.after(delay_ms, safe_widget_callback(self, _run))
 
 # ==================== ui/components/result_table.py ====================
 """Professional Description | Value | Unit tables for engineering report screens."""
@@ -6478,7 +6549,13 @@ class ProjectPage(ScrollablePage):
         self._engineering_widgets: list = []
         self._signoff_widgets: list = []
         self._details_visible = False
+        self._deferred_sync_job = None
         self._build()
+
+    def cancel_pending_callbacks(self) -> None:
+        super().cancel_pending_callbacks()
+        cancel_after(self, self._deferred_sync_job)
+        self._deferred_sync_job = None
 
     def _add_label(self, parent, row: int, text: str, *, bold: bool = False, section: bool = False) -> ctk.CTkLabel:
         font = ("Arial", 14, "bold") if section else ("Arial", 13, "bold" if bold else "normal")
@@ -6735,7 +6812,9 @@ class ProjectPage(ScrollablePage):
         self._update_workflow_hint()
 
     def _sync_building_height(self) -> None:
-        if not self._details_visible:
+        if not self._details_visible or not widget_is_alive(self):
+            return
+        if not widget_is_alive(getattr(self, "height_entry", None)):
             return
         config = self.building_config_var.get().strip()
         _, height = parse_building_config(config)
@@ -6796,10 +6875,8 @@ class ProjectPage(ScrollablePage):
 
             self.on_next()
 
-            try:
-                self.after(100, self._deferred_post_navigation_sync)
-            except Exception:
-                pass
+            cancel_after(self, self._deferred_sync_job)
+            self._deferred_sync_job = self.after(100, self._deferred_post_navigation_sync)
         except ValidationError as exc:
             messagebox.showerror("Validation Error", exc.message)
         except (ValueError, TypeError) as exc:
@@ -6812,6 +6889,9 @@ class ProjectPage(ScrollablePage):
             )
 
     def _deferred_post_navigation_sync(self) -> None:
+        self._deferred_sync_job = None
+        if not widget_is_alive(self):
+            return
         try:
             self.state.sync_building_defaults()
         except Exception:
@@ -6822,6 +6902,8 @@ class ProjectPage(ScrollablePage):
             pass
 
     def refresh(self) -> None:
+        if not widget_is_alive(self):
+            return
         project = self.state.project
 
         for key in ("project_name", "client_name"):
@@ -7836,6 +7918,22 @@ def _raise_page(page) -> None:
         pass
 
 
+def _destroy_page(page) -> None:
+    """Cancel pending callbacks and destroy a workflow page safely."""
+    if page is None:
+        return
+    cancel = getattr(page, "cancel_pending_callbacks", None)
+    if callable(cancel):
+        try:
+            cancel()
+        except Exception:
+            pass
+    try:
+        page.destroy()
+    except Exception:
+        pass
+
+
 class ProjectWorkspace(ctk.CTkFrame):
     NAV = [
         ("Project", "Project Details"),
@@ -7903,28 +8001,20 @@ class ProjectWorkspace(ctk.CTkFrame):
 
     def reset_for_new_type(self) -> None:
         """Drop cached workflow pages before a new project/type is shown."""
-        for key, page in list(self.pages.items()):
-            try:
-                page.destroy()
-            except Exception:
-                pass
+        cancel_after(self, self._calc_job)
+        self._calc_job = None
+        for page in list(self.pages.values()):
+            _destroy_page(page)
         self.pages.clear()
         self._current_page = "Project"
         self._calc_dirty = True
-        if self._calc_job is not None:
-            try:
-                self.after_cancel(self._calc_job)
-            except Exception:
-                pass
-            self._calc_job = None
 
     def apply_state(self, state: AppState) -> None:
         """Install project state and reset stale lazily-built pages."""
-        for key, page in list(self.pages.items()):
-            try:
-                page.destroy()
-            except Exception:
-                pass
+        cancel_after(self, self._calc_job)
+        self._calc_job = None
+        for page in list(self.pages.values()):
+            _destroy_page(page)
         self.pages.clear()
         self.app_state = state
         self._current_page = "Project"
@@ -7938,12 +8028,8 @@ class ProjectWorkspace(ctk.CTkFrame):
             if is_project_type_set(self.app_state.project.project_type) and hasattr(project_page, "_show_details"):
                 project_page._show_details()
         self.show("Project")
-        if self._calc_job is not None:
-            try:
-                self.after_cancel(self._calc_job)
-            except Exception:
-                pass
-        self._calc_job = self.after(80, self._run_scheduled_calc)
+        if widget_is_alive(self):
+            self._calc_job = self.after(80, self._run_scheduled_calc)
         if self.on_header_update:
             self.on_header_update()
 
@@ -8207,10 +8293,7 @@ class ProjectWorkspace(ctk.CTkFrame):
                 continue
             page = self.pages.pop(key, None)
             if page is not None:
-                try:
-                    page.destroy()
-                except Exception:
-                    pass
+                _destroy_page(page)
 
     def _on_project_type_changed(self) -> None:
         self._discard_inapplicable_pages()
@@ -8766,7 +8849,7 @@ class ProjectWorkspace(ctk.CTkFrame):
                 pass
 
         _raise_page(page)
-        if name == "Project" and hasattr(page, "refresh"):
+        if name == "Project" and hasattr(page, "refresh") and widget_is_alive(page):
             page.refresh()
         if name == "STP":
             self._refresh_stp()
@@ -8789,12 +8872,14 @@ class ProjectWorkspace(ctk.CTkFrame):
 
     def _schedule_calc(self, delay_ms: int = 300) -> None:
         self._calc_dirty = True
-        if self._calc_job is not None:
-            self.after_cancel(self._calc_job)
-        self._calc_job = self.after(delay_ms, self._run_scheduled_calc)
+        cancel_after(self, self._calc_job)
+        if widget_is_alive(self):
+            self._calc_job = self.after(delay_ms, self._run_scheduled_calc)
 
     def _run_scheduled_calc(self) -> None:
         self._calc_job = None
+        if not widget_is_alive(self):
+            return
         self._calc()
 
     def _calc(self):

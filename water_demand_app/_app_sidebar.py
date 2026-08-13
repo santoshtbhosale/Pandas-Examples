@@ -45,6 +45,7 @@ from ui.components.preview_dialog import PreviewDialog
 from ui.components.result_table import ResultTableView
 from ui.components.scrollable_frame import ScrollablePage
 from ui.components.validation import ValidationError, validate_positive_float, validate_required
+from ui.scheduled_callbacks import cancel_after, widget_is_alive
 from ui.pages.commercial_page import CommercialPage
 from ui.pages.final_page import FinalPage
 from ui.pages.project_page import ProjectPage
@@ -77,6 +78,22 @@ def _raise_page(page) -> None:
         parent_frame = getattr(page, "_parent_frame", None)
         if parent_frame is not None:
             parent_frame.tkraise()
+    except Exception:
+        pass
+
+
+def _destroy_page(page) -> None:
+    """Cancel pending callbacks and destroy a workflow page safely."""
+    if page is None:
+        return
+    cancel = getattr(page, "cancel_pending_callbacks", None)
+    if callable(cancel):
+        try:
+            cancel()
+        except Exception:
+            pass
+    try:
+        page.destroy()
     except Exception:
         pass
 
@@ -148,28 +165,20 @@ class ProjectWorkspace(ctk.CTkFrame):
 
     def reset_for_new_type(self) -> None:
         """Drop cached workflow pages before a new project/type is shown."""
-        for key, page in list(self.pages.items()):
-            try:
-                page.destroy()
-            except Exception:
-                pass
+        cancel_after(self, self._calc_job)
+        self._calc_job = None
+        for page in list(self.pages.values()):
+            _destroy_page(page)
         self.pages.clear()
         self._current_page = "Project"
         self._calc_dirty = True
-        if self._calc_job is not None:
-            try:
-                self.after_cancel(self._calc_job)
-            except Exception:
-                pass
-            self._calc_job = None
 
     def apply_state(self, state: AppState) -> None:
         """Install project state and reset stale lazily-built pages."""
-        for key, page in list(self.pages.items()):
-            try:
-                page.destroy()
-            except Exception:
-                pass
+        cancel_after(self, self._calc_job)
+        self._calc_job = None
+        for page in list(self.pages.values()):
+            _destroy_page(page)
         self.pages.clear()
         self.app_state = state
         self._current_page = "Project"
@@ -183,12 +192,8 @@ class ProjectWorkspace(ctk.CTkFrame):
             if is_project_type_set(self.app_state.project.project_type) and hasattr(project_page, "_show_details"):
                 project_page._show_details()
         self.show("Project")
-        if self._calc_job is not None:
-            try:
-                self.after_cancel(self._calc_job)
-            except Exception:
-                pass
-        self._calc_job = self.after(80, self._run_scheduled_calc)
+        if widget_is_alive(self):
+            self._calc_job = self.after(80, self._run_scheduled_calc)
         if self.on_header_update:
             self.on_header_update()
 
@@ -453,10 +458,7 @@ class ProjectWorkspace(ctk.CTkFrame):
                 continue
             page = self.pages.pop(key, None)
             if page is not None:
-                try:
-                    page.destroy()
-                except Exception:
-                    pass
+                _destroy_page(page)
 
     def _on_project_type_changed(self) -> None:
         self._discard_inapplicable_pages()
@@ -1012,7 +1014,7 @@ class ProjectWorkspace(ctk.CTkFrame):
                 pass
 
         _raise_page(page)
-        if name == "Project" and hasattr(page, "refresh"):
+        if name == "Project" and hasattr(page, "refresh") and widget_is_alive(page):
             page.refresh()
         if name == "STP":
             self._refresh_stp()
@@ -1035,12 +1037,14 @@ class ProjectWorkspace(ctk.CTkFrame):
 
     def _schedule_calc(self, delay_ms: int = 300) -> None:
         self._calc_dirty = True
-        if self._calc_job is not None:
-            self.after_cancel(self._calc_job)
-        self._calc_job = self.after(delay_ms, self._run_scheduled_calc)
+        cancel_after(self, self._calc_job)
+        if widget_is_alive(self):
+            self._calc_job = self.after(delay_ms, self._run_scheduled_calc)
 
     def _run_scheduled_calc(self) -> None:
         self._calc_job = None
+        if not widget_is_alive(self):
+            return
         self._calc()
 
     def _calc(self):

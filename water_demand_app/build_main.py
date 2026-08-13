@@ -101,6 +101,7 @@ FILES = [
     "services/excel_exporter.py",
     "ui/components/validation.py",
     "ui/gui_safe.py",
+    "ui/scheduled_callbacks.py",
     "ui/app_state.py",
     "ui/components/scrollable_frame.py",
     "ui/components/result_table.py",
