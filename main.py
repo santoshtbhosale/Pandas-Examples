@@ -7753,16 +7753,8 @@ def _load_json_file(fp):
     return parse_project_snapshot(data)
 
 
-def main():
-    launch_main()
-
-
 # Backward-compatible alias for tests and legacy entry points
 WaterDemandApp = ProjectWorkspace
-
-
-if __name__ == "__main__":
-    main()
 
 # ==================== app_launcher.py ====================
 """Application entry point — Splash → Project Home → unified project workflow."""
@@ -7963,7 +7955,6 @@ class Application(ctk.CTk):
 
 def main() -> None:
     Application().mainloop()
-
 
 if __name__ == "__main__":
     main()

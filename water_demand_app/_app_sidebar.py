@@ -961,14 +961,5 @@ def _load_json_file(fp):
     return parse_project_snapshot(data)
 
 
-def main():
-    from app_launcher import main as launch_main
-    launch_main()
-
-
 # Backward-compatible alias for tests and legacy entry points
 WaterDemandApp = ProjectWorkspace
-
-
-if __name__ == "__main__":
-    main()

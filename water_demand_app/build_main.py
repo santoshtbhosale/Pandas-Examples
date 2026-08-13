@@ -126,13 +126,20 @@ for rel in FILES:
 
 content = "".join(parts)
 
-# Single entry point: Application from app_launcher
-if "def main():" in content:
-    content = content.replace(
-        'def main():\n    from app_launcher import main as launch_main\n    launch_main()',
-        'def main():\n    Application().mainloop()',
-        1,
-    )
+# Remove broken launcher stubs left after import stripping in bundled modules.
+content = content.replace(
+    "def main():\n    launch_main()\n\n\n# Backward-compatible alias",
+    "# Backward-compatible alias",
+)
+content = content.replace(
+    'def main():\n    from app_launcher import main as launch_main\n    launch_main()\n\n\n# Backward-compatible alias',
+    "# Backward-compatible alias",
+)
+
+# Keep a single entry point from app_launcher at the end of the bundle.
+blocks = content.split('if __name__ == "__main__":\n    main()\n')
+if len(blocks) > 1:
+    content = blocks[0].rstrip() + '\n\n' + 'if __name__ == "__main__":\n    main()\n'
 
 with open(OUT, "w") as f:
     f.write(content)
