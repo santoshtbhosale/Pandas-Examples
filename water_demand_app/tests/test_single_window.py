@@ -56,14 +56,15 @@ class TestSingleWindowArchitecture(unittest.TestCase):
         pages = visible_pages(PROJECT_TYPE_RESIDENTIAL)
         self.assertNotIn("RWH", pages)
 
-    def test_apply_state_does_not_clear_pages(self) -> None:
+    def test_apply_state_rebuilds_project_page(self) -> None:
         self.workspace.ensure_pages_built()
-        before = set(self.workspace.pages.keys())
+        self.workspace.show("Project")
         from services.project_service import create_new_project_state
 
         self.workspace.apply_state(create_new_project_state())
-        after = set(self.workspace.pages.keys())
-        self.assertEqual(before, after)
+        self.assertIn("Project", self.workspace.pages)
+        self.assertEqual(self.workspace._current_page, "Project")
+        self.assertNotIn("Residential", self.workspace.pages)
 
     def test_lazy_page_build(self) -> None:
         from _app_sidebar import ProjectWorkspace

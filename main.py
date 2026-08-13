@@ -7094,6 +7094,7 @@ class ProjectWorkspace(ctk.CTkFrame):
         current_user=None,
         on_logout=None,
         on_new_project=None,
+        on_back_to_type_selector=None,
     ):
         super().__init__(master, fg_color="#F0F2F5", corner_radius=0)
         self.on_home = on_home
@@ -7102,6 +7103,7 @@ class ProjectWorkspace(ctk.CTkFrame):
         self.current_user = current_user
         self.on_logout = on_logout
         self.on_new_project = on_new_project
+        self.on_back_to_type_selector = on_back_to_type_selector
         self.app_state = initial_state if initial_state is not None else AppState()
         self._last_autosave_at = ""
         self._pages_built = False
@@ -7152,6 +7154,7 @@ class ProjectWorkspace(ctk.CTkFrame):
                 pass
         self.pages.clear()
         self.app_state = state
+        self._current_page = "Project"
         self._calc_dirty = True
         self._build_pages()
         self._rebuild_sidebar()
@@ -7313,6 +7316,14 @@ class ProjectWorkspace(ctk.CTkFrame):
                     text_color="#AAAAAA",
                 )
 
+    def _project_details_back(self):
+        if self.on_back_to_type_selector:
+            self.on_back_to_type_selector()
+        elif self.on_home:
+            self.on_home()
+        elif self.on_new_project:
+            self.on_new_project()
+
     def _build_pages(self) -> None:
         """Build only the lightweight Project Details page initially."""
         if "Project" not in self.pages:
@@ -7321,7 +7332,7 @@ class ProjectWorkspace(ctk.CTkFrame):
                 self.app_state,
                 on_next=self._next_from_project,
                 on_type_change=self._on_project_type_changed,
-                on_back=self.on_home if self.on_home else (self.on_new_project if self.on_new_project else None),
+                on_back=self._project_details_back,
             )
         page = self.pages.get("Project")
         if page is not None:
@@ -8394,10 +8405,29 @@ class Application(ctk.CTk):
             on_autosave=self._on_project_autosaved,
             on_header_update=self._on_workspace_header_update,
             on_new_project=safe_command(self._start_new_project, parent=self),
+            on_back_to_type_selector=safe_command(self._back_to_project_type_selector, parent=self),
         )
         return self._workspace
 
+    def _destroy_type_selector(self) -> None:
+        """Remove the project-type step UI so the workspace is not covered."""
+        if self._type_selector is None:
+            return
+        try:
+            self._type_selector.destroy()
+        except Exception:
+            traceback.print_exc()
+        self._type_selector = None
+
+    def _back_to_project_type_selector(self) -> None:
+        """Return to Step 1 while keeping the current draft project state."""
+        if self._workspace is None:
+            self._start_new_project()
+            return
+        self._show_project_type_selector(self._workspace.app_state)
+
     def _show_project(self, state: AppState) -> None:
+        self._destroy_type_selector()
         ws = self._ensure_workspace()
         if self._dashboard is not None:
             self._dashboard.grid_remove()
@@ -8494,7 +8524,12 @@ class Application(ctk.CTk):
             anchor="w",
         ).grid(row=0, column=0, sticky="w", padx=18, pady=(16, 6))
 
-        selected = ctk.StringVar(value=PROJECT_TYPE_PLACEHOLDER)
+        initial_label = (
+            project_type_label(state.project.project_type)
+            if is_project_type_set(state.project.project_type)
+            else PROJECT_TYPE_PLACEHOLDER
+        )
+        selected = ctk.StringVar(value=initial_label)
         combo = ctk.CTkComboBox(
             section,
             values=[PROJECT_TYPE_PLACEHOLDER] + sorted(set(PROJECT_TYPE_LABELS.keys())),
@@ -8568,11 +8603,11 @@ class Application(ctk.CTk):
         buttons.grid(row=6, column=0, pady=(0, 24))
 
         def cancel():
-            self._type_selector = None
+            self._destroy_type_selector()
             self._show_dashboard()
 
         def continue_project():
-            label = selected.get()
+            label = combo.get().strip() or selected.get().strip()
             if label == PROJECT_TYPE_PLACEHOLDER:
                 messagebox.showwarning(
                     "Project Type Required",
@@ -8580,14 +8615,22 @@ class Application(ctk.CTk):
                 )
                 combo.focus_set()
                 return
-            state.project.project_type = project_type_key(label)
-            self._type_selector = None
-            if self._workspace is not None:
-                try:
-                    self._workspace.reset_for_new_type()
-                except Exception:
-                    pass
-            self._show_project(state)
+            try:
+                new_type = project_type_key(label)
+                old_type = state.project.project_type
+                state.apply_project_type(new_type)
+                self._destroy_type_selector()
+                if self._workspace is not None:
+                    self._workspace.app_state = state
+                    if is_project_type_set(old_type) and old_type != new_type:
+                        self._workspace.reset_for_new_type()
+                self._show_project(state)
+            except Exception as exc:
+                traceback.print_exc()
+                messagebox.showerror(
+                    "Navigation Error",
+                    "Unable to open the next section. Please try again.",
+                )
 
         ctk.CTkButton(
             buttons,

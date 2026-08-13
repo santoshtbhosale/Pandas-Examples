@@ -106,6 +106,7 @@ class ProjectWorkspace(ctk.CTkFrame):
         current_user=None,
         on_logout=None,
         on_new_project=None,
+        on_back_to_type_selector=None,
     ):
         super().__init__(master, fg_color="#F0F2F5", corner_radius=0)
         self.on_home = on_home
@@ -114,6 +115,7 @@ class ProjectWorkspace(ctk.CTkFrame):
         self.current_user = current_user
         self.on_logout = on_logout
         self.on_new_project = on_new_project
+        self.on_back_to_type_selector = on_back_to_type_selector
         self.app_state = initial_state if initial_state is not None else AppState()
         self._last_autosave_at = ""
         self._pages_built = False
@@ -164,6 +166,7 @@ class ProjectWorkspace(ctk.CTkFrame):
                 pass
         self.pages.clear()
         self.app_state = state
+        self._current_page = "Project"
         self._calc_dirty = True
         self._build_pages()
         self._rebuild_sidebar()
@@ -326,6 +329,14 @@ class ProjectWorkspace(ctk.CTkFrame):
                     text_color="#AAAAAA",
                 )
 
+    def _project_details_back(self):
+        if self.on_back_to_type_selector:
+            self.on_back_to_type_selector()
+        elif self.on_home:
+            self.on_home()
+        elif self.on_new_project:
+            self.on_new_project()
+
     def _build_pages(self) -> None:
         """Build only the lightweight Project Details page initially."""
         if "Project" not in self.pages:
@@ -334,7 +345,7 @@ class ProjectWorkspace(ctk.CTkFrame):
                 self.app_state,
                 on_next=self._next_from_project,
                 on_type_change=self._on_project_type_changed,
-                on_back=self.on_home if self.on_home else (self.on_new_project if self.on_new_project else None),
+                on_back=self._project_details_back,
             )
         page = self.pages.get("Project")
         if page is not None:
