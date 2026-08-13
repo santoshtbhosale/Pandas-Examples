@@ -22,6 +22,7 @@ from tkinter import filedialog, messagebox
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 import customtkinter as ctk
+from PIL import Image as PILImage
 from tkcalendar import DateEntry
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -30,7 +31,7 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
-from reportlab.platypus import Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Image, KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(APP_DIR, "water_demand.db")
@@ -3111,6 +3112,323 @@ class PDFExporter:
             cmds.append(("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BRAND_HEADER_GRAY)))
         return TableStyle(cmds)
 
+    def _consolidated_col_widths(self, total_width: float) -> List[float]:
+        """Proportional 10-column widths that fit within printable page width."""
+        return [
+            total_width * 0.05,   # SR.NO
+            total_width * 0.22,   # DESCRIPTION
+            total_width * 0.10,   # PLOT-A RES
+            total_width * 0.10,   # PLOT-A COMM
+            total_width * 0.10,   # PLOT-A SUB
+            total_width * 0.10,   # PLOT-B RES
+            total_width * 0.10,   # PLOT-B COMM
+            total_width * 0.10,   # PLOT-B SUB
+            total_width * 0.08,   # TOTAL
+            total_width * 0.05,   # UNITS
+        ]
+
+    def _consolidated_header_row(self) -> list:
+        return [
+            self._th("SR.NO"),
+            self._th("DESCRIPTION"),
+            self._th("PLOT-A RES"),
+            self._th("PLOT-A COMM"),
+            self._th("PLOT-A SUB"),
+            self._th("PLOT-B RES"),
+            self._th("PLOT-B COMM"),
+            self._th("PLOT-B SUB"),
+            self._th("TOTAL"),
+            self._th("UNITS"),
+        ]
+
+    def _consolidated_table(self, data_rows: list, col_widths: List[float]) -> Table:
+        rows = [self._consolidated_header_row(), *data_rows]
+        table = Table(rows, colWidths=col_widths, repeatRows=1)
+        table.setStyle(self._grid_style())
+        return table
+
+    def _consolidated_section_heading(self, section: str, subtitle: str = "") -> Paragraph:
+        text = f"<b>{section}</b>"
+        if subtitle:
+            text += f"<br/><b>{subtitle}</b>"
+        return self._p(
+            text,
+            "ConsSec",
+            fontSize=8,
+            fontName="Helvetica-Bold",
+            textColor=colors.HexColor(BRAND_DARK_GRAY),
+            spaceAfter=6,
+        )
+
+    def _consolidated_subheading(self, title: str) -> Paragraph:
+        return self._p(
+            f"<b>{title}</b>",
+            "ConsSub",
+            fontSize=7.5,
+            fontName="Helvetica-Bold",
+            textColor=colors.HexColor(BRAND_DARK_GRAY),
+            spaceBefore=10,
+            spaceAfter=4,
+        )
+
+    def _build_consolidated(self) -> List[Any]:
+        story: List[Any] = [self._eng_header(), Spacer(1, 5)]
+        story.append(self._section_bar("CONSOLIDATED STATEMENT", BRAND_DARK_GRAY))
+        story.append(Spacer(1, 8))
+
+        pa = self.results.plots["Plot-A"]
+        pb = self.results.plots["Plot-B"]
+        tot = self.results.total
+        col_widths = self._consolidated_col_widths(self.page_width)
+
+        def kld(v: float) -> str:
+            return f"{v / 1000:.2f}"
+
+        def empty_sr() -> Paragraph:
+            return self._tc("", 0)
+
+        # --- SECTION-8: Building / Population ---
+        building_rows = [
+            [
+                empty_sr(),
+                self._tc("Number Of Building", 0),
+                self._tc(pa.num_buildings_res),
+                self._tc(pa.num_buildings_com),
+                self._tc(pa.num_buildings_res + pa.num_buildings_com),
+                self._tc(pb.num_buildings_res),
+                self._tc(pb.num_buildings_com),
+                self._tc(pb.num_buildings_res + pb.num_buildings_com),
+                self._tc(
+                    pa.num_buildings_res + pa.num_buildings_com
+                    + pb.num_buildings_res + pb.num_buildings_com
+                ),
+                self._tc("NO.S"),
+            ],
+            [
+                empty_sr(),
+                self._tc("Total Number Of Flats", 0),
+                self._tc(pa.total_flats),
+                self._tc(0),
+                self._tc(pa.total_flats),
+                self._tc(pb.total_flats),
+                self._tc(0),
+                self._tc(pb.total_flats),
+                self._tc(tot.get("Total Flats", 0)),
+                self._tc("NO.S"),
+            ],
+            [
+                empty_sr(),
+                self._tc("Total Residential Building Population", 0),
+                self._tc(pa.res_population),
+                self._tc(pa.com_population),
+                self._tc(pa.total_population),
+                self._tc(pb.res_population),
+                self._tc(pb.com_population),
+                self._tc(pb.total_population),
+                self._tc(tot.get("Total Population", 0)),
+                self._tc("NO.S"),
+            ],
+        ]
+
+        story.append(
+            self._consolidated_section_heading("SECTION-8", "BUILDING / POPULATION DETAILS")
+        )
+        story.append(Spacer(1, 4))
+        story.append(self._consolidated_table(building_rows, col_widths))
+        story.append(Spacer(1, 8))
+
+        # --- DRY SEASON ---
+        dry_specs = [
+            ("Fresh Water Requirement", pa.res_domestic_lpd, pa.com_domestic_lpd, pb.res_domestic_lpd, pb.com_domestic_lpd),
+            ("Flushing Water Requirement", pa.res_flushing_lpd, pa.com_flushing_lpd, pb.res_flushing_lpd, pb.com_flushing_lpd),
+            ("Kitchen Water Requirement", pa.kitchen_water_lpd, 0, pb.kitchen_water_lpd, 0),
+            ("Landscape Water Requirement", pa.landscape_dry_lpd, 0, pb.landscape_dry_lpd, 0),
+            ("Swimming Pool Makeup Water Requirement", pa.swimming_pool_lpd, 0, pb.swimming_pool_lpd, 0),
+            ("HVAC Water Requirement", pa.hvac_lpd, 0, pb.hvac_lpd, 0),
+            (
+                "Total Water Requirement",
+                pa.dry_total_water_lpd,
+                pa.com_total_lpd + pa.landscape_dry_lpd + pa.swimming_pool_lpd + pa.hvac_lpd + pa.kitchen_water_lpd,
+                pb.dry_total_water_lpd,
+                pb.com_total_lpd + pb.landscape_dry_lpd + pb.swimming_pool_lpd + pb.hvac_lpd + pb.kitchen_water_lpd,
+            ),
+            ("Total Treated Water", pa.dry_treated_water_lpd, 0, pb.dry_treated_water_lpd, 0),
+            ("Excess Treated Water To Corporation Line", pa.dry_excess_treated_lpd, 0, pb.dry_excess_treated_lpd, 0),
+        ]
+        dry_data_rows = []
+        for idx, (desc, a_res, a_com, b_res, b_com) in enumerate(dry_specs, 1):
+            if idx == 1:
+                a_sub = a_res + a_com
+                b_sub = b_res + b_com
+            elif idx == 2:
+                a_sub = a_res + a_com
+                b_sub = b_res + b_com
+            elif idx in (3, 4, 5, 6):
+                a_sub = a_res
+                b_sub = b_res
+            elif idx == 7:
+                a_sub = pa.dry_total_water_lpd
+                b_sub = pb.dry_total_water_lpd
+            elif idx == 8:
+                a_sub = pa.dry_treated_water_lpd
+                b_sub = pb.dry_treated_water_lpd
+            else:
+                a_sub = pa.dry_excess_treated_lpd
+                b_sub = pb.dry_excess_treated_lpd
+            dry_data_rows.append(
+                [
+                    empty_sr(),
+                    self._tc(desc, 0),
+                    self._tc(kld(a_res if idx <= 6 else a_sub)),
+                    self._tc(kld(a_com if idx <= 2 else 0)),
+                    self._tc(kld(a_sub)),
+                    self._tc(kld(b_res if idx <= 6 else b_sub)),
+                    self._tc(kld(b_com if idx <= 2 else 0)),
+                    self._tc(kld(b_sub)),
+                    self._tc(kld(a_sub + b_sub)),
+                    self._tc("KLD"),
+                ]
+            )
+
+        story.append(
+            KeepTogether(
+                [
+                    self._consolidated_subheading("DRY SEASON"),
+                    Spacer(1, 4),
+                    self._consolidated_table(dry_data_rows, col_widths),
+                ]
+            )
+        )
+        story.append(Spacer(1, 8))
+
+        # --- WET SEASON ---
+        wet_specs = [
+            ("FRESH WATER REQUIREMENT", pa.res_domestic_lpd, pa.com_domestic_lpd),
+            ("FLUSHING WATER REQUIREMENTS", pa.res_flushing_lpd, pa.com_flushing_lpd),
+            ("KITCHEN WATER REQUIREMENT", pa.kitchen_water_lpd, 0),
+            ("LANDSCAPE WATER REQUIRED", pa.landscape_wet_lpd, 0),
+            ("SWIMMING POOL MAKEUP WATER REQUIRMENT", pa.swimming_pool_lpd, 0),
+            ("HVAC WATER REQUIREMENT", pa.hvac_lpd, 0),
+            ("TOTAL WATER REQUIREMENT", pa.wet_total_water_lpd, pa.com_total_lpd),
+            ("TOTAL TREATED WATER", pa.wet_treated_water_lpd, 0),
+            ("EXCESS TREATED WATER WATER TO COPORATION LINE", pa.wet_excess_treated_lpd, 0),
+        ]
+        wet_data_rows = []
+        for idx, (desc, a_val, a_com) in enumerate(wet_specs, 1):
+            b_val = {
+                1: pb.res_domestic_lpd,
+                2: pb.res_flushing_lpd,
+                3: pb.kitchen_water_lpd,
+                4: pb.landscape_wet_lpd,
+                5: pb.swimming_pool_lpd,
+                6: pb.hvac_lpd,
+                7: pb.wet_total_water_lpd,
+                8: pb.wet_treated_water_lpd,
+                9: pb.wet_excess_treated_lpd,
+            }[idx]
+            b_com = (
+                pb.com_domestic_lpd
+                if idx == 1
+                else (pb.com_flushing_lpd if idx == 2 else (pb.com_total_lpd if idx == 7 else 0))
+            )
+            a_sub = a_val + (a_com if idx <= 2 else 0) if idx <= 2 else a_val
+            b_sub = b_val + (b_com if idx <= 2 else 0) if idx <= 2 else b_val
+            if idx == 7:
+                a_sub = pa.wet_total_water_lpd
+                b_sub = pb.wet_total_water_lpd
+            wet_data_rows.append(
+                [
+                    empty_sr(),
+                    self._tc(desc, 0),
+                    self._tc(kld(a_val if idx <= 5 else a_sub)),
+                    self._tc(kld(a_com if idx <= 2 else 0)),
+                    self._tc(kld(a_sub)),
+                    self._tc(kld(b_val if idx <= 5 else b_sub)),
+                    self._tc(kld(b_com if idx <= 2 else 0)),
+                    self._tc(kld(b_sub)),
+                    self._tc(kld(a_sub + b_sub)),
+                    self._tc("KLD"),
+                ]
+            )
+
+        story.append(
+            KeepTogether(
+                [
+                    self._consolidated_subheading("WET SEASON"),
+                    Spacer(1, 4),
+                    self._consolidated_table(wet_data_rows, col_widths),
+                ]
+            )
+        )
+        story.append(Spacer(1, 8))
+
+        # --- SECTION-9: UGT ---
+        ugt_specs = [
+            ("DOMESTIC UGT CAPACITY", pa.ugt_domestic_liters, pb.ugt_domestic_liters),
+            ("FLUSHING UGT CAPACITY", pa.ugt_flushing_liters, pb.ugt_flushing_liters),
+            ("FIRE UGT CAPACITY", pa.fire_tank_liters, pb.fire_tank_liters),
+        ]
+        ugt_data_rows = []
+        for desc, a_v, b_v in ugt_specs:
+            ugt_data_rows.append(
+                [
+                    empty_sr(),
+                    self._tc(desc, 0),
+                    self._tc(f"{a_v / 1000:.2f}"),
+                    self._tc("0.00"),
+                    self._tc(f"{a_v / 1000:.2f}"),
+                    self._tc(f"{b_v / 1000:.2f}"),
+                    self._tc("0.00"),
+                    self._tc(f"{b_v / 1000:.2f}"),
+                    self._tc(f"{(a_v + b_v) / 1000:.2f}"),
+                    self._tc("LIT/DAY"),
+                ]
+            )
+
+        story.append(
+            KeepTogether(
+                [
+                    self._consolidated_section_heading("SECTION-9", "UGT DETAILS"),
+                    Spacer(1, 4),
+                    self._consolidated_table(ugt_data_rows, col_widths),
+                ]
+            )
+        )
+        story.append(Spacer(1, 8))
+
+        # --- SECTION-10: STP ---
+        stp_specs = [
+            ("SEWAGE GENERATION", pa.sewage_lpd, pb.sewage_lpd),
+            ("STP Capacity", pa.stp_capacity_kld * 1000, pb.stp_capacity_kld * 1000),
+        ]
+        stp_data_rows = []
+        for desc, a_v, b_v in stp_specs:
+            stp_data_rows.append(
+                [
+                    empty_sr(),
+                    self._tc(desc, 0),
+                    self._tc(f"{a_v / 1000:.2f}"),
+                    self._tc("0.00"),
+                    self._tc(f"{a_v / 1000:.2f}"),
+                    self._tc(f"{b_v / 1000:.2f}"),
+                    self._tc("0.00"),
+                    self._tc(f"{b_v / 1000:.2f}"),
+                    self._tc(f"{(a_v + b_v) / 1000:.2f}"),
+                    self._tc("LIT/DAY"),
+                ]
+            )
+
+        story.append(
+            KeepTogether(
+                [
+                    self._consolidated_section_heading("SECTION-10", "STP DETAILS"),
+                    Spacer(1, 4),
+                    self._consolidated_table(stp_data_rows, col_widths),
+                ]
+            )
+        )
+        return story
+
     def _build_cover(self) -> List[Any]:
         story: List[Any] = []
         if self.logo_path and os.path.exists(self.logo_path):
@@ -3195,212 +3513,6 @@ class PDFExporter:
             self._p(COMPANY_ADDRESS, "Addr", fontSize=6, alignment=1)
         )
         story.append(self._p(COMPANY_CONTACT, "Contact", fontSize=6, alignment=1))
-        return story
-
-    def _build_consolidated(self) -> List[Any]:
-        story: List[Any] = [self._eng_header(), Spacer(1, 5)]
-        story.append(self._section_bar("CONSOLIDATED STATEMENT", BRAND_DARK_GRAY))
-        story.append(Spacer(1, 5))
-
-        pa = self.results.plots["Plot-A"]
-        pb = self.results.plots["Plot-B"]
-        tot = self.results.total
-
-        def kld(v: float) -> str:
-            return f"{v / 1000:.2f}"
-
-        header = [
-            self._th("SR.NO"),
-            self._th("DESCRIPTION"),
-            self._th("PLOT-A RES"),
-            self._th("PLOT-A COMM"),
-            self._th("PLOT-A SUB"),
-            self._th("PLOT-B RES"),
-            self._th("PLOT-B COMM"),
-            self._th("PLOT-B SUB"),
-            self._th("TOTAL"),
-            self._th("UNITS"),
-        ]
-
-        rows = [header]
-        rows.append(
-            [
-                self._tc("SECTION-8", 0),
-                self._tc("Number Of Building", 0),
-                self._tc(pa.num_buildings_res),
-                self._tc(pa.num_buildings_com),
-                self._tc(pa.num_buildings_res + pa.num_buildings_com),
-                self._tc(pb.num_buildings_res),
-                self._tc(pb.num_buildings_com),
-                self._tc(pb.num_buildings_res + pb.num_buildings_com),
-                self._tc(pa.num_buildings_res + pa.num_buildings_com + pb.num_buildings_res + pb.num_buildings_com),
-                self._tc("NO.S"),
-            ]
-        )
-        rows.append(
-            [
-                self._tc("", 0),
-                self._tc("Total Number Of Flats", 0),
-                self._tc(pa.total_flats),
-                self._tc(0),
-                self._tc(pa.total_flats),
-                self._tc(pb.total_flats),
-                self._tc(0),
-                self._tc(pb.total_flats),
-                self._tc(tot.get("Total Flats", 0)),
-                self._tc("NO.S"),
-            ]
-        )
-        rows.append(
-            [
-                self._tc("", 0),
-                self._tc("Total Residential Building Population", 0),
-                self._tc(pa.res_population),
-                self._tc(pa.com_population),
-                self._tc(pa.total_population),
-                self._tc(pb.res_population),
-                self._tc(pb.com_population),
-                self._tc(pb.total_population),
-                self._tc(tot.get("Total Population", 0)),
-                self._tc("NO.S"),
-            ]
-        )
-
-        dry_rows = [
-            ("Fresh Water Requirement", pa.res_domestic_lpd, pa.com_domestic_lpd, pb.res_domestic_lpd, pb.com_domestic_lpd),
-            ("Flushing Water Requirement", pa.res_flushing_lpd, pa.com_flushing_lpd, pb.res_flushing_lpd, pb.com_flushing_lpd),
-            ("Kitchen Water Requirement", pa.kitchen_water_lpd, 0, pb.kitchen_water_lpd, 0),
-            ("Landscape Water Requirement", pa.landscape_dry_lpd, 0, pb.landscape_dry_lpd, 0),
-            ("Swimming Pool Makeup Water Requirement", pa.swimming_pool_lpd, 0, pb.swimming_pool_lpd, 0),
-            ("HVAC Water Requirement", pa.hvac_lpd, 0, pb.hvac_lpd, 0),
-            ("Total Water Requirement", pa.dry_total_water_lpd, pa.com_total_lpd + pa.landscape_dry_lpd + pa.swimming_pool_lpd + pa.hvac_lpd + pa.kitchen_water_lpd, pb.dry_total_water_lpd, pb.com_total_lpd + pb.landscape_dry_lpd + pb.swimming_pool_lpd + pb.hvac_lpd + pb.kitchen_water_lpd),
-            ("Total Treated Water", pa.dry_treated_water_lpd, 0, pb.dry_treated_water_lpd, 0),
-            ("Excess Treated Water To Corporation Line", pa.dry_excess_treated_lpd, 0, pb.dry_excess_treated_lpd, 0),
-        ]
-        for idx, (desc, a_res, a_com, b_res, b_com) in enumerate(dry_rows, 1):
-            a_sub = (a_res if idx <= 2 else 0) + (a_com if idx <= 2 else a_res)
-            if idx == 1:
-                a_sub = a_res + a_com
-            elif idx == 2:
-                a_sub = a_res + a_com
-            elif idx in (3, 4, 5, 6):
-                a_sub = a_res
-                b_sub = b_res
-            elif idx == 7:
-                a_sub = pa.dry_total_water_lpd
-                b_sub = pb.dry_total_water_lpd
-            elif idx == 8:
-                a_sub = pa.dry_treated_water_lpd
-                b_sub = pb.dry_treated_water_lpd
-            else:
-                a_sub = pa.dry_excess_treated_lpd
-                b_sub = pb.dry_excess_treated_lpd
-            if idx <= 6:
-                b_sub = b_res + (b_com if idx <= 2 else 0) if idx <= 2 else b_res
-            rows.append(
-                [
-                    self._tc(f"SECTION-7" if idx == 1 else "", 0),
-                    self._tc(desc, 0),
-                    self._tc(kld(a_res if idx <= 6 else a_sub)),
-                    self._tc(kld(a_com if idx <= 2 else 0)),
-                    self._tc(kld(a_sub)),
-                    self._tc(kld(b_res if idx <= 6 else b_sub)),
-                    self._tc(kld(b_com if idx <= 2 else 0)),
-                    self._tc(kld(b_sub)),
-                    self._tc(kld(a_sub + b_sub)),
-                    self._tc("KLD"),
-                ]
-            )
-
-        wet_rows = [
-            ("FRESH WATER REQUIREMENT", pa.res_domestic_lpd, pa.com_domestic_lpd),
-            ("FLUSHING WATER REQUIREMENTS", pa.res_flushing_lpd, pa.com_flushing_lpd),
-            ("KITCHEN WATER REQUIREMENT", pa.kitchen_water_lpd, 0),
-            ("LANDSCAPE WATER REQUIRED", pa.landscape_wet_lpd, 0),
-            ("SWIMMING POOL MAKEUP WATER REQUIRMENT", pa.swimming_pool_lpd, 0),
-            ("HVAC WATER REQUIREMENT", pa.hvac_lpd, 0),
-            ("TOTAL WATER REQUIREMENT", pa.wet_total_water_lpd, pa.com_total_lpd),
-            ("TOTAL TREATED WATER", pa.wet_treated_water_lpd, 0),
-            ("EXCESS TREATED WATER WATER TO COPORATION LINE", pa.wet_excess_treated_lpd, 0),
-        ]
-        for idx, (desc, a_val, a_com) in enumerate(wet_rows, 1):
-            b_val = {
-                1: pb.res_domestic_lpd,
-                2: pb.res_flushing_lpd,
-                3: pb.kitchen_water_lpd,
-                4: pb.landscape_wet_lpd,
-                5: pb.swimming_pool_lpd,
-                6: pb.hvac_lpd,
-                7: pb.wet_total_water_lpd,
-                8: pb.wet_treated_water_lpd,
-                9: pb.wet_excess_treated_lpd,
-            }[idx]
-            b_com = pb.com_domestic_lpd if idx == 1 else (pb.com_flushing_lpd if idx == 2 else (pb.com_total_lpd if idx == 7 else 0))
-            a_sub = a_val + (a_com if idx <= 2 else 0) if idx <= 2 else a_val
-            b_sub = b_val + (b_com if idx <= 2 else 0) if idx <= 2 else b_val
-            if idx == 7:
-                a_sub = pa.wet_total_water_lpd
-                b_sub = pb.wet_total_water_lpd
-            rows.append(
-                [
-                    self._tc(f"SECTION-9" if idx == 1 else "", 0),
-                    self._tc(desc, 0),
-                    self._tc(kld(a_val if idx <= 5 else a_sub)),
-                    self._tc(kld(a_com if idx <= 2 else 0)),
-                    self._tc(kld(a_sub)),
-                    self._tc(kld(b_val if idx <= 5 else b_sub)),
-                    self._tc(kld(b_com if idx <= 2 else 0)),
-                    self._tc(kld(b_sub)),
-                    self._tc(kld(a_sub + b_sub)),
-                    self._tc("KLD"),
-                ]
-            )
-
-        ugt_rows = [
-            ("DOMESTIC UGT CAPACITY", pa.ugt_domestic_liters, pb.ugt_domestic_liters),
-            ("FLUSHING UGT CAPACITY", pa.ugt_flushing_liters, pb.ugt_flushing_liters),
-            ("FIRE UGT CAPACITY", pa.fire_tank_liters, pb.fire_tank_liters),
-        ]
-        for idx, (desc, a_v, b_v) in enumerate(ugt_rows, 1):
-            rows.append(
-                [
-                    self._tc(f"SECTION-10" if idx == 1 else "UGT DETAILS", 0),
-                    self._tc(desc, 0),
-                    self._tc(f"{a_v / 1000:.2f}"),
-                    self._tc("0.00"),
-                    self._tc(f"{a_v / 1000:.2f}"),
-                    self._tc(f"{b_v / 1000:.2f}"),
-                    self._tc("0.00"),
-                    self._tc(f"{b_v / 1000:.2f}"),
-                    self._tc(f"{(a_v + b_v) / 1000:.2f}"),
-                    self._tc("LIT/DAY"),
-                ]
-            )
-
-        stp_rows = [
-            ("SEWAGE GENERATION", pa.sewage_lpd, pb.sewage_lpd),
-            ("STP Capacity", pa.stp_capacity_kld * 1000, pb.stp_capacity_kld * 1000),
-        ]
-        for idx, (desc, a_v, b_v) in enumerate(stp_rows, 1):
-            rows.append(
-                [
-                    self._tc("STP DETAILS" if idx == 1 else "", 0),
-                    self._tc(desc, 0),
-                    self._tc(f"{a_v / 1000:.2f}"),
-                    self._tc("0.00"),
-                    self._tc(f"{a_v / 1000:.2f}"),
-                    self._tc(f"{b_v / 1000:.2f}"),
-                    self._tc("0.00"),
-                    self._tc(f"{b_v / 1000:.2f}"),
-                    self._tc(f"{(a_v + b_v) / 1000:.2f}"),
-                    self._tc("LIT/DAY"),
-                ]
-            )
-
-        col_widths = [35, 130, 55, 55, 55, 55, 55, 55, 55, 45]
-        t = Table(rows, colWidths=col_widths, repeatRows=1)
-        t.setStyle(self._grid_style())
-        story.append(t)
         return story
 
     def _build_plot_demand(self, plot_name: str) -> List[Any]:
@@ -4638,11 +4750,12 @@ class AppState:
             self.environmental = None
 
     def apply_project_type(self, new_type: str) -> None:
-        """Clear data for sections hidden by the new project type."""
+        """Apply a project type without blocking the UI."""
         old_type = self.project.project_type
         self.project.project_type = new_type
-        if not is_project_type_set(new_type) or not is_project_type_set(old_type):
-            self.auto_calculate()
+        if not is_project_type_set(new_type):
+            return
+        if not is_project_type_set(old_type):
             return
         if not show_residential_section(new_type):
             self.residential = []
@@ -4656,7 +4769,6 @@ class AppState:
         if not hvac_applicable(new_type):
             for plot in list(self.other.hvac_water.keys()):
                 self.other.hvac_water[plot] = 0.0
-        self.auto_calculate()
 
     def sync_building_defaults(self) -> None:
         """Apply project-level building settings to residential wings when empty."""
@@ -4739,6 +4851,21 @@ class ScrollablePage(ctk.CTkScrollableFrame):
         if width > 20 and height > 20:
             self.configure(width=width, height=height)
 
+    def schedule_auto_calculate(self, state, delay_ms: int = 300, callback: Optional[Callable[[], None]] = None) -> None:
+        """Debounce rapid input changes before running the full calculation engine."""
+        job_attr = "_auto_calc_after_id"
+        existing = getattr(self, job_attr, None)
+        if existing is not None:
+            self.after_cancel(existing)
+
+        def _run() -> None:
+            setattr(self, job_attr, None)
+            state.auto_calculate()
+            if callback:
+                callback()
+
+        setattr(self, job_attr, self.after(delay_ms, _run))
+
 # ==================== ui/components/result_table.py ====================
 """Professional Description | Value | Unit tables for engineering report screens."""
 
@@ -4757,13 +4884,19 @@ _VALUE_FG = "#1A5276"
 
 
 class ResultTableView(ctk.CTkFrame):
-    """Renders one or more titled result tables inside a scrollable host."""
+    """Renders one or more titled result tables inside a scrollable or plain host."""
 
-    def __init__(self, master, **kwargs) -> None:
+    def __init__(self, master, embedded: bool = True, **kwargs) -> None:
         kwargs.setdefault("fg_color", "transparent")
         super().__init__(master, **kwargs)
-        self._host = ctk.CTkScrollableFrame(self, fg_color="transparent", label_text="")
+        self._embedded = embedded
+        if embedded:
+            self._host = ctk.CTkFrame(self, fg_color="transparent")
+        else:
+            self._host = ctk.CTkScrollableFrame(self, fg_color="transparent", label_text="")
         self._host.pack(fill="both", expand=True)
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
 
     def set_sections(self, sections: Sequence[TableSection]) -> None:
         for child in self._host.winfo_children():
@@ -4786,11 +4919,11 @@ class ResultTableView(ctk.CTkFrame):
             font=("Arial", 12),
             text_color="#666666",
             anchor="w",
-        ).pack(fill="x", padx=12, pady=8)
+        ).pack(fill="x", padx=4, pady=8)
 
     def _render_section(self, title: str, rows: Sequence[TableRow]) -> None:
         wrapper = ctk.CTkFrame(self._host, fg_color="transparent")
-        wrapper.pack(fill="x", padx=8, pady=(10, 4))
+        wrapper.pack(fill="x", expand=True, padx=2, pady=(8, 4))
 
         ctk.CTkLabel(
             wrapper,
@@ -4798,13 +4931,13 @@ class ResultTableView(ctk.CTkFrame):
             font=("Arial", 13, "bold"),
             text_color=BRAND_NAVY,
             anchor="w",
-        ).pack(fill="x", padx=4, pady=(0, 6))
+        ).pack(fill="x", padx=2, pady=(0, 6))
 
         table = ctk.CTkFrame(wrapper, fg_color="white", corner_radius=6, border_width=1, border_color=_BORDER)
-        table.pack(fill="x", padx=2, pady=2)
-        table.columnconfigure(0, weight=3, uniform="cols")
-        table.columnconfigure(1, weight=1, uniform="cols")
-        table.columnconfigure(2, weight=1, uniform="cols")
+        table.pack(fill="x", expand=True, padx=0, pady=0)
+        table.grid_columnconfigure(0, weight=13, uniform="result_cols")
+        table.grid_columnconfigure(1, weight=4, uniform="result_cols")
+        table.grid_columnconfigure(2, weight=3, uniform="result_cols")
 
         headers = ("Description", "Value", "Unit")
         for col, label in enumerate(headers):
@@ -4839,6 +4972,7 @@ class ResultTableView(ctk.CTkFrame):
                     font=font,
                     text_color=fg,
                     anchor=anchor,
+                    wraplength=900 if col == 0 else 0,
                 ).pack(fill="x", padx=10, pady=5)
 
 # ==================== ui/components/preview_dialog.py ====================
@@ -5075,7 +5209,7 @@ class SplashScreen(ctk.CTkFrame):
 
 
 class MainDashboard(ctk.CTkFrame):
-    """Project home — new, open, search, and recent projects (no authentication)."""
+    """Professional, simplified Project Home dashboard."""
 
     def __init__(
         self,
@@ -5084,104 +5218,178 @@ class MainDashboard(ctk.CTkFrame):
         on_open_project: Callable[[str], None],
         on_exit: Callable[[], None],
     ) -> None:
-        super().__init__(master, fg_color="#F0F2F5")
+        super().__init__(master, fg_color="#F4F6F8")
         self.on_new_project = on_new_project
         self.on_open_project = on_open_project
         self.on_exit = on_exit
         self.project_hub: Optional[ProjectHub] = None
+        self._project_count = 0
         self._build()
 
     def _build(self) -> None:
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
 
-        top = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=0, height=72)
-        top.grid(row=0, column=0, sticky="ew")
-        top.grid_propagate(False)
-        top.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(
-            top,
-            text="PLANETCODE ENGINEERING SUITE",
-            font=("Arial", 16, "bold"),
-            text_color=BRAND_ORANGE,
-        ).grid(row=0, column=0, padx=24, pady=20, sticky="w")
-        ctk.CTkLabel(
-            top,
-            text="Engineering Design & Reporting",
-            font=("Arial", 11),
-            text_color="#CCCCCC",
-        ).grid(row=0, column=1, padx=16, sticky="w")
-        ctk.CTkButton(
-            top,
-            text="Exit",
-            command=self.on_exit,
-            fg_color="#C0392B",
-            width=80,
-            height=32,
-        ).grid(row=0, column=2, padx=24, sticky="e")
+        content = ctk.CTkScrollableFrame(
+            self,
+            fg_color="#F4F6F8",
+            corner_radius=0,
+            scrollbar_button_color="#AAB4BE",
+            scrollbar_button_hover_color="#7F8C97",
+        )
+        content.grid(row=0, column=0, sticky="nsew", padx=0, pady=0)
+        content.grid_columnconfigure(0, weight=1)
 
-        body = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        body.grid(row=1, column=0, sticky="nsew", padx=24, pady=16)
-        body.grid_columnconfigure(0, weight=1)
+        hero = ctk.CTkFrame(content, fg_color=BRAND_NAVY, corner_radius=16, border_width=0)
+        hero.grid(row=0, column=0, sticky="ew", padx=28, pady=(26, 18))
+        hero.grid_columnconfigure(0, weight=1)
+        hero.grid_columnconfigure(1, weight=0)
 
+        left = ctk.CTkFrame(hero, fg_color="transparent")
+        left.grid(row=0, column=0, sticky="w", padx=(28, 20), pady=24)
         ctk.CTkLabel(
-            body,
+            left,
             text="Project Home",
-            font=("Arial", 24, "bold"),
-            text_color=BRAND_NAVY,
+            font=("Arial", 25, "bold"),
+            text_color="white",
             anchor="w",
-        ).grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        ).pack(anchor="w")
         ctk.CTkLabel(
-            body,
-            text="Create, open, and manage engineering projects. Calculations update automatically.",
-            font=("Arial", 13),
-            text_color="#666666",
+            left,
+            text="Create, open and manage your engineering projects.",
+            font=("Arial", 12),
+            text_color="#D7E1EA",
             anchor="w",
-        ).grid(row=1, column=0, sticky="ew", pady=(0, 16))
+        ).pack(anchor="w", pady=(7, 0))
+        ctk.CTkLabel(
+            left,
+            text="To start a new engineering report, click New Project.",
+            font=("Arial", 11),
+            text_color="#AFC3D6",
+            anchor="w",
+        ).pack(anchor="w", pady=(7, 0))
 
-        actions = ctk.CTkFrame(body, fg_color="transparent")
-        actions.grid(row=2, column=0, sticky="ew", pady=(0, 16))
-        for i, (text, color, cmd) in enumerate([
-            ("+ New Project", "#27AE60", self.on_new_project),
-            ("Open Existing Project", BRAND_ORANGE, self._open_selected_prompt),
-            ("Search Project", "#2980B9", self._focus_search),
-            ("Reports", "#7F8C8D", self._reports_info),
-        ]):
+        version = ctk.CTkLabel(
+            hero,
+            text="v2.0",
+            font=("Arial", 11, "bold"),
+            text_color=BRAND_ORANGE,
+            fg_color="#102E4B",
+            corner_radius=12,
+            width=64,
+            height=30,
+        )
+        version.grid(row=0, column=1, padx=(10, 28), pady=24, sticky="e")
+
+        actions_card = ctk.CTkFrame(
+            content,
+            fg_color="white",
+            corner_radius=14,
+            border_width=1,
+            border_color="#E0E5EA",
+        )
+        actions_card.grid(row=1, column=0, sticky="ew", padx=28, pady=(0, 16))
+        actions_card.grid_columnconfigure((0, 1, 2, 3), weight=1)
+
+        ctk.CTkLabel(
+            actions_card,
+            text="Quick Start",
+            font=("Arial", 15, "bold"),
+            text_color=BRAND_NAVY,
+        ).grid(row=0, column=0, columnspan=4, sticky="w", padx=20, pady=(16, 10))
+
+        quick = [
+            ("+  New Project", "Start a new engineering calculation", "#20A968", self.on_new_project),
+            ("Open Project", "Continue an existing project", BRAND_ORANGE, self._open_selected_prompt),
+            ("Search Projects", "Find saved projects quickly", "#2F80B8", self._focus_search),
+            ("Reports", "Generate PDF and Excel reports", "#7F8C8D", self._reports_info),
+        ]
+        for i, (title, subtitle, color, cmd) in enumerate(quick):
+            card = ctk.CTkFrame(
+                actions_card,
+                fg_color="#F7F9FB",
+                corner_radius=10,
+                border_width=1,
+                border_color="#E4E9EE",
+            )
+            card.grid(
+                row=1,
+                column=i,
+                sticky="ew",
+                padx=(20 if i == 0 else 7, 7 if i < 3 else 20),
+                pady=(0, 18),
+            )
+            card.grid_columnconfigure(0, weight=1)
             ctk.CTkButton(
-                actions,
-                text=text,
-                fg_color=color,
-                height=40,
+                card,
+                text=title,
                 command=safe_command(cmd, parent=self),
-            ).grid(row=0, column=i, padx=4, sticky="ew")
-            actions.grid_columnconfigure(i, weight=1)
+                fg_color=color,
+                hover_color=color,
+                height=42,
+                corner_radius=8,
+                font=("Arial", 12, "bold"),
+            ).grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 7))
+            ctk.CTkLabel(
+                card,
+                text=subtitle,
+                font=("Arial", 10),
+                text_color="#6B7280",
+            ).grid(row=1, column=0, pady=(0, 12))
 
-        stats = ctk.CTkFrame(body, fg_color="white", corner_radius=10, border_width=1, border_color="#DDDDDD")
-        stats.grid(row=3, column=0, sticky="ew", pady=(0, 16))
-        count = len(find_projects())
-        ctk.CTkLabel(
-            stats,
-            text=f"Saved Projects: {count}",
-            font=("Arial", 14, "bold"),
-            text_color=BRAND_NAVY,
-        ).pack(anchor="w", padx=20, pady=16)
+        stats_row = ctk.CTkFrame(content, fg_color="transparent")
+        stats_row.grid(row=2, column=0, sticky="ew", padx=28, pady=(0, 16))
+        stats_row.grid_columnconfigure((0, 1, 2), weight=1)
+
+        self._stat_total = self._make_stat_card(stats_row, 0, "TOTAL PROJECTS", "0", "All saved projects")
+        self._stat_latest = self._make_stat_card(stats_row, 1, "LATEST PROJECT", "—", "Most recently updated")
+        self._stat_info = self._make_stat_card(stats_row, 2, "WORKFLOW", "Auto", "Calculations update automatically")
 
         self.project_hub = ProjectHub(
-            body,
+            content,
             on_new_project=self.on_new_project,
             on_open_project=self.on_open_project,
         )
-        self.project_hub.grid(row=4, column=0, sticky="ew", pady=(0, 16))
+        self.project_hub.grid(row=3, column=0, sticky="nsew", padx=28, pady=(0, 26))
+
+        self._refresh_stats()
+
+    def _make_stat_card(self, parent, column: int, title: str, value: str, subtitle: str):
+        card = ctk.CTkFrame(
+            parent,
+            fg_color="white",
+            corner_radius=12,
+            border_width=1,
+            border_color="#E0E5EA",
+            height=88,
+        )
+        card.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 6, 6 if column < 2 else 0))
+        card.grid_propagate(False)
+        card.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(card, text=title, font=("Arial", 9, "bold"), text_color="#7A8794").grid(
+            row=0, column=0, sticky="w", padx=16, pady=(11, 0)
+        )
+        value_label = ctk.CTkLabel(card, text=value, font=("Arial", 17, "bold"), text_color=BRAND_NAVY)
+        value_label.grid(row=1, column=0, sticky="w", padx=16)
+        ctk.CTkLabel(card, text=subtitle, font=("Arial", 9), text_color="#8A949E").grid(
+            row=2, column=0, sticky="w", padx=16, pady=(0, 8)
+        )
+        return value_label
 
     def _open_selected_prompt(self) -> None:
         if self.project_hub and self.project_hub._selected_id:
             self.on_open_project(self.project_hub._selected_id)
         else:
-            messagebox.showinfo("Open Project", "Select a project from Project History, then click Open.")
+            if self.project_hub:
+                self.project_hub.focus_search()
+            messagebox.showinfo(
+                "Open Project",
+                "Select a project from the list below, then click Open Project.",
+            )
 
     def _focus_search(self) -> None:
         if self.project_hub:
-            self.project_hub.refresh()
+            self.project_hub.focus_search()
 
     def _reports_info(self) -> None:
         messagebox.showinfo(
@@ -5189,12 +5397,25 @@ class MainDashboard(ctk.CTkFrame):
             "Open a project and use Preview → Generate Report to create PDF and Excel outputs.",
         )
 
+    def _refresh_stats(self) -> None:
+        projects = find_projects()
+        self._project_count = len(projects)
+        if hasattr(self, "_stat_total"):
+            self._stat_total.configure(text=str(self._project_count))
+        if hasattr(self, "_stat_latest"):
+            if projects:
+                latest = projects[0]
+                name = (latest.get("project_name") or "Untitled").strip()
+                self._stat_latest.configure(text=name[:22] + ("…" if len(name) > 22 else ""))
+            else:
+                self._stat_latest.configure(text="—")
+
     def refresh_stats(self) -> None:
+        self._refresh_stats()
         if self.project_hub:
             self.project_hub.refresh()
 
 
-# Backward compatibility alias
 DashboardScreen = MainDashboard
 
 # ==================== ui/project_hub.py ====================
@@ -5239,12 +5460,13 @@ class ProjectHub(ctk.CTkFrame):
         self.search_var.trace_add("write", lambda *_: self._on_search())
         search_frame = ctk.CTkFrame(header, fg_color="transparent")
         search_frame.grid(row=0, column=1, sticky="e")
-        ctk.CTkEntry(
+        self.search_entry = ctk.CTkEntry(
             search_frame,
             textvariable=self.search_var,
             placeholder_text="Search by ID, name, client, type, date...",
             width=300,
-        ).pack(side="left", padx=(0, 8))
+        )
+        self.search_entry.pack(side="left", padx=(0, 8))
         ctk.CTkButton(search_frame, text="Clear", width=60, command=self._clear_search).pack(side="left")
 
         actions = ctk.CTkFrame(self, fg_color="transparent")
@@ -5260,7 +5482,7 @@ class ProjectHub(ctk.CTkFrame):
         )
         ctk.CTkButton(actions, text="Refresh", fg_color="#7F8C8D", command=self.refresh, width=80).pack(side="left")
 
-        self.history_frame = ctk.CTkScrollableFrame(self, height=220, label_text="Projects")
+        self.history_frame = ctk.CTkScrollableFrame(self, label_text="Projects")
         self.history_frame.grid(row=2, column=0, sticky="nsew", padx=16, pady=(0, 16))
 
         cols = ctk.CTkFrame(self.history_frame, fg_color="#E8ECF0", corner_radius=4)
@@ -5275,6 +5497,10 @@ class ProjectHub(ctk.CTkFrame):
 
         self.status_label = ctk.CTkLabel(self, text="", font=("Arial", 10), text_color="#888888", anchor="w")
         self.status_label.grid(row=3, column=0, sticky="w", padx=16, pady=(0, 12))
+
+    def focus_search(self) -> None:
+        self.search_entry.focus_set()
+        self.search_entry.icursor("end")
 
     def _clear_search(self) -> None:
         self.search_var.set("")
@@ -5422,142 +5648,192 @@ class ProjectEditDialog(ctk.CTkToplevel):
 
 
 
+
+def build_professional_page_header(parent, title: str, subtitle: str = "", step: str = ""):
+    """Create a consistent, non-technical-friendly page header."""
+    wrapper = ctk.CTkFrame(parent, fg_color="white", corner_radius=12, border_width=1, border_color="#DCE3EA")
+    wrapper.pack(fill="x", padx=18, pady=(14, 10))
+    wrapper.grid_columnconfigure(0, weight=1)
+    left = ctk.CTkFrame(wrapper, fg_color="transparent")
+    left.grid(row=0, column=0, sticky="w", padx=20, pady=15)
+    ctk.CTkLabel(left, text=title, font=("Arial", 21, "bold"), text_color=BRAND_NAVY, anchor="w").pack(anchor="w")
+    if subtitle:
+        ctk.CTkLabel(left, text=subtitle, font=("Arial", 10), text_color="#687684", anchor="w").pack(anchor="w", pady=(4, 0))
+    if step:
+        ctk.CTkLabel(
+            wrapper,
+            text=step,
+            font=("Arial", 10, "bold"),
+            text_color=BRAND_NAVY,
+            fg_color="#EAF2F8",
+            corner_radius=12,
+            padx=14,
+            pady=7,
+        ).grid(row=0, column=1, padx=18, pady=15, sticky="e")
+    return wrapper
+
+
+def show_project_engineering_configuration(project_type: str) -> bool:
+    """Show building-level configuration only for residential-family project types."""
+    return project_type in (
+        PROJECT_TYPE_RESIDENTIAL,
+        PROJECT_TYPE_MIXED,
+        PROJECT_TYPE_TOWNSHIP,
+    )
+
+
 class ProjectPage(ScrollablePage):
-    def __init__(self, master, state: AppState, on_next, on_type_change=None) -> None:
+    def __init__(self, master, state: AppState, on_next, on_type_change=None, on_back=None) -> None:
         super().__init__(master)
         self.state = state
         self.on_next = on_next
         self.on_type_change = on_type_change
+        self.on_back = on_back
         self.entries: dict = {}
         self._details_visible = False
         self._build()
 
     def _build(self) -> None:
-        self.header_label = ctk.CTkLabel(self, text="", font=("Arial", 22, "bold"), text_color=BRAND_NAVY)
-        self.header_label.pack(pady=(10, 4))
-
-        self.header_frame = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=8)
-        self.header_frame.pack(fill="x", padx=10, pady=(0, 10))
-        self.header_title = ctk.CTkLabel(
-            self.header_frame, text="", font=("Arial", 18, "bold"), text_color="white"
+        build_professional_page_header(
+            self,
+            "Project Details",
+            "Enter the basic project information first. Fields are kept simple and only required information is shown.",
+            "STEP 2 • PROJECT DETAILS",
         )
-        self.header_title.pack(pady=12)
-        ctk.CTkLabel(
-            self.header_frame, text="American Edge Engineers Pvt. Ltd.", font=("Arial", 12), text_color=BRAND_ORANGE
-        ).pack(pady=(0, 10))
-
-        self.type_frame = ctk.CTkFrame(self, fg_color="white", corner_radius=8, border_width=1, border_color="#DDDDDD")
-        self.type_frame.pack(fill="x", padx=20, pady=8)
-
-        ctk.CTkLabel(
-            self.type_frame,
-            text="Project Type",
-            font=("Arial", 16, "bold"),
-            text_color=BRAND_NAVY,
-        ).pack(anchor="w", padx=20, pady=(16, 4))
-        ctk.CTkLabel(
-            self.type_frame,
-            text="Select the building use type. Only relevant workflow tabs will appear.",
-            font=("Arial", 11),
-            text_color="#666666",
-        ).pack(anchor="w", padx=20, pady=(0, 10))
-
-        type_row = ctk.CTkFrame(self.type_frame, fg_color="transparent")
-        type_row.pack(fill="x", padx=20, pady=(0, 8))
-        initial_label = project_type_label(self.state.project.project_type)
-        self.project_type_var = ctk.StringVar(value=initial_label)
-        type_values = [PROJECT_TYPE_PLACEHOLDER] + sorted(set(PROJECT_TYPE_LABELS.keys()))
-        self.type_combo = ctk.CTkComboBox(
-            type_row,
-            values=type_values,
-            variable=self.project_type_var,
-            width=420,
-            command=self._on_project_type_selected,
-        )
-        self.type_combo.pack(side="left")
 
         self.workflow_hint = ctk.CTkLabel(
-            self.type_frame,
-            text="",
+            self,
+            text="Choose a project type to unlock engineering workflow tabs.",
             font=("Arial", 11, "italic"),
-            text_color=BRAND_ORANGE,
-            wraplength=700,
-            justify="left",
+            text_color="#666666",
+            anchor="w",
         )
-        self.workflow_hint.pack(anchor="w", padx=20, pady=(4, 16))
+        self.workflow_hint.pack(fill="x", padx=16, pady=(0, 6))
 
         self.details_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.form = ctk.CTkFrame(self.details_frame)
-        self.form.pack(fill="both", expand=True, padx=20, pady=10)
-        row = 0
+        self.form = ctk.CTkFrame(
+            self.details_frame,
+            fg_color="white",
+            corner_radius=12,
+            border_width=1,
+            border_color="#DCE3EA",
+        )
+        self.form.pack(fill="x", padx=16, pady=8)
+        self.form.grid_columnconfigure(1, weight=0)
 
+        row = 0
         for key, label, default in [
             ("project_name", "Project Name", "PROPOSED RESIDENTIAL & COMM. AT PUNAVALE"),
             ("client_name", "Client Name", "MR.PRATHMESH GAIKWAD"),
-            ("project_location", "Location", "PUNAVALE, PUNE"),
         ]:
-            ctk.CTkLabel(self.form, text=label, font=("Arial", 14)).grid(row=row, column=0, padx=20, pady=8, sticky="w")
-            ent = ctk.CTkEntry(self.form, width=400)
-            val = getattr(self.state.project, key if key != "project_location" else "project_location", default)
-            ent.insert(0, val or default)
-            ent.grid(row=row, column=1, padx=20, pady=8, sticky="w")
+            ctk.CTkLabel(self.form, text=label, font=("Arial", 13, "bold")).grid(
+                row=row, column=0, padx=16, pady=8, sticky="w"
+            )
+            ent = ctk.CTkEntry(self.form, width=480, height=34)
+            ent.insert(0, getattr(self.state.project, key, default) or default)
+            ent.grid(row=row, column=1, padx=16, pady=8, sticky="w")
             self.entries[key] = ent
             if key == "client_name":
                 ent.bind("<KeyRelease>", self._on_client_type)
-            if key == "project_location":
-                ent.bind("<KeyRelease>", self._on_location_type)
             row += 1
 
-        for key, label, attr in [
-            ("client_address", "Client Address", "client_address"),
-            ("client_contact", "Contact", "client_contact"),
-            ("client_email", "Email", "client_email"),
-            ("client_gst", "GST", "client_gst"),
-        ]:
-            ctk.CTkLabel(self.form, text=label, font=("Arial", 13)).grid(row=row, column=0, padx=20, pady=6, sticky="w")
-            ent = ctk.CTkEntry(self.form, width=400)
-            ent.insert(0, getattr(self.state.project, attr, "") or "")
-            ent.grid(row=row, column=1, padx=20, pady=6, sticky="w")
-            self.entries[key] = ent
-            row += 1
+        if not self.state.project.project_no:
+            self.state.project.project_no = next_project_number()
 
-        ctk.CTkLabel(self.form, text="Building Configuration", font=("Arial", 14)).grid(
-            row=row, column=0, padx=20, pady=8, sticky="w"
+        ctk.CTkLabel(self.form, text="Reference No.", font=("Arial", 13, "bold")).grid(
+            row=row, column=0, padx=16, pady=8, sticky="w"
+        )
+        self.project_no_label = ctk.CTkLabel(
+            self.form, text=self.state.project.project_no, font=("Arial", 13)
+        )
+        self.project_no_label.grid(row=row, column=1, padx=16, pady=8, sticky="w")
+        row += 1
+
+        ctk.CTkLabel(self.form, text="Date", font=("Arial", 13, "bold")).grid(
+            row=row, column=0, padx=16, pady=8, sticky="w"
+        )
+        self.date_label = ctk.CTkLabel(
+            self.form, text=datetime.now().strftime("%d-%m-%Y"), font=("Arial", 13)
+        )
+        self.date_label.grid(row=row, column=1, padx=16, pady=8, sticky="w")
+        row += 1
+
+        ctk.CTkLabel(
+            self.form,
+            text="Project Type",
+            font=("Arial", 13, "bold"),
+            text_color=BRAND_NAVY,
+        ).grid(row=row, column=0, padx=16, pady=8, sticky="w")
+        self.project_type_display = ctk.CTkLabel(
+            self.form,
+            text=project_type_label(self.state.project.project_type),
+            font=("Arial", 13, "bold"),
+            text_color=BRAND_ORANGE,
+            anchor="w",
+        )
+        self.project_type_display.grid(row=row, column=1, padx=16, pady=8, sticky="w")
+        row += 1
+
+        engineering_start_row = row
+
+        ctk.CTkLabel(
+            self.form,
+            text="Engineering Configuration",
+            font=("Arial", 14, "bold"),
+            text_color=BRAND_NAVY,
+        ).grid(row=row, column=0, columnspan=2, padx=16, pady=(12, 4), sticky="w")
+        row += 1
+
+        ctk.CTkLabel(self.form, text="Building Configuration", font=("Arial", 13)).grid(
+            row=row, column=0, padx=16, pady=6, sticky="w"
         )
         self.building_config_var = ctk.StringVar(value=self.state.project.building_config or "G+7")
         ctk.CTkComboBox(
             self.form,
             values=list(BUILDING_CONFIG_EXAMPLES),
             variable=self.building_config_var,
-            width=400,
             command=lambda *_: self._sync_building_height(),
-        ).grid(row=row, column=1, padx=20, pady=8, sticky="w")
+            width=300,
+            height=34,
+        ).grid(row=row, column=1, padx=16, pady=6, sticky="w")
         row += 1
 
-        ctk.CTkLabel(self.form, text="Building Height (m)", font=("Arial", 14)).grid(
-            row=row, column=0, padx=20, pady=8, sticky="w"
+        ctk.CTkLabel(self.form, text="Building Height (m)", font=("Arial", 13)).grid(
+            row=row, column=0, padx=16, pady=6, sticky="w"
         )
-        self.height_entry = ctk.CTkEntry(self.form, width=120)
+        self.height_entry = ctk.CTkEntry(self.form, width=120, height=34)
         self.height_entry.insert(0, str(self.state.project.building_height_m or ""))
-        self.height_entry.grid(row=row, column=1, padx=20, pady=8, sticky="w")
-        self.height_entry.bind("<KeyRelease>", lambda *_: self._sync_building_height())
+        self.height_entry.grid(row=row, column=1, padx=16, pady=6, sticky="w")
+        self.height_entry.bind("<KeyRelease>", lambda *_: self.schedule_auto_calculate(self.state))
         row += 1
 
-        ctk.CTkLabel(self.form, text="Number of Wings", font=("Arial", 14)).grid(
-            row=row, column=0, padx=20, pady=8, sticky="w"
+        ctk.CTkLabel(self.form, text="Number of Wings", font=("Arial", 13)).grid(
+            row=row, column=0, padx=16, pady=6, sticky="w"
         )
-        self.wings_entry = ctk.CTkEntry(self.form, width=120)
+        self.wings_entry = ctk.CTkEntry(self.form, width=120, height=34)
         self.wings_entry.insert(0, str(self.state.project.num_wings or 1))
-        self.wings_entry.grid(row=row, column=1, padx=20, pady=8, sticky="w")
+        self.wings_entry.grid(row=row, column=1, padx=16, pady=6, sticky="w")
         row += 1
 
-        ctk.CTkLabel(self.form, text="Building Type", font=("Arial", 14)).grid(
-            row=row, column=0, padx=20, pady=8, sticky="w"
+        ctk.CTkLabel(self.form, text="Building Type", font=("Arial", 13)).grid(
+            row=row, column=0, padx=16, pady=6, sticky="w"
         )
         self.building_type_var = ctk.StringVar(value=self.state.project.building_type or BUILDING_TYPES[0])
         ctk.CTkComboBox(
-            self.form, values=list(BUILDING_TYPES), variable=self.building_type_var, width=400
-        ).grid(row=row, column=1, padx=20, pady=8, sticky="w")
+            self.form,
+            values=list(BUILDING_TYPES),
+            variable=self.building_type_var,
+            width=320,
+            height=34,
+        ).grid(row=row, column=1, padx=16, pady=6, sticky="w")
+        row += 1
+
+        ctk.CTkLabel(
+            self.form,
+            text="Report Sign-off",
+            font=("Arial", 14, "bold"),
+            text_color=BRAND_NAVY,
+        ).grid(row=row, column=0, columnspan=2, padx=16, pady=(12, 4), sticky="w")
         row += 1
 
         for label, attr, default in [
@@ -5566,7 +5842,9 @@ class ProjectPage(ScrollablePage):
             ("Checked By", "checked_var", "Akash"),
             ("Approved By", "approved_var", "Omkar"),
         ]:
-            ctk.CTkLabel(self.form, text=label, font=("Arial", 14)).grid(row=row, column=0, padx=20, pady=8, sticky="w")
+            ctk.CTkLabel(self.form, text=label, font=("Arial", 13)).grid(
+                row=row, column=0, padx=16, pady=6, sticky="w"
+            )
             if label == "Engineer Name":
                 existing = self.state.project.engineer_name
             elif label == "Prepared By":
@@ -5577,61 +5855,67 @@ class ProjectPage(ScrollablePage):
                 existing = self.state.project.revision.approved_by
             var = ctk.StringVar(value=existing or default)
             setattr(self, attr, var)
-            ctk.CTkComboBox(self.form, values=list(STAFF_NAMES), variable=var, width=400).grid(
-                row=row, column=1, padx=20, pady=8, sticky="w"
-            )
-            row += 1
-
-        ctk.CTkLabel(self.form, text="Plot Mode", font=("Arial", 14)).grid(row=row, column=0, padx=20, pady=8, sticky="w")
-        plot_label = next(
-            (k for k, v in PLOT_MODE_LABELS.items() if v == self.state.project.plot_mode),
-            "Single Plot",
-        )
-        self.plot_mode_var = ctk.StringVar(value=plot_label)
-        ctk.CTkComboBox(
-            self.form, values=list(PLOT_MODE_LABELS.keys()), variable=self.plot_mode_var, width=400
-        ).grid(row=row, column=1, padx=20, pady=8, sticky="w")
-        row += 1
-
-        ctk.CTkLabel(self.form, text="Project Number (Auto)", font=("Arial", 14)).grid(
-            row=row, column=0, padx=20, pady=8, sticky="w"
-        )
-        if not self.state.project.project_no:
-            self.state.project.project_no = next_project_number()
-        self.project_no_label = ctk.CTkLabel(
-            self.form, text=self.state.project.project_no, font=("Arial", 14, "bold")
-        )
-        self.project_no_label.grid(row=row, column=1, padx=20, pady=8, sticky="w")
-        row += 1
-
-        ctk.CTkLabel(self.form, text="Date (Today)", font=("Arial", 14)).grid(row=row, column=0, padx=20, pady=8, sticky="w")
-        self.date_label = ctk.CTkLabel(self.form, text=datetime.now().strftime("%d-%m-%Y"), font=("Arial", 14))
-        self.date_label.grid(row=row, column=1, padx=20, pady=8, sticky="w")
-        row += 1
-
-        for key, label in [("city", "City"), ("state", "State"), ("rainfall_zone", "Rainfall Zone"), ("climate", "Climate")]:
-            ctk.CTkLabel(self.form, text=label, font=("Arial", 13)).grid(row=row, column=0, padx=20, pady=4, sticky="w")
-            ent = ctk.CTkEntry(self.form, width=400)
-            ent.insert(0, getattr(self.state.project, key, "") or "")
-            ent.grid(row=row, column=1, padx=20, pady=4, sticky="w")
-            self.entries[key] = ent
+            ctk.CTkComboBox(
+                self.form,
+                values=list(STAFF_NAMES),
+                variable=var,
+                width=300,
+                height=34,
+            ).grid(row=row, column=1, padx=16, pady=6, sticky="w")
             row += 1
 
         btn_frame = ctk.CTkFrame(self.details_frame, fg_color="transparent")
-        btn_frame.pack(pady=15)
+        btn_frame.pack(pady=12)
+        if self.on_back is not None:
+            ctk.CTkButton(
+                btn_frame,
+                text="← Back",
+                command=self.on_back,
+                fg_color="#7F8C8D",
+                hover_color="#667071",
+                width=140,
+            ).pack(side="left", padx=8)
         ctk.CTkButton(
-            btn_frame, text="Next ->", command=self._save_and_next,
-            fg_color=BRAND_ORANGE, hover_color="#D06018", width=220,
-        ).pack()
+            btn_frame,
+            text="Next →",
+            command=self._save_and_next,
+            fg_color=BRAND_ORANGE,
+            hover_color="#D06018",
+            width=220,
+        ).pack(side="left", padx=8)
+
+        self._engineering_start_row = engineering_start_row
+        self._engineering_end_row = row - 1
+        self._set_engineering_configuration_visibility()
 
         if is_project_type_set(self.state.project.project_type):
             self._show_details()
         else:
             self._hide_details()
 
+    def _set_engineering_configuration_visibility(self) -> None:
+        if not hasattr(self, "_engineering_start_row"):
+            return
+        show = show_project_engineering_configuration(self.state.project.project_type)
+        for widget in self.form.winfo_children():
+            try:
+                info = widget.grid_info()
+                if not info:
+                    continue
+                row = int(info.get("row", -1))
+                if self._engineering_start_row <= row <= self._engineering_end_row:
+                    if show:
+                        widget.grid()
+                    else:
+                        widget.grid_remove()
+            except Exception:
+                pass
+
     def _update_workflow_hint(self) -> None:
+        if not hasattr(self, "workflow_hint"):
+            return
         if not is_project_type_set(self.state.project.project_type):
-            self.workflow_hint.configure(text="Choose a project type to unlock project details and workflow tabs.")
+            self.workflow_hint.configure(text="Choose a project type to unlock engineering workflow tabs.")
             return
         tabs = visible_nav_labels(self.state.project.project_type)
         tab_text = " → ".join(tabs[:8])
@@ -5641,17 +5925,13 @@ class ProjectPage(ScrollablePage):
 
     def _show_details(self) -> None:
         self._details_visible = True
-        self.details_frame.pack(fill="both", expand=True, padx=0, pady=8)
-        self.header_title.configure(text="STEP 1 — PROJECT DETAILS")
-        self.header_label.configure(text="")
+        self.details_frame.pack(fill="both", expand=True, padx=0, pady=0)
         self._update_workflow_hint()
         self._sync_building_height()
 
     def _hide_details(self) -> None:
         self._details_visible = False
         self.details_frame.pack_forget()
-        self.header_title.configure(text="SELECT PROJECT TYPE")
-        self.header_label.configure(text="Start by choosing your project type")
         self._update_workflow_hint()
 
     def _sync_building_height(self) -> None:
@@ -5667,23 +5947,7 @@ class ProjectPage(ScrollablePage):
             self.state.project.building_height_m = float(self.height_entry.get() or height or 0)
         except ValueError:
             pass
-        self.state.auto_calculate()
-
-    def _on_project_type_selected(self, _choice: str) -> None:
-        label = self.project_type_var.get()
-        if label == PROJECT_TYPE_PLACEHOLDER:
-            self.state.project.project_type = ""
-            self._hide_details()
-            if self.on_type_change:
-                self.on_type_change()
-            return
-        new_type = project_type_key(label)
-        old_type = self.state.project.project_type
-        if new_type != old_type:
-            self.state.apply_project_type(new_type)
-        self._show_details()
-        if self.on_type_change:
-            self.on_type_change()
+        self.schedule_auto_calculate(self.state)
 
     def _on_client_type(self, _event=None) -> None:
         if not self._details_visible:
@@ -5695,57 +5959,40 @@ class ProjectPage(ScrollablePage):
         best = matches[0]
         if text.lower() not in best["client_name"].lower() and text.lower() not in best["client_key"]:
             return
-        for key, field in [
-            ("client_name", "client_name"),
-            ("client_address", "address"),
-            ("client_contact", "contact"),
-            ("client_email", "email"),
-            ("client_gst", "gst"),
-        ]:
-            if field in best and best[field] and key in self.entries:
-                self.entries[key].delete(0, "end")
-                self.entries[key].insert(0, best[field])
+        if best.get("client_name"):
+            self.entries["client_name"].delete(0, "end")
+            self.entries["client_name"].insert(0, best["client_name"])
         if best.get("engineer_name"):
             self.engineer_var.set(best["engineer_name"])
-
-    def _on_location_type(self, _event=None) -> None:
-        if not self._details_visible:
-            return
-        text = self.entries["project_location"].get().strip()
-        matches = search_locations(text)
-        if not matches:
-            return
-        best = matches[0]
-        for key, src in [("city", "city"), ("state", "state"), ("rainfall_zone", "rainfall_zone"), ("climate", "climate")]:
-            if src in best and best[src] and key in self.entries:
-                self.entries[key].delete(0, "end")
-                self.entries[key].insert(0, best[src])
 
     def _save_and_next(self) -> None:
         if not is_project_type_set(self.state.project.project_type):
             messagebox.showwarning("Project Type", "Please select a project type before continuing.")
             return
+
         try:
             today = datetime.now().strftime("%d-%m-%Y")
-            self.state.project.project_name = validate_required(self.entries["project_name"].get(), "Project Name")
-            self.state.project.client_name = validate_required(self.entries["client_name"].get(), "Client Name")
-            self.state.project.project_location = validate_required(
-                self.entries["project_location"].get(), "Location"
+            self.state.project.project_name = validate_required(
+                self.entries["project_name"].get(), "Project Name"
             )
-            self.state.project.engineer_name = validate_required(self.engineer_var.get(), "Engineer Name")
+            self.state.project.client_name = validate_required(
+                self.entries["client_name"].get(), "Client Name"
+            )
+            self.state.project.engineer_name = validate_required(
+                self.engineer_var.get(), "Engineer Name"
+            )
             if not self.state.project.project_no:
                 self.state.project.project_no = next_project_number()
             self.state.project.date = today
-            self.state.project.plot_mode = PLOT_MODE_LABELS.get(
-                self.plot_mode_var.get(), self.state.project.plot_mode
-            )
-            self.state.project.project_type = project_type_key(self.project_type_var.get())
-            self.state.project.building_config = self.building_config_var.get().strip()
-            self.state.project.building_height_m = float(self.height_entry.get() or 0)
-            self.state.project.num_wings = validate_positive_int(self.wings_entry.get(), "Number of Wings")
-            self.state.project.building_type = self.building_type_var.get()
-            for key in ("client_address", "client_contact", "client_email", "client_gst", "city", "state", "rainfall_zone", "climate"):
-                setattr(self.state.project, key, self.entries[key].get().strip())
+
+            if show_project_engineering_configuration(self.state.project.project_type):
+                self.state.project.building_config = self.building_config_var.get().strip()
+                self.state.project.building_height_m = float(self.height_entry.get() or 0)
+                self.state.project.num_wings = validate_positive_int(
+                    self.wings_entry.get(), "Number of Wings"
+                )
+                self.state.project.building_type = self.building_type_var.get()
+
             self.state.project.revision = RevisionInfo(
                 date=today,
                 revision_no="R0",
@@ -5754,36 +6001,95 @@ class ProjectPage(ScrollablePage):
                 checked_by=self.checked_var.get().strip(),
                 approved_by=self.approved_var.get().strip(),
             )
-            upsert_client({
-                "client_name": self.state.project.client_name,
-                "address": self.state.project.client_address,
-                "engineer_name": self.state.project.engineer_name,
-                "contact": self.state.project.client_contact,
-                "email": self.state.project.client_email,
-                "gst": self.state.project.client_gst,
-            })
-            upsert_location({
-                "city": self.state.project.city or self.state.project.project_location,
-                "state": self.state.project.state,
-                "rainfall_zone": self.state.project.rainfall_zone,
-                "climate": self.state.project.climate,
-                "full_label": self.state.project.project_location,
-            })
-            self.state.sync_building_defaults()
-            self.state.auto_calculate()
+
+            try:
+                upsert_client({
+                    "client_name": self.state.project.client_name,
+                    "engineer_name": self.state.project.engineer_name,
+                })
+            except Exception:
+                traceback.print_exc()
+
             self.on_next()
+
+            try:
+                self.after(100, self._deferred_post_navigation_sync)
+            except Exception:
+                pass
         except ValidationError as exc:
             messagebox.showerror("Validation Error", exc.message)
+        except (ValueError, TypeError) as exc:
+            messagebox.showerror("Validation Error", f"Please check the entered values.\n\n{exc}")
+        except Exception as exc:
+            traceback.print_exc()
+            messagebox.showerror(
+                "Project Details",
+                f"Unable to open the next section. Please check the project information and try again.\n\n{exc}",
+            )
+
+    def _deferred_post_navigation_sync(self) -> None:
+        try:
+            self.state.sync_building_defaults()
+        except Exception:
+            traceback.print_exc()
+        try:
+            self.schedule_auto_calculate(self.state)
+        except Exception:
+            pass
 
     def refresh(self) -> None:
+        project = self.state.project
+
         if hasattr(self, "date_label"):
-            self.date_label.configure(text=datetime.now().strftime("%d-%m-%Y"))
-        if hasattr(self, "project_no_label") and self.state.project.project_no:
-            self.project_no_label.configure(text=self.state.project.project_no)
-        if is_project_type_set(self.state.project.project_type):
-            self.project_type_var.set(project_type_label(self.state.project.project_type))
-            if not self._details_visible:
-                self._show_details()
+            self.date_label.configure(text=project.date or datetime.now().strftime("%d-%m-%Y"))
+        if hasattr(self, "project_no_label"):
+            self.project_no_label.configure(text=project.project_no or "—")
+        if hasattr(self, "project_type_display"):
+            self.project_type_display.configure(
+                text=project_type_label(project.project_type)
+                if is_project_type_set(project.project_type)
+                else "Select Project Type"
+            )
+
+        for key in ("project_name", "client_name"):
+            entry = self.entries.get(key)
+            if entry is not None:
+                value = getattr(project, key, "") or ""
+                if entry.get() != value:
+                    entry.delete(0, "end")
+                    entry.insert(0, value)
+
+        if hasattr(self, "building_config_var"):
+            self.building_config_var.set(project.building_config or "G+7")
+        if hasattr(self, "height_entry"):
+            height = project.building_height_m or 0
+            current = self.height_entry.get()
+            target = str(int(height)) if float(height).is_integer() else str(height)
+            if current != target:
+                self.height_entry.delete(0, "end")
+                self.height_entry.insert(0, target)
+        if hasattr(self, "wings_entry"):
+            target = str(project.num_wings or 1)
+            if self.wings_entry.get() != target:
+                self.wings_entry.delete(0, "end")
+                self.wings_entry.insert(0, target)
+        if hasattr(self, "building_type_var"):
+            self.building_type_var.set(project.building_type or BUILDING_TYPES[0])
+
+        if hasattr(self, "engineer_var"):
+            self.engineer_var.set(project.engineer_name or "Akash")
+        if hasattr(self, "prepared_var"):
+            self.prepared_var.set(project.revision.prepared_by or "Akash")
+        if hasattr(self, "checked_var"):
+            self.checked_var.set(project.revision.checked_by or "Akash")
+        if hasattr(self, "approved_var"):
+            self.approved_var.set(project.revision.approved_by or "Omkar")
+
+        self._set_engineering_configuration_visibility()
+        if is_project_type_set(project.project_type):
+            self._show_details()
+        else:
+            self._hide_details()
         self._update_workflow_hint()
 
 # ==================== ui/pages/residential_page.py ====================
@@ -6026,7 +6332,7 @@ class ResidentialPage(ScrollablePage):
 
     def _sync_and_calculate(self) -> None:
         self.state.residential = wings_from_ui_rows(self.rows, self.state.project.plot_mode)
-        self.state.auto_calculate()
+        self.schedule_auto_calculate(self.state)
 
     def _save_and_next(self) -> None:
         wings: list = []
@@ -6233,7 +6539,7 @@ class CommercialPage(ScrollablePage):
 
     def _sync_and_calculate(self) -> None:
         self.state.commercial = commercial_from_ui_rows(self.rows, self.state.project.plot_mode)
-        self.state.auto_calculate()
+        self.schedule_auto_calculate(self.state)
 
     def _save_and_next(self) -> None:
         units: list = []
@@ -6737,20 +7043,31 @@ if not os.path.exists(LOGO_PATH):
 # ============================================================
 
 def _raise_page(page) -> None:
-    """Bring a page (especially CTkScrollableFrame) to the front."""
-    if hasattr(page, "lift"):
-        page.lift()
-    elif hasattr(page, "_parent_frame"):
-        page._parent_frame.tkraise()
-    else:
+    """Reliably bring a page to the front in the shared workspace container."""
+    try:
+        page.grid(row=0, column=0, sticky="nsew")
+    except Exception:
+        pass
+    try:
         page.tkraise()
+    except Exception:
+        try:
+            page.lift()
+        except Exception:
+            pass
+    try:
+        parent_frame = getattr(page, "_parent_frame", None)
+        if parent_frame is not None:
+            parent_frame.tkraise()
+    except Exception:
+        pass
 
 
 class ProjectWorkspace(ctk.CTkFrame):
     NAV = [
-        ("Project", "1. Project Details"),
-        ("Residential", "2. Residential"),
-        ("Commercial", "3. Commercial"),
+        ("Project", "Project Details"),
+        ("Residential", "Residential"),
+        ("Commercial", "Commercial"),
         ("Hospital", "Hospital Details"),
         ("Hotel", "Hotel / Kitchen"),
         ("FoodCourt", "Food Court"),
@@ -6776,6 +7093,8 @@ class ProjectWorkspace(ctk.CTkFrame):
         on_header_update=None,
         current_user=None,
         on_logout=None,
+        on_new_project=None,
+        on_back_to_type_selector=None,
     ):
         super().__init__(master, fg_color="#F0F2F5", corner_radius=0)
         self.on_home = on_home
@@ -6783,6 +7102,8 @@ class ProjectWorkspace(ctk.CTkFrame):
         self.on_header_update = on_header_update
         self.current_user = current_user
         self.on_logout = on_logout
+        self.on_new_project = on_new_project
+        self.on_back_to_type_selector = on_back_to_type_selector
         self.app_state = initial_state if initial_state is not None else AppState()
         self._last_autosave_at = ""
         self._pages_built = False
@@ -6796,6 +7117,9 @@ class ProjectWorkspace(ctk.CTkFrame):
         self.container.grid_columnconfigure(0, weight=1)
         self.pages: dict = {}
         self._current_page = "Project"
+        self._calc_job = None
+        self._calc_dirty = True
+        self._project_list_cache: list | None = None
 
     def ensure_pages_built(self) -> None:
         if self._pages_built:
@@ -6804,21 +7128,49 @@ class ProjectWorkspace(ctk.CTkFrame):
         self._pages_built = True
         self.show("Project")
 
+    def reset_for_new_type(self) -> None:
+        """Drop cached workflow pages before a new project/type is shown."""
+        for key, page in list(self.pages.items()):
+            try:
+                page.destroy()
+            except Exception:
+                pass
+        self.pages.clear()
+        self._current_page = "Project"
+        self._calc_dirty = True
+        if self._calc_job is not None:
+            try:
+                self.after_cancel(self._calc_job)
+            except Exception:
+                pass
+            self._calc_job = None
+
     def apply_state(self, state: AppState) -> None:
-        """Reset project data and refresh widgets without destroying pages."""
+        """Install project state and reset stale lazily-built pages."""
+        for key, page in list(self.pages.items()):
+            try:
+                page.destroy()
+            except Exception:
+                pass
+        self.pages.clear()
         self.app_state = state
-        for page in self.pages.values():
-            if hasattr(page, "state"):
-                page.state = state
+        self._current_page = "Project"
+        self._calc_dirty = True
+        self._build_pages()
         self._rebuild_sidebar()
-        if "Project" in self.pages and hasattr(self.pages["Project"], "refresh"):
-            self.pages["Project"].refresh()
-        for key in ("Residential", "Commercial", "Report"):
-            page = self.pages.get(key)
-            if page and hasattr(page, "refresh"):
-                page.refresh()
-        self._calc()
+        project_page = self.pages.get("Project")
+        if project_page is not None:
+            if hasattr(project_page, "refresh"):
+                project_page.refresh()
+            if is_project_type_set(self.app_state.project.project_type) and hasattr(project_page, "_show_details"):
+                project_page._show_details()
         self.show("Project")
+        if self._calc_job is not None:
+            try:
+                self.after_cancel(self._calc_job)
+            except Exception:
+                pass
+        self._calc_job = self.after(80, self._run_scheduled_calc)
         if self.on_header_update:
             self.on_header_update()
 
@@ -6857,12 +7209,11 @@ class ProjectWorkspace(ctk.CTkFrame):
         sb.grid_propagate(False)
         ctk.CTkLabel(
             sb,
-            text="AMERICAN EDGE\nENGINEERS",
+            text="Project Navigation",
             font=("Arial", 14, "bold"),
-            text_color=BRAND_ORANGE,
+            text_color="white",
             justify="center",
-        ).pack(pady=(20, 5))
-        ctk.CTkLabel(sb, text="Water Demand Generator", font=("Arial", 10), text_color="white").pack(pady=(0, 10))
+        ).pack(pady=(20, 12))
         if self.on_home:
             ctk.CTkButton(
                 sb,
@@ -6892,25 +7243,24 @@ class ProjectWorkspace(ctk.CTkFrame):
             wraplength=200,
         ).pack(pady=(0, 4))
         if is_project_type_set(self.app_state.project.project_type):
-            ctk.CTkLabel(
+            self._project_type_label = ctk.CTkLabel(
                 sb,
                 text=project_type_label(self.app_state.project.project_type),
                 font=("Arial", 9, "bold"),
                 text_color=BRAND_ORANGE,
                 wraplength=200,
-            ).pack(pady=(0, 8))
+            )
         else:
-            ctk.CTkLabel(
+            self._project_type_label = ctk.CTkLabel(
                 sb,
                 text="Select project type",
                 font=("Arial", 9, "italic"),
                 text_color="#AAAAAA",
                 wraplength=200,
-            ).pack(pady=(0, 8))
+            )
+        self._project_type_label.pack(pady=(0, 8))
         self.nav_btns = {}
         for key, label in self.NAV:
-            if not self._nav_visible(key):
-                continue
             btn = ctk.CTkButton(
                 sb,
                 text=label,
@@ -6922,15 +7272,16 @@ class ProjectWorkspace(ctk.CTkFrame):
                 font=("Arial", 12),
                 command=lambda k=key: self.show(k),
             )
-            btn.pack(fill="x", padx=8, pady=2)
             self.nav_btns[key] = btn
+            if self._nav_visible(key):
+                btn.pack(fill="x", padx=8, pady=2)
         ctk.CTkButton(sb, text="Save Project", fg_color=BRAND_ORANGE, command=self._save_db).pack(
             side="bottom", fill="x", padx=10, pady=4
         )
         ctk.CTkButton(sb, text="Open Project", fg_color="#2980B9", command=self._open_db).pack(
             side="bottom", fill="x", padx=10, pady=4
         )
-        ctk.CTkButton(sb, text="New Project", fg_color="#27AE60", command=self._new).pack(
+        ctk.CTkButton(sb, text="New Project", fg_color="#27AE60", command=self.on_new_project if self.on_new_project else self._new).pack(
             side="bottom", fill="x", padx=10, pady=(4, 4 if self.on_logout else 15)
         )
         if self.on_logout:
@@ -6944,66 +7295,122 @@ class ProjectWorkspace(ctk.CTkFrame):
             self.on_logout()
 
     def _rebuild_sidebar(self) -> None:
-        self.sidebar.destroy()
-        self.sidebar = self._build_sidebar()
+        allowed = set(visible_pages(self.app_state.project.project_type))
+        for key, btn in self.nav_btns.items():
+            if key in allowed:
+                if not btn.winfo_ismapped():
+                    btn.pack(fill="x", padx=8, pady=2)
+            else:
+                btn.pack_forget()
+        if hasattr(self, "_project_type_label"):
+            if is_project_type_set(self.app_state.project.project_type):
+                self._project_type_label.configure(
+                    text=project_type_label(self.app_state.project.project_type),
+                    font=("Arial", 9, "bold"),
+                    text_color=BRAND_ORANGE,
+                )
+            else:
+                self._project_type_label.configure(
+                    text="Select project type",
+                    font=("Arial", 9, "italic"),
+                    text_color="#AAAAAA",
+                )
+
+    def _project_details_back(self):
+        if self.on_back_to_type_selector:
+            self.on_back_to_type_selector()
+        elif self.on_home:
+            self.on_home()
+        elif self.on_new_project:
+            self.on_new_project()
 
     def _build_pages(self) -> None:
-        self.pages["Project"] = ProjectPage(
-            self.container,
-            self.app_state,
-            on_next=self._next_from_project,
-            on_type_change=self._on_project_type_changed,
-        )
-        self.pages["Residential"] = ResidentialPage(
-            self.container,
-            self.app_state,
-            on_next=self._next_from_residential,
-            on_back=lambda: self.show("Project"),
-        )
-        self.pages["Commercial"] = CommercialPage(
-            self.container,
-            self.app_state,
-            on_next=lambda: self._wizard_show_next("Commercial"),
-            on_back=self._back_from_commercial,
-        )
-        self.pages["Hospital"] = self._placeholder_page(
-            "Hospital Details",
-            "Enter hospital bed counts and medical water requirements.\n"
-            "Use Commercial page with Hospital occupancy for NBC calculations.",
-            lambda: self._wizard_show_next("Hospital"),
-        )
-        self.pages["Hotel"] = self._placeholder_page(
-            "Hotel / Kitchen / Laundry",
-            "Hotel kitchen and laundry water demands are calculated from commercial occupancy rules.\n"
-            "Add Hotel-type units on the Commercial page.",
-            lambda: self._wizard_show_next("Hotel"),
-        )
-        self.pages["FoodCourt"] = self._placeholder_page(
-            "Food Court",
-            "Food court water demand uses Restaurant occupancy (÷1.4 population density).\n"
-            "Add Restaurant units on the Commercial page.",
-            lambda: self._wizard_show_next("FoodCourt"),
-        )
-        self.pages["Landscape"] = self._form_page("Landscape (NBC-2026)", self._landscape_ui)
-        self.pages["Swimming"] = self._form_page("Swimming Pool", self._pool_ui)
-        self.pages["HVAC"] = self._form_page("HVAC Water", self._hvac_ui)
-        self.pages["UGT"] = self._form_page("UGT / Fire Tank", self._ugt_ui)
-        self.pages["Sewage"] = self._sewage_page()
-        self.pages["OHT"] = self._oht_page()
-        self.pages["STP"] = self._stp_page()
-        self.pages["SolidWaste"] = self._solid_waste_page()
-        self.pages["Preview"] = self._preview_page()
-        self.pages["Report"] = FinalPage(
-            self.container,
-            self.app_state,
-            on_back=lambda: self.show("Preview"),
-            on_generate_all=self._generate_report_all,
-        )
-        self.pages["Settings"] = self._settings_page()
-        for page in self.pages.values():
-            page.grid(row=0, column=0, sticky="nsew")
+        """Build only the lightweight Project Details page initially."""
+        if "Project" not in self.pages:
+            self.pages["Project"] = ProjectPage(
+                self.container,
+                self.app_state,
+                on_next=self._next_from_project,
+                on_type_change=self._on_project_type_changed,
+                on_back=self._project_details_back,
+            )
+        page = self.pages.get("Project")
+        if page is not None:
+            try:
+                page.grid(row=0, column=0, sticky="nsew")
+            except Exception:
+                pass
 
-    def _placeholder_page(self, title: str, body: str, on_next):
+    def _build_single_page(self, key: str) -> bool:
+        if key in self.pages:
+            return True
+        visible = visible_pages(self.app_state.project.project_type)
+        if key != "Project" and key not in visible:
+            return False
+
+        if key == "Residential":
+            self.pages[key] = ResidentialPage(
+                self.container, self.app_state,
+                on_next=self._next_from_residential,
+                on_back=lambda: self.show("Project"),
+            )
+        elif key == "Commercial":
+            self.pages[key] = CommercialPage(
+                self.container, self.app_state,
+                on_next=lambda: self._wizard_show_next("Commercial"),
+                on_back=self._back_from_commercial,
+            )
+        elif key == "Hospital":
+            self.pages[key] = self._placeholder_page(
+                "Hospital Details",
+                "Enter hospital bed counts and medical water requirements.\nUse Commercial page with Hospital occupancy for NBC calculations.",
+                lambda: self._wizard_show_next("Hospital"), "Hospital")
+        elif key == "Hotel":
+            self.pages[key] = self._placeholder_page(
+                "Hotel / Kitchen / Laundry",
+                "Hotel kitchen and laundry water demands are calculated from commercial occupancy rules.\nAdd Hotel-type units on the Commercial page.",
+                lambda: self._wizard_show_next("Hotel"), "Hotel")
+        elif key == "FoodCourt":
+            self.pages[key] = self._placeholder_page(
+                "Food Court",
+                "Food court water demand uses Restaurant occupancy (÷1.4 population density).\nAdd Restaurant units on the Commercial page.",
+                lambda: self._wizard_show_next("FoodCourt"), "FoodCourt")
+        elif key == "Landscape":
+            self.pages[key] = self._form_page("Landscape (NBC-2026)", self._landscape_ui, "Landscape")
+        elif key == "Swimming":
+            self.pages[key] = self._form_page("Swimming Pool", self._pool_ui, "Swimming")
+        elif key == "HVAC":
+            self.pages[key] = self._form_page("HVAC Water", self._hvac_ui, "HVAC")
+        elif key == "UGT":
+            self.pages[key] = self._form_page("UGT / Fire Tank", self._ugt_ui, "UGT")
+        elif key == "Sewage":
+            self.pages[key] = self._sewage_page()
+        elif key == "OHT":
+            self.pages[key] = self._oht_page()
+        elif key == "STP":
+            self.pages[key] = self._stp_page()
+        elif key == "SolidWaste":
+            self.pages[key] = self._solid_waste_page()
+        elif key == "Preview":
+            self.pages[key] = self._preview_page()
+        elif key == "Report":
+            self.pages[key] = FinalPage(
+                self.container, self.app_state,
+                on_back=lambda: self.show("Preview"),
+                on_generate_all=self._generate_report_all,
+            )
+        elif key == "Settings":
+            self.pages[key] = self._settings_page()
+        else:
+            return False
+
+        try:
+            self.pages[key].grid(row=0, column=0, sticky="nsew")
+        except Exception:
+            pass
+        return True
+
+    def _placeholder_page(self, title: str, body: str, on_next, page_key: str):
         frame = ScrollablePage(self.container)
         header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
         header.pack(fill="x", padx=5, pady=5)
@@ -7011,36 +7418,182 @@ class ProjectWorkspace(ctk.CTkFrame):
         ctk.CTkLabel(frame, text=body, font=("Arial", 12), justify="left", wraplength=900).pack(
             anchor="w", padx=20, pady=20
         )
-        ctk.CTkButton(frame, text="Next ->", fg_color=BRAND_ORANGE, command=on_next).pack(pady=12)
+        nav = ctk.CTkFrame(frame, fg_color="transparent")
+        nav.pack(fill="x", padx=16, pady=12)
+        ctk.CTkButton(
+            nav, text="← Back", width=120, fg_color="#7F8C8D",
+            command=lambda pk=page_key: self._wizard_show_previous(pk),
+        ).pack(side="left")
+        ctk.CTkButton(nav, text="Next →", width=140, fg_color=BRAND_ORANGE, command=on_next).pack(side="right")
         return frame
 
+    def _discard_inapplicable_pages(self) -> None:
+        allowed = visible_pages(self.app_state.project.project_type)
+        for key in list(self.pages.keys()):
+            if key == "Project" or key in allowed:
+                continue
+            page = self.pages.pop(key, None)
+            if page is not None:
+                try:
+                    page.destroy()
+                except Exception:
+                    pass
+
     def _on_project_type_changed(self) -> None:
+        self._discard_inapplicable_pages()
         self._rebuild_sidebar()
         if not is_project_type_set(self.app_state.project.project_type):
             self.show("Project")
             if "Project" in self.pages and hasattr(self.pages["Project"], "refresh"):
                 self.pages["Project"].refresh()
             return
-        self._calc()
+        self._schedule_calc(120)
         visible = visible_pages(self.app_state.project.project_type)
         if self._current_page not in visible:
             self.show("Project")
         if "Project" in self.pages and hasattr(self.pages["Project"], "refresh"):
             self.pages["Project"].refresh()
 
-    def _wizard_show_next(self, current: str) -> None:
-        nxt = wizard_next_page(current, self.app_state.project.project_type)
-        if nxt:
-            self.show(nxt)
-        else:
-            self.show("Preview")
+    def _wizard_show_previous(self, current: str) -> None:
+        project_type = self.app_state.project.project_type
+        if not is_project_type_set(project_type):
+            self.show("Project")
+            return
+        pages = visible_pages(project_type)
+        if current not in pages:
+            self.show("Project")
+            return
+        previous = None
+        for key in WIZARD_PAGE_ORDER:
+            if key not in pages:
+                continue
+            if key == current:
+                break
+            previous = key
+        if previous:
+            self._navigate_to_page(previous)
 
-    def _form_page(self, title, builder):
+    def _navigate_to_page(self, target: str) -> bool:
+        project_type = self.app_state.project.project_type
+        if target != "Project" and not is_project_type_set(project_type):
+            self.show("Project")
+            return False
+        allowed = visible_pages(project_type)
+        if target not in allowed:
+            self.show("Project")
+            return False
+        if not self._ensure_page_available(target):
+            return False
+        try:
+            page = self.pages.get(target)
+            if page is None or not page.winfo_exists():
+                if not self._ensure_page_available(target):
+                    return False
+            self.show(target)
+            return self._current_page == target
+        except Exception as exc:
+            traceback.print_exc()
+            messagebox.showerror(
+                "Navigation Error",
+                f"Unable to open the next section. Please check the project information and try again.\n\n{exc}",
+            )
+            return False
+
+    def _wizard_show_next(self, current: str) -> None:
+        try:
+            project_type = self.app_state.project.project_type
+            if not is_project_type_set(project_type):
+                messagebox.showwarning("Project Type", "Please select a project type before continuing.")
+                self.show("Project")
+                return
+
+            pages = visible_pages(project_type)
+            if current not in pages:
+                self.show("Project")
+                return
+
+            nxt = wizard_next_page(current, project_type)
+            if nxt is None:
+                return
+
+            if not self._ensure_page_available(nxt):
+                messagebox.showerror("Navigation Error", f"Unable to open the next section: {nxt}")
+                return
+
+            page = self.pages.get(nxt)
+            if page is None:
+                messagebox.showerror("Navigation Error", f"The next section '{nxt}' could not be opened.")
+                return
+
+            for key, other in list(self.pages.items()):
+                if key == nxt:
+                    continue
+                try:
+                    other.grid_remove()
+                except Exception:
+                    try:
+                        other.pack_forget()
+                    except Exception:
+                        pass
+
+            page.grid(row=0, column=0, sticky="nsew")
+            page.tkraise()
+            try:
+                parent_frame = getattr(page, "_parent_frame", None)
+                if parent_frame is not None:
+                    parent_frame.tkraise()
+            except Exception:
+                pass
+
+            self._current_page = nxt
+            for key, btn in self.nav_btns.items():
+                try:
+                    btn.configure(fg_color=BRAND_ORANGE if key == nxt else "transparent")
+                except Exception:
+                    pass
+
+            if nxt == "STP":
+                self._refresh_stp(silent=True)
+            elif nxt == "Sewage":
+                self._refresh_sewage(silent=True)
+            elif nxt == "SolidWaste":
+                self._refresh_solid_waste(silent=True)
+            elif nxt == "OHT":
+                self._refresh_oht(silent=True)
+            elif nxt == "Preview":
+                self._refresh_preview(silent=True)
+
+            self.after(150, lambda: self._schedule_calc(50))
+
+        except Exception as exc:
+            traceback.print_exc()
+            messagebox.showerror(
+                "Navigation Error",
+                f"Unable to open the next section. Please check the project information and try again.\n\n{exc}",
+            )
+
+    def _form_page(self, title, builder, page_key):
         frame = ScrollablePage(self.container)
         header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
         header.pack(fill="x", padx=5, pady=5)
         ctk.CTkLabel(header, text=title, font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
         builder(frame)
+
+        nav = ctk.CTkFrame(frame, fg_color="transparent")
+        nav.pack(fill="x", padx=16, pady=(4, 14))
+        ctk.CTkButton(
+            nav, text="← Back", width=120, fg_color="#7F8C8D",
+            command=lambda pk=page_key: self._wizard_show_previous(pk),
+        ).pack(side="left")
+
+        next_commands = {
+            "Landscape": self._save_landscape,
+            "Swimming": self._save_pool,
+            "HVAC": lambda: (self._sync_hvac_live(), self._wizard_show_next("HVAC")),
+            "UGT": lambda: self._wizard_show_next("UGT"),
+        }
+        next_command = next_commands.get(page_key, lambda pk=page_key: self._wizard_show_next(pk))
+        ctk.CTkButton(nav, text="Next →", width=140, fg_color=BRAND_ORANGE, command=next_command).pack(side="right")
         return frame
 
     def _landscape_ui(self, parent):
@@ -7054,10 +7607,9 @@ class ProjectWorkspace(ctk.CTkFrame):
             entry = ctk.CTkEntry(form, width=220)
             entry.insert(0, str(self.app_state.other.landscape_area.get(plot, 765 if plot == "Plot-A" else 762)))
             entry.grid(row=i, column=1, padx=10, pady=8, sticky="w")
-            entry.bind("<KeyRelease>", lambda *_: (self._sync_landscape_live(), self._calc()))
+            entry.bind("<KeyRelease>", lambda *_: (self._sync_landscape_live(), self._schedule_calc()))
             self._le[plot] = entry
         ctk.CTkLabel(parent, text="Auto: 6 L/sq.m/day per NBC-2026 (live)", font=("Arial", 11, "italic")).pack(anchor="w", padx=20)
-        ctk.CTkButton(parent, text="Next ->", fg_color=BRAND_ORANGE, command=self._save_landscape).pack(pady=12)
 
     def _sync_landscape_live(self) -> None:
         if hasattr(self, "_le"):
@@ -7067,7 +7619,6 @@ class ProjectWorkspace(ctk.CTkFrame):
         try:
             for plot, entry in self._le.items():
                 self.app_state.other.landscape_area[plot] = validate_positive_float(entry.get(), f"Landscape {plot}")
-            self._calc()
             self._wizard_show_next("Landscape")
         except ValidationError as exc:
             messagebox.showerror("Error", exc.message)
@@ -7091,15 +7642,14 @@ class ProjectWorkspace(ctk.CTkFrame):
                 values=list(POOL_STATUS_LABELS.keys()),
                 variable=status_var,
                 width=180,
-                command=lambda *_: (self._sync_pool_live(), self._calc()),
+                command=lambda *_: (self._sync_pool_live(), self._schedule_calc()),
             ).grid(row=i, column=1, padx=10, pady=8, sticky="w")
             self._pool_status[plot] = status_var
             entry = ctk.CTkEntry(form, width=180)
             entry.insert(0, str(int(self.app_state.other.swimming_pool.get(plot, 0))))
             entry.grid(row=i, column=2, padx=10, pady=8, sticky="w")
-            entry.bind("<KeyRelease>", lambda *_: (self._sync_pool_live(), self._calc()))
+            entry.bind("<KeyRelease>", lambda *_: (self._sync_pool_live(), self._schedule_calc()))
             self._pe[plot] = entry
-        ctk.CTkButton(parent, text="Next ->", fg_color=BRAND_ORANGE, command=self._save_pool).pack(pady=12)
 
     def _sync_pool_live(self) -> None:
         if hasattr(self, "_pe") and hasattr(self, "_pool_status"):
@@ -7114,7 +7664,6 @@ class ProjectWorkspace(ctk.CTkFrame):
                 self.app_state.other.swimming_pool[plot] = 0.0
             else:
                 self.app_state.other.swimming_pool[plot] = float(self._pe[plot].get() or 0)
-        self._calc()
         self._wizard_show_next("Swimming")
 
     def _hvac_ui(self, parent):
@@ -7128,14 +7677,8 @@ class ProjectWorkspace(ctk.CTkFrame):
             entry = ctk.CTkEntry(form, width=220)
             entry.insert(0, str(int(self.app_state.other.hvac_water.get(plot, 0))))
             entry.grid(row=i, column=1, padx=10, pady=8, sticky="w")
-            entry.bind("<KeyRelease>", lambda *_: (self._sync_hvac_live(), self._calc()))
+            entry.bind("<KeyRelease>", lambda *_: (self._sync_hvac_live(), self._schedule_calc()))
             self._he[plot] = entry
-        ctk.CTkButton(
-            parent,
-            text="Next ->",
-            fg_color=BRAND_ORANGE,
-            command=lambda: (self._sync_hvac_live(), self._calc(), self._wizard_show_next("HVAC")),
-        ).pack(pady=12)
 
     def _sync_hvac_live(self) -> None:
         if hasattr(self, "_he"):
@@ -7193,7 +7736,6 @@ class ProjectWorkspace(ctk.CTkFrame):
             text="UGT storage: Domestic 2-day, Flushing 1-day, Fire 1-day (auto-calculated in report)",
             font=("Arial", 11, "italic"),
         ).pack(anchor="w", padx=20, pady=5)
-        ctk.CTkButton(parent, text="Next ->", fg_color=BRAND_ORANGE, command=lambda: self._wizard_show_next("UGT")).pack(pady=12)
 
     def _refresh_ugt(self) -> None:
         for plot, lbl in getattr(self, "_ugt_labels", {}).items():
@@ -7201,25 +7743,46 @@ class ProjectWorkspace(ctk.CTkFrame):
             self.app_state.other.fire_tank[plot] = float(auto_val)
             lbl.configure(text=f"{auto_val:,} (auto — NBC Table 7)")
 
-    def _sewage_page(self):
+    def _result_page(self, title: str, subtitle: str, table_attr: str, page_key: str):
         frame = ScrollablePage(self.container)
+        frame.grid_rowconfigure(1, weight=1)
         header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
         header.pack(fill="x", padx=5, pady=5)
-        ctk.CTkLabel(header, text="Sewage Generation", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
+        ctk.CTkLabel(header, text=title, font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
         ctk.CTkLabel(
             frame,
-            text="Population-based sewage generation — auto-calculated from residential/commercial data.",
+            text=subtitle,
             font=("Arial", 11, "italic"),
-        ).pack(anchor="w", padx=20, pady=(0, 5))
-        self.sewage_table = ResultTableView(frame)
-        self.sewage_table.pack(fill="both", expand=True, padx=15, pady=10)
+            text_color="#555555",
+        ).pack(anchor="w", padx=16, pady=(0, 4))
+        table = ResultTableView(frame, embedded=True)
+        table.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        setattr(self, table_attr, table)
         ctk.CTkLabel(
             frame,
             text="Updates automatically as you enter data on other pages.",
             font=("Arial", 10, "italic"),
             text_color="#666666",
-        ).pack(pady=(0, 8))
+        ).pack(pady=(0, 6))
+        nav = ctk.CTkFrame(frame, fg_color="transparent")
+        nav.pack(fill="x", padx=16, pady=(2, 12))
+        ctk.CTkButton(
+            nav, text="← Back", width=120, fg_color="#7F8C8D",
+            command=lambda pk=page_key: self._wizard_show_previous(pk),
+        ).pack(side="left")
+        ctk.CTkButton(
+            nav, text="Next →", width=140, fg_color=BRAND_ORANGE,
+            command=lambda pk=page_key: self._wizard_show_next(pk),
+        ).pack(side="right")
         return frame
+
+    def _sewage_page(self):
+        return self._result_page(
+            "Sewage Generation",
+            "Sewage Generation Calculations — auto-calculated from residential/commercial data.",
+            "sewage_table",
+            "Sewage",
+        )
 
     def _refresh_sewage(self, silent: bool = False) -> None:
         if not hasattr(self, "sewage_table"):
@@ -7234,24 +7797,12 @@ class ProjectWorkspace(ctk.CTkFrame):
         self.sewage_table.set_sections(sections)
 
     def _solid_waste_page(self):
-        frame = ScrollablePage(self.container)
-        header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
-        header.pack(fill="x", padx=5, pady=5)
-        ctk.CTkLabel(header, text="Solid Waste Generation", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
-        ctk.CTkLabel(
-            frame,
-            text="Solid waste and e-waste calculations — auto-calculated from population and STP data.",
-            font=("Arial", 11, "italic"),
-        ).pack(anchor="w", padx=20, pady=(0, 5))
-        self.solid_waste_table = ResultTableView(frame)
-        self.solid_waste_table.pack(fill="both", expand=True, padx=15, pady=10)
-        ctk.CTkLabel(
-            frame,
-            text="Updates automatically as you enter data on other pages.",
-            font=("Arial", 10, "italic"),
-            text_color="#666666",
-        ).pack(pady=(0, 8))
-        return frame
+        return self._result_page(
+            "Solid Waste Generation",
+            "Solid waste and e-waste calculations — auto-calculated from population and STP data.",
+            "solid_waste_table",
+            "SolidWaste",
+        )
 
     def _refresh_solid_waste(self, silent: bool = False) -> None:
         if not hasattr(self, "solid_waste_table"):
@@ -7266,24 +7817,12 @@ class ProjectWorkspace(ctk.CTkFrame):
         self.solid_waste_table.set_sections(sections)
 
     def _oht_page(self):
-        frame = ScrollablePage(self.container)
-        header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
-        header.pack(fill="x", padx=5, pady=5)
-        ctk.CTkLabel(header, text="OHT Details", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
-        ctk.CTkLabel(
-            frame,
-            text="Overhead tank capacities auto-calculate from residential/commercial demand.",
-            font=("Arial", 11, "italic"),
-        ).pack(anchor="w", padx=20, pady=(0, 5))
-        self.oht_table = ResultTableView(frame)
-        self.oht_table.pack(fill="both", expand=True, padx=15, pady=10)
-        ctk.CTkLabel(
-            frame,
-            text="Updates automatically as you enter data on other pages.",
-            font=("Arial", 10, "italic"),
-            text_color="#666666",
-        ).pack(pady=(0, 8))
-        return frame
+        return self._result_page(
+            "OHT Details",
+            "Overhead tank capacities auto-calculate from residential/commercial demand.",
+            "oht_table",
+            "OHT",
+        )
 
     def _refresh_oht(self, silent: bool = False) -> None:
         if not hasattr(self, "oht_table"):
@@ -7299,19 +7838,12 @@ class ProjectWorkspace(ctk.CTkFrame):
             target[plot] = float(entry.get() or 0)
 
     def _stp_page(self):
-        frame = ScrollablePage(self.container)
-        header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
-        header.pack(fill="x", padx=5, pady=5)
-        ctk.CTkLabel(header, text="STP Summary", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
-        self.stp_table = ResultTableView(frame)
-        self.stp_table.pack(fill="both", expand=True, padx=15, pady=10)
-        ctk.CTkLabel(
-            frame,
-            text="Updates automatically as you enter data on other pages.",
-            font=("Arial", 10, "italic"),
-            text_color="#666666",
-        ).pack(pady=(0, 8))
-        return frame
+        return self._result_page(
+            "STP Summary",
+            "Sewage treatment summary — auto-calculated from project inputs.",
+            "stp_table",
+            "STP",
+        )
 
     def _refresh_stp(self, silent: bool = False):
         if not hasattr(self, "stp_table"):
@@ -7324,11 +7856,12 @@ class ProjectWorkspace(ctk.CTkFrame):
 
     def _preview_page(self):
         frame = ScrollablePage(self.container)
+        frame.grid_rowconfigure(1, weight=1)
         header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
         header.pack(fill="x", padx=5, pady=5)
         ctk.CTkLabel(header, text="Report Preview", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
-        self.preview_table = ResultTableView(frame)
-        self.preview_table.pack(fill="both", expand=True, padx=15, pady=10)
+        self.preview_table = ResultTableView(frame, embedded=True)
+        self.preview_table.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         ctk.CTkLabel(
             frame,
             text="Summary updates live — no Calculate button required.",
@@ -7336,13 +7869,16 @@ class ProjectWorkspace(ctk.CTkFrame):
             text_color="#666666",
         ).pack(pady=(0, 6))
         ctk.CTkButton(frame, text="Open Full Preview", fg_color="#2980B9", height=38, command=self._open_preview).pack(pady=6)
+        nav = ctk.CTkFrame(frame, fg_color="transparent")
+        nav.pack(fill="x", padx=16, pady=(2, 12))
         ctk.CTkButton(
-            frame,
-            text="Go to Generate Report",
-            fg_color=BRAND_ORANGE,
-            height=38,
-            command=lambda: (self._calc(), self.show("Report")),
-        ).pack(pady=6)
+            nav, text="← Back", width=120, fg_color="#7F8C8D",
+            command=lambda: self._wizard_show_previous("Preview"),
+        ).pack(side="left")
+        ctk.CTkButton(
+            nav, text="Next → Generate Report", width=190, fg_color=BRAND_ORANGE,
+            command=lambda: self._navigate_to_page("Report"),
+        ).pack(side="right")
         return frame
 
     def _refresh_preview(self, silent: bool = False) -> None:
@@ -7386,6 +7922,10 @@ class ProjectWorkspace(ctk.CTkFrame):
         ).pack(fill="x", anchor="w", padx=20, pady=10)
         ctk.CTkButton(frame, text="Export JSON", fg_color="#2980B9", command=self._exp_json).pack(pady=8)
         ctk.CTkButton(frame, text="Import JSON", fg_color="#2980B9", command=self._imp_json).pack(pady=8)
+        ctk.CTkButton(
+            frame, text="← Back", width=120, fg_color="#7F8C8D",
+            command=lambda: self._wizard_show_previous("Settings"),
+        ).pack(pady=(8, 14))
         return frame
 
     def _auto_fire_tank(self, plot: str) -> int:
@@ -7395,7 +7935,7 @@ class ProjectWorkspace(ctk.CTkFrame):
         return int(self.app_state.other.fire_tank.get(plot, 0))
 
     def _next_from_project(self):
-        self.show(wizard_first_page_after_project(self.app_state.project.project_type))
+        self._wizard_show_next("Project")
 
     def _next_from_residential(self):
         self._wizard_show_next("Residential")
@@ -7409,6 +7949,22 @@ class ProjectWorkspace(ctk.CTkFrame):
     def _resolve_page_name(self, name: str) -> str:
         return name
 
+    def _ensure_page_available(self, name: str) -> bool:
+        if name in self.pages:
+            try:
+                return bool(self.pages[name].winfo_exists())
+            except Exception:
+                return True
+        try:
+            return self._build_single_page(name)
+        except Exception as exc:
+            traceback.print_exc()
+            messagebox.showerror(
+                "Open Page",
+                f"Unable to open '{name}'. Please check the project information and try again.\n\n{exc}",
+            )
+            return False
+
     def show(self, name: str) -> None:
         if not is_project_type_set(self.app_state.project.project_type) and name != "Project":
             name = "Project"
@@ -7416,17 +7972,28 @@ class ProjectWorkspace(ctk.CTkFrame):
         allowed = visible_pages(self.app_state.project.project_type)
         if name not in allowed:
             name = "Project"
-        if name not in self.pages:
-            messagebox.showwarning(
-                "Navigation",
-                f"The '{name}' page is not available.\n"
-                "It may be hidden for the current project type or not yet loaded.",
-            )
+
+        if not self._ensure_page_available(name):
             return
+
+        try:
+            self.container.grid(row=0, column=1, sticky="nsew", padx=8, pady=8)
+        except Exception:
+            pass
+
         self._current_page = name
         page = self.pages[name]
+
+        for key, other in list(self.pages.items()):
+            if key == name:
+                continue
+            try:
+                other.grid_remove()
+            except Exception:
+                pass
+
         _raise_page(page)
-        if hasattr(page, "refresh"):
+        if name == "Project" and hasattr(page, "refresh"):
             page.refresh()
         if name == "STP":
             self._refresh_stp()
@@ -7437,7 +8004,8 @@ class ProjectWorkspace(ctk.CTkFrame):
         elif name == "OHT":
             self._refresh_oht()
         elif name == "Preview":
-            self._calc()
+            if self._calc_dirty:
+                self._calc()
             self._refresh_preview(silent=True)
         elif name == "UGT":
             self._refresh_ugt()
@@ -7446,10 +8014,21 @@ class ProjectWorkspace(ctk.CTkFrame):
         for key, btn in self.nav_btns.items():
             btn.configure(fg_color=BRAND_ORANGE if key == name else "transparent")
 
+    def _schedule_calc(self, delay_ms: int = 300) -> None:
+        self._calc_dirty = True
+        if self._calc_job is not None:
+            self.after_cancel(self._calc_job)
+        self._calc_job = self.after(delay_ms, self._run_scheduled_calc)
+
+    def _run_scheduled_calc(self) -> None:
+        self._calc_job = None
+        self._calc()
+
     def _calc(self):
         try:
             sync_pages_to_state(self)
             self.app_state.auto_calculate()
+            self._calc_dirty = False
             self._refresh_live_panels()
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
@@ -7484,7 +8063,6 @@ class ProjectWorkspace(ctk.CTkFrame):
         try:
             validate_required(project.project_name, "Project Name")
             validate_required(project.client_name, "Client Name")
-            validate_required(project.project_location, "Location")
             validate_required(project.engineer_name, "Engineer Name")
         except ValidationError as exc:
             messagebox.showerror("Validation Error", exc.message)
@@ -7642,16 +8220,8 @@ def _load_json_file(fp):
     return parse_project_snapshot(data)
 
 
-def main():
-    launch_main()
-
-
 # Backward-compatible alias for tests and legacy entry points
 WaterDemandApp = ProjectWorkspace
-
-
-if __name__ == "__main__":
-    main()
 
 # ==================== app_launcher.py ====================
 """Application entry point — Splash → Project Home → unified project workflow."""
@@ -7661,7 +8231,23 @@ if __name__ == "__main__":
 
 
 APP_VERSION = "2.0.0"
-APP_TITLE = "PlanetCode Engineering Suite"
+APP_TITLE = "American Edge Engineers - Water Demand Report Generator"
+
+
+def _find_logo_path() -> str:
+    """Find the company logo in common application locations."""
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(app_dir, "logo.png"),
+        os.path.join(app_dir, "assets", "logo.png"),
+        os.path.join(os.path.dirname(app_dir), "logo.png"),
+        os.path.join(os.getcwd(), "logo.png"),
+        os.path.join(os.getcwd(), "assets", "logo.png"),
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return os.path.join(app_dir, "assets", "logo.png")
 
 
 class Application(ctk.CTk):
@@ -7672,8 +8258,17 @@ class Application(ctk.CTk):
         ctk.set_appearance_mode("light")
         ctk.set_default_color_theme("blue")
         self.title(f"{APP_TITLE} v{APP_VERSION}")
-        self.geometry("1280x850")
-        self.minsize(1100, 700)
+
+        self.geometry("1360x900")
+        self.minsize(1180, 760)
+        try:
+            self.state("zoomed")
+        except Exception:
+            try:
+                self.attributes("-zoomed", True)
+            except Exception:
+                pass
+
         self.configure(fg_color="#F0F2F5")
 
         init_db(DB_PATH)
@@ -7681,6 +8276,7 @@ class Application(ctk.CTk):
 
         self._workspace = None
         self._dashboard: Optional[MainDashboard] = None
+        self._type_selector = None
         self._mode = "splash"
         self._last_saved_at = ""
         self._autosave_job = None
@@ -7692,23 +8288,41 @@ class Application(ctk.CTk):
         self._show_splash()
 
     def _build_shell(self) -> None:
-        self.header = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=0, height=56)
+        self.header = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=0, height=82)
         self.header.grid(row=0, column=0, sticky="ew")
         self.header.grid_propagate(False)
+        self.header.grid_columnconfigure(0, weight=0)
         self.header.grid_columnconfigure(1, weight=1)
+        self.header.grid_columnconfigure(2, weight=0)
 
-        ctk.CTkLabel(
-            self.header,
-            text="AMERICAN EDGE ENGINEERS",
-            font=("Arial", 13, "bold"),
-            text_color=BRAND_ORANGE,
-        ).grid(row=0, column=0, padx=16, pady=8, sticky="w")
-        ctk.CTkLabel(
-            self.header,
-            text="Water Demand Report Generator",
-            font=("Arial", 11),
-            text_color="#CCCCCC",
-        ).grid(row=1, column=0, padx=16, pady=(0, 8), sticky="w")
+        self._header_logo_image = None
+        self.header_logo_label = None
+        logo_path = _find_logo_path()
+        if logo_path and os.path.isfile(logo_path):
+            try:
+                logo_pil = PILImage.open(logo_path).convert("RGBA")
+                max_w, max_h = 210, 60
+                iw, ih = logo_pil.size
+                scale = min(max_w / max(iw, 1), max_h / max(ih, 1))
+                logo_size = (max(1, int(iw * scale)), max(1, int(ih * scale)))
+                self._header_logo_image = ctk.CTkImage(
+                    light_image=logo_pil,
+                    dark_image=logo_pil,
+                    size=logo_size,
+                )
+                self.header_logo_label = ctk.CTkLabel(
+                    self.header,
+                    text="",
+                    image=self._header_logo_image,
+                    fg_color="transparent",
+                    width=logo_size[0],
+                    height=logo_size[1],
+                )
+                self.header_logo_label.grid(
+                    row=0, column=0, rowspan=2, padx=(18, 12), pady=8, sticky="w"
+                )
+            except Exception:
+                self.header_logo_label = None
 
         self.header_meta = ctk.CTkLabel(
             self.header,
@@ -7717,7 +8331,7 @@ class Application(ctk.CTk):
             text_color="white",
             anchor="e",
         )
-        self.header_meta.grid(row=0, column=1, rowspan=2, padx=16, sticky="e")
+        self.header_meta.grid(row=0, column=2, rowspan=2, padx=(8, 18), sticky="e")
 
         self.body = ctk.CTkFrame(self, fg_color="#F0F2F5", corner_radius=0)
         self.body.grid(row=1, column=0, sticky="nsew")
@@ -7790,24 +8404,257 @@ class Application(ctk.CTk):
             on_home=safe_command(self._show_dashboard, parent=self),
             on_autosave=self._on_project_autosaved,
             on_header_update=self._on_workspace_header_update,
+            on_new_project=safe_command(self._start_new_project, parent=self),
+            on_back_to_type_selector=safe_command(self._back_to_project_type_selector, parent=self),
         )
         return self._workspace
 
+    def _destroy_type_selector(self) -> None:
+        """Remove the project-type step UI so the workspace is not covered."""
+        if self._type_selector is None:
+            return
+        try:
+            self._type_selector.destroy()
+        except Exception:
+            traceback.print_exc()
+        self._type_selector = None
+
+    def _back_to_project_type_selector(self) -> None:
+        """Return to Step 1 while keeping the current draft project state."""
+        if self._workspace is None:
+            self._start_new_project()
+            return
+        self._show_project_type_selector(self._workspace.app_state)
+
     def _show_project(self, state: AppState) -> None:
+        self._destroy_type_selector()
         ws = self._ensure_workspace()
         if self._dashboard is not None:
             self._dashboard.grid_remove()
         ws.grid(row=0, column=0, sticky="nsew")
-        ws.ensure_pages_built()
+
+        ws.app_state = state
+        ws._calc_dirty = True
         ws.apply_state(state)
+        ws._pages_built = True
+        ws.show("Project")
+
         self._mode = "project"
+
+        try:
+            self.state("zoomed")
+        except Exception:
+            try:
+                self.attributes("-zoomed", True)
+            except Exception:
+                pass
+
         self._schedule_autosave()
         self._update_header_meta()
         self._update_status()
 
     def _start_new_project(self) -> None:
         state = create_new_project_state(DB_PATH)
-        self._show_project(state)
+        self._show_project_type_selector(state)
+
+    def _show_project_type_selector(self, state: AppState) -> None:
+        self._mode = "type_selector"
+        self._clear_body()
+        if self._workspace is not None:
+            self._workspace.grid_remove()
+        if self._dashboard is not None:
+            self._dashboard.grid_remove()
+
+        if self._type_selector is not None:
+            try:
+                self._type_selector.destroy()
+            except Exception:
+                pass
+
+        frame = ctk.CTkFrame(self.body, fg_color="#F4F6F8")
+        frame.grid(row=0, column=0, sticky="nsew")
+        frame.grid_rowconfigure(0, weight=1)
+        frame.grid_columnconfigure(0, weight=1)
+        self._type_selector = frame
+
+        card = ctk.CTkFrame(
+            frame,
+            fg_color="white",
+            corner_radius=18,
+            border_width=1,
+            border_color="#DCE3EA",
+            width=760,
+            height=520,
+        )
+        card.grid(row=0, column=0)
+        card.grid_propagate(False)
+        card.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            card,
+            text="STEP 1 OF 2",
+            font=("Arial", 10, "bold"),
+            text_color=BRAND_ORANGE,
+            fg_color="#FFF1E8",
+            corner_radius=12,
+            padx=12,
+            pady=6,
+        ).grid(row=0, column=0, pady=(34, 10))
+        ctk.CTkLabel(
+            card,
+            text="Create a New Project",
+            font=("Arial", 27, "bold"),
+            text_color=BRAND_NAVY,
+        ).grid(row=1, column=0, pady=(0, 4))
+        ctk.CTkLabel(
+            card,
+            text="Choose the type of project you are preparing a water-demand report for.",
+            font=("Arial", 12),
+            text_color="#64748B",
+        ).grid(row=2, column=0, pady=(0, 22))
+
+        section = ctk.CTkFrame(card, fg_color="#F7F9FB", corner_radius=12, border_width=1, border_color="#E3E8ED")
+        section.grid(row=3, column=0, sticky="ew", padx=55, pady=0)
+        section.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            section,
+            text="Project Type",
+            font=("Arial", 12, "bold"),
+            text_color=BRAND_NAVY,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w", padx=18, pady=(16, 6))
+
+        initial_label = (
+            project_type_label(state.project.project_type)
+            if is_project_type_set(state.project.project_type)
+            else PROJECT_TYPE_PLACEHOLDER
+        )
+        selected = ctk.StringVar(value=initial_label)
+        combo = ctk.CTkComboBox(
+            section,
+            values=[PROJECT_TYPE_PLACEHOLDER] + sorted(set(PROJECT_TYPE_LABELS.keys())),
+            variable=selected,
+            width=560,
+            height=44,
+            font=("Arial", 12),
+        )
+        combo.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 10))
+
+        help_text = ctk.StringVar(value="Select a project type to continue.")
+        help_label = ctk.CTkLabel(
+            section,
+            textvariable=help_text,
+            font=("Arial", 10),
+            text_color="#6B7280",
+            anchor="w",
+            justify="left",
+            wraplength=540,
+        )
+        help_label.grid(row=2, column=0, sticky="w", padx=18, pady=(0, 16))
+
+        descriptions = {
+            "Residential": "For residential buildings, apartments, villas and housing projects.",
+            "Commercial": "For offices, shops, commercial buildings and business developments.",
+            "Mixed Use": "For projects containing both residential and commercial components.",
+            "Township": "For larger developments with multiple residential/commercial components.",
+            "Hotel": "For hotels and hospitality projects.",
+            "Hospital": "For hospitals and healthcare facilities.",
+            "School": "For schools and educational campuses.",
+            "College": "For colleges and higher-education campuses.",
+            "Shopping Mall": "For malls, food courts and retail developments.",
+            "Mall": "For malls, food courts and retail developments.",
+            "IT Park": "For IT parks and technology office campuses.",
+            "Industrial": "For industrial and manufacturing projects.",
+            "Warehouse": "For warehouses and storage facilities.",
+        }
+
+        def update_help(*_):
+            label = selected.get()
+            if label == PROJECT_TYPE_PLACEHOLDER:
+                help_text.set(
+                    "Select a project type to continue. The application will then show only "
+                    "the engineering sections relevant to your project."
+                )
+            else:
+                help_text.set(
+                    descriptions.get(
+                        label,
+                        "The application will automatically show the relevant engineering sections for this project type.",
+                    )
+                )
+
+        combo.configure(command=lambda *_: update_help())
+        update_help()
+
+        ctk.CTkLabel(
+            card,
+            text="What happens next?",
+            font=("Arial", 12, "bold"),
+            text_color=BRAND_NAVY,
+        ).grid(row=4, column=0, pady=(18, 4))
+        ctk.CTkLabel(
+            card,
+            text="1. Select project type   →   2. Enter project details   →   3. Enter engineering inputs   →   4. Review & generate report",
+            font=("Arial", 10),
+            text_color="#687684",
+        ).grid(row=5, column=0, pady=(0, 18))
+
+        buttons = ctk.CTkFrame(card, fg_color="transparent")
+        buttons.grid(row=6, column=0, pady=(0, 24))
+
+        def cancel():
+            self._destroy_type_selector()
+            self._show_dashboard()
+
+        def continue_project():
+            label = combo.get().strip() or selected.get().strip()
+            if label == PROJECT_TYPE_PLACEHOLDER:
+                messagebox.showwarning(
+                    "Project Type Required",
+                    "Please select the project type before continuing.",
+                )
+                combo.focus_set()
+                return
+            try:
+                new_type = project_type_key(label)
+                old_type = state.project.project_type
+                state.apply_project_type(new_type)
+                self._destroy_type_selector()
+                if self._workspace is not None:
+                    self._workspace.app_state = state
+                    if is_project_type_set(old_type) and old_type != new_type:
+                        self._workspace.reset_for_new_type()
+                self._show_project(state)
+            except Exception as exc:
+                traceback.print_exc()
+                messagebox.showerror(
+                    "Navigation Error",
+                    "Unable to open the next section. Please try again.",
+                )
+
+        ctk.CTkButton(
+            buttons,
+            text="← Back to Project Home",
+            width=190,
+            height=42,
+            fg_color="#8A969C",
+            hover_color="#6F7A80",
+            font=("Arial", 11, "bold"),
+            command=cancel,
+        ).pack(side="left", padx=8)
+        ctk.CTkButton(
+            buttons,
+            text="Continue to Project Details  →",
+            width=245,
+            height=42,
+            fg_color=BRAND_ORANGE,
+            hover_color="#D06018",
+            font=("Arial", 11, "bold"),
+            command=continue_project,
+        ).pack(side="left", padx=8)
+
+        self._update_header_meta()
+        self._update_status()
 
     def _open_project(self, project_id: str) -> None:
         try:
@@ -7852,7 +8699,6 @@ class Application(ctk.CTk):
 
 def main() -> None:
     Application().mainloop()
-
 
 if __name__ == "__main__":
     main()
