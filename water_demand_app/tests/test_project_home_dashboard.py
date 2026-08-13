@@ -252,14 +252,19 @@ class TestProjectHomeUI(unittest.TestCase):
         self.assertIn("+ New Project", source)
         self.assertIn("PROJECT OVERVIEW", source)
 
-    def test_dashboard_has_six_stat_cards(self) -> None:
+    def test_dashboard_has_five_stat_cards_in_one_row(self) -> None:
         page = self.MainDashboard(self.root, on_new_project=lambda: None, on_open_project=lambda _id: None, on_exit=lambda: None)
         page.update_idletasks()
-        self.assertEqual(len(page._stat_labels), 6)
+        self.assertEqual(len(page._stat_labels), 5)
         self.assertIn("total", page._stat_labels)
-        self.assertIn("today", page._stat_labels)
+        self.assertIn("delayed", page._stat_labels)
+        self.assertNotIn("today", page._stat_labels)
 
-    def test_project_hub_has_filters_and_performance(self) -> None:
+    def test_dashboard_has_no_page_level_scroll(self) -> None:
+        source = inspect.getsource(self.MainDashboard._build)
+        self.assertNotIn("CTkScrollableFrame", source)
+
+    def test_project_hub_has_filters_and_compact_table(self) -> None:
         page = self.MainDashboard(self.root, on_new_project=lambda: None, on_open_project=lambda _id: None, on_exit=lambda: None)
         page.update_idletasks()
         hub = page.project_hub
@@ -267,7 +272,23 @@ class TestProjectHomeUI(unittest.TestCase):
         self.assertTrue(hasattr(hub, "engineer_combo"))
         self.assertTrue(hasattr(hub, "status_combo"))
         self.assertTrue(hasattr(hub, "search_entry"))
-        self.assertTrue(hasattr(hub, "performance_frame"))
+        self.assertTrue(hasattr(hub, "_show_performance_dialog"))
+        self.assertEqual(len(hub._header_columns), 8)
+        column_names = [name for name, _width in hub._header_columns]
+        self.assertEqual(
+            column_names,
+            [
+                "Project ID",
+                "Project Name",
+                "Type",
+                "Engineer",
+                "Status",
+                "Time Taken",
+                "Performance",
+                "Actions",
+            ],
+        )
+        self.assertFalse(hasattr(hub, "performance_frame"))
 
 
 class TestProjectTypeSwitchingStillWorks(unittest.TestCase):
