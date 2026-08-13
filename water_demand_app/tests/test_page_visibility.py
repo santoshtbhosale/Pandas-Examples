@@ -76,6 +76,22 @@ class TestPageVisibility(unittest.TestCase):
     def test_unset_wizard_first_page_is_project(self) -> None:
         self.assertEqual(wizard_first_page_after_project(""), "Project")
 
+    def test_residential_includes_sewage_and_solid_waste(self) -> None:
+        pages = visible_pages(PROJECT_TYPE_RESIDENTIAL)
+        self.assertIn("Sewage", pages)
+        self.assertIn("SolidWaste", pages)
+
+    def test_rwh_not_in_any_project_type(self) -> None:
+        for ptype in (
+            PROJECT_TYPE_RESIDENTIAL,
+            PROJECT_TYPE_COMMERCIAL,
+            PROJECT_TYPE_MIXED,
+            PROJECT_TYPE_HOSPITAL,
+            PROJECT_TYPE_HOTEL,
+            PROJECT_TYPE_MALL,
+        ):
+            self.assertNotIn("RWH", visible_pages(ptype))
+
 
 if __name__ == "__main__":
     unittest.main()

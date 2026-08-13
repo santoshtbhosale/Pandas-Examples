@@ -6,9 +6,7 @@ import customtkinter as ctk
 from tkinter import messagebox
 
 from config.nbc_2026 import BRAND_NAVY, BRAND_ORANGE
-from models.user import UserSession
 from services.database import get_project_summary, update_project_metadata
-from services.project_service import find_projects
 from ui.components.validation import ValidationError, validate_required
 
 
@@ -19,7 +17,7 @@ class ProjectEditDialog(ctk.CTkToplevel):
         self,
         master,
         project_id: str,
-        user: UserSession,
+        user=None,
         on_saved: Optional[Callable[[], None]] = None,
     ) -> None:
         super().__init__(master)
@@ -69,7 +67,7 @@ class ProjectEditDialog(ctk.CTkToplevel):
                 validate_required(self.entries["client_name"].get(), "Client Name"),
                 validate_required(self.entries["project_location"].get(), "Location"),
                 self.entries["engineer_name"].get().strip(),
-                updated_by=self.user.username,
+                updated_by=getattr(self.user, "username", "") if self.user else "",
             )
             messagebox.showinfo("Saved", "Project updated successfully.")
             if self.on_saved:

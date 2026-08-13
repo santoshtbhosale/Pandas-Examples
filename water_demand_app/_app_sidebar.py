@@ -1,6 +1,56 @@
+from __future__ import annotations
+
+import json
+import os
+import re
+from datetime import datetime
+from tkinter import filedialog, messagebox
+
+import customtkinter as ctk
+
+from config.nbc_2026 import (
+    BRAND_NAVY,
+    BRAND_ORANGE,
+    POOL_NOT_APPLICABLE,
+    POOL_STATUS_LABELS,
+    fire_tank_capacity_liters,
+    is_project_type_set,
+    plot_choices,
+    project_type_label,
+    show_residential_section,
+)
+from config.page_visibility import visible_pages, wizard_first_page_after_project, wizard_next_page
+from services.automation import sync_hvac, sync_landscape, sync_pages_to_state, sync_swimming_pool
+from services.database import DB_PATH, build_project_snapshot, init_db, parse_project_snapshot
+from services.excel_exporter import export_excel
+from services.lookup_db import init_lookup_tables
+from services.pdf_exporter import export_pdf
+from services.project_service import create_new_project_state, find_projects, load_project_state, persist_project_state
+from services.result_tables import (
+    build_oht_table_sections,
+    build_preview_table_sections,
+    build_sewage_generation_table_sections,
+    build_solid_waste_table_sections,
+    build_stp_table_sections,
+)
+from ui.app_state import AppState
+from ui.components.preview_dialog import PreviewDialog
+from ui.components.result_table import ResultTableView
+from ui.components.scrollable_frame import ScrollablePage
+from ui.components.validation import ValidationError, validate_positive_float, validate_required
+from ui.pages.commercial_page import CommercialPage
+from ui.pages.final_page import FinalPage
+from ui.pages.project_page import ProjectPage
+from ui.pages.residential_page import ResidentialPage
+
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+LOGO_PATH = os.path.join(APP_DIR, "assets", "logo.png")
+if not os.path.exists(LOGO_PATH):
+    LOGO_PATH = os.path.join(os.path.dirname(APP_DIR), "logo.png")
+
 
 # ============================================================
-# MAIN APPLICATION
+# PROJECT WORKSPACE (embedded in single main window)
 # ============================================================
 
 def _raise_page(page) -> None:
@@ -13,7 +63,7 @@ def _raise_page(page) -> None:
         page.tkraise()
 
 
-class WaterDemandApp(ctk.CTk):
+class ProjectWorkspace(ctk.CTkFrame):
     NAV = [
         ("Project", "1. Project Details"),
         ("Residential", "2. Residential"),
@@ -25,29 +75,34 @@ class WaterDemandApp(ctk.CTk):
         ("Swimming", "Swimming Pool"),
         ("HVAC", "HVAC"),
         ("UGT", "UGT / Fire Tank"),
+        ("Sewage", "Sewage Generation"),
         ("OHT", "OHT Details"),
         ("STP", "STP Summary"),
+        ("SolidWaste", "Solid Waste Generation"),
         ("Preview", "Preview"),
         ("Report", "Generate Report"),
-        ("RWH", "Rain Water Harvesting"),
         ("Settings", "Settings"),
     ]
 
-    def __init__(self, current_user=None, on_logout=None, initial_state=None, on_autosave=None):
-        super().__init__()
-        ctk.set_appearance_mode("light")
-        ctk.set_default_color_theme("blue")
+    def __init__(
+        self,
+        master,
+        on_home=None,
+        initial_state=None,
+        on_autosave=None,
+        on_header_update=None,
+        current_user=None,
+        on_logout=None,
+    ):
+        super().__init__(master, fg_color="#F0F2F5", corner_radius=0)
+        self.on_home = on_home
+        self.on_autosave = on_autosave
+        self.on_header_update = on_header_update
         self.current_user = current_user
         self.on_logout = on_logout
-        self.on_autosave = on_autosave
         self.app_state = initial_state if initial_state is not None else AppState()
         self._last_autosave_at = ""
-        self.title(self._window_title())
-        self.geometry("1280x850")
-        self.minsize(1100, 700)
-        self.configure(fg_color="#F0F2F5")
-        init_db()
-        init_lookup_tables(DB_PATH)
+        self._pages_built = False
         self._autosave_job = None
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -58,29 +113,36 @@ class WaterDemandApp(ctk.CTk):
         self.container.grid_columnconfigure(0, weight=1)
         self.pages: dict = {}
         self._current_page = "Project"
+
+    def ensure_pages_built(self) -> None:
+        if self._pages_built:
+            return
         self._build_pages()
+        self._pages_built = True
         self.show("Project")
-        self._schedule_autosave()
 
-    def _window_title(self) -> str:
-        pid = self.app_state.project.project_id
-        name = self.app_state.project.project_name or "Untitled"
-        return f"Water Demand — {name} [{pid}]"
-
-    def _reload_ui_from_state(self) -> None:
+    def apply_state(self, state: AppState) -> None:
+        """Reset project data and refresh widgets without destroying pages."""
+        self.app_state = state
         for page in self.pages.values():
-            page.destroy()
-        self.pages.clear()
+            if hasattr(page, "state"):
+                page.state = state
         self._rebuild_sidebar()
-        self._build_pages()
-        self.title(self._window_title())
+        if "Project" in self.pages and hasattr(self.pages["Project"], "refresh"):
+            self.pages["Project"].refresh()
+        for key in ("Residential", "Commercial", "Report"):
+            page = self.pages.get(key)
+            if page and hasattr(page, "refresh"):
+                page.refresh()
+        self._calc()
         self.show("Project")
+        if self.on_header_update:
+            self.on_header_update()
 
-    def _autosave_before_close(self) -> None:
+    def autosave_before_close(self) -> None:
         try:
             self._calc()
-            from services.project_service import persist_project_state
-            persist_project_state(self.app_state, self.current_user, DB_PATH)
+            persist_project_state(self.app_state, db_path=DB_PATH)
         except Exception:
             pass
 
@@ -93,7 +155,7 @@ class WaterDemandApp(ctk.CTk):
         try:
             self._calc()
             from services.project_service import persist_project_state
-            persist_project_state(self.app_state, self.current_user, DB_PATH)
+            persist_project_state(self.app_state, db_path=DB_PATH)
             self._last_autosave_at = datetime.now().strftime("%H:%M:%S")
             if self.on_autosave:
                 self.on_autosave()
@@ -105,7 +167,6 @@ class WaterDemandApp(ctk.CTk):
         return plot_choices(self.app_state.project.plot_mode)
 
     def _nav_visible(self, key: str) -> bool:
-        from config.page_visibility import visible_pages
         return key in visible_pages(self.app_state.project.project_type)
 
     def _build_sidebar(self):
@@ -120,6 +181,18 @@ class WaterDemandApp(ctk.CTk):
             justify="center",
         ).pack(pady=(20, 5))
         ctk.CTkLabel(sb, text="Water Demand Generator", font=("Arial", 10), text_color="white").pack(pady=(0, 10))
+        if self.on_home:
+            ctk.CTkButton(
+                sb,
+                text="Project Home",
+                height=36,
+                anchor="w",
+                fg_color="#2980B9",
+                hover_color=BRAND_ORANGE,
+                text_color="white",
+                font=("Arial", 12, "bold"),
+                command=self.on_home,
+            ).pack(fill="x", padx=8, pady=(0, 8))
         if self.current_user:
             ctk.CTkLabel(
                 sb,
@@ -136,7 +209,6 @@ class WaterDemandApp(ctk.CTk):
             text_color="#999999",
             wraplength=200,
         ).pack(pady=(0, 4))
-        from config.nbc_2026 import is_project_type_set, project_type_label
         if is_project_type_set(self.app_state.project.project_type):
             ctk.CTkLabel(
                 sb,
@@ -234,8 +306,10 @@ class WaterDemandApp(ctk.CTk):
         self.pages["Swimming"] = self._form_page("Swimming Pool", self._pool_ui)
         self.pages["HVAC"] = self._form_page("HVAC Water", self._hvac_ui)
         self.pages["UGT"] = self._form_page("UGT / Fire Tank", self._ugt_ui)
+        self.pages["Sewage"] = self._sewage_page()
         self.pages["OHT"] = self._oht_page()
         self.pages["STP"] = self._stp_page()
+        self.pages["SolidWaste"] = self._solid_waste_page()
         self.pages["Preview"] = self._preview_page()
         self.pages["Report"] = FinalPage(
             self.container,
@@ -243,7 +317,6 @@ class WaterDemandApp(ctk.CTk):
             on_back=lambda: self.show("Preview"),
             on_generate_all=self._generate_report_all,
         )
-        self.pages["RWH"] = self._create_rwh_page()
         self.pages["Settings"] = self._settings_page()
         for page in self.pages.values():
             page.grid(row=0, column=0, sticky="nsew")
@@ -260,8 +333,6 @@ class WaterDemandApp(ctk.CTk):
         return frame
 
     def _on_project_type_changed(self) -> None:
-        from config.nbc_2026 import is_project_type_set
-        from config.page_visibility import visible_pages, wizard_first_page_after_project
         self._rebuild_sidebar()
         if not is_project_type_set(self.app_state.project.project_type):
             self.show("Project")
@@ -276,49 +347,11 @@ class WaterDemandApp(ctk.CTk):
             self.pages["Project"].refresh()
 
     def _wizard_show_next(self, current: str) -> None:
-        from config.page_visibility import wizard_next_page
         nxt = wizard_next_page(current, self.app_state.project.project_type)
         if nxt:
             self.show(nxt)
         else:
             self.show("Preview")
-
-    def _create_rwh_page(self):
-        try:
-            init_rwh_db(DB_PATH)
-            return RWHPage(
-                self.container,
-                logo_path=LOGO_PATH if os.path.exists(LOGO_PATH) else None,
-                db_path=DB_PATH,
-                seed_project=self.app_state.project,
-                on_back=lambda: self.show("Report"),
-            )
-        except Exception as exc:
-            return self._rwh_placeholder_page(str(exc))
-
-    def _rwh_placeholder_page(self, reason: str = ""):
-        frame = ScrollablePage(self.container)
-        header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
-        header.pack(fill="x", padx=5, pady=5)
-        ctk.CTkLabel(
-            header,
-            text="Rain Water Harvesting",
-            font=("Arial", 18, "bold"),
-            text_color="white",
-        ).pack(pady=10)
-        message = (
-            "The Rain Water Harvesting module is not available in this build.\n\n"
-            "Use the modular application entry point or rebuild main.py with RWH modules included."
-        )
-        if reason:
-            message += f"\n\nDetails: {reason}"
-        ctk.CTkLabel(frame, text=message, font=("Arial", 12), justify="left", wraplength=900).pack(
-            anchor="w", padx=20, pady=20
-        )
-        ctk.CTkButton(frame, text="Back to Generate Report", fg_color=BRAND_ORANGE, command=lambda: self.show("Report")).pack(
-            pady=12
-        )
-        return frame
 
     def _form_page(self, title, builder):
         frame = ScrollablePage(self.container)
@@ -345,7 +378,6 @@ class WaterDemandApp(ctk.CTk):
         ctk.CTkButton(parent, text="Next ->", fg_color=BRAND_ORANGE, command=self._save_landscape).pack(pady=12)
 
     def _sync_landscape_live(self) -> None:
-        from services.automation import sync_landscape
         if hasattr(self, "_le"):
             sync_landscape(self.app_state.other, self._le)
 
@@ -388,7 +420,6 @@ class WaterDemandApp(ctk.CTk):
         ctk.CTkButton(parent, text="Next ->", fg_color=BRAND_ORANGE, command=self._save_pool).pack(pady=12)
 
     def _sync_pool_live(self) -> None:
-        from services.automation import sync_swimming_pool
         if hasattr(self, "_pe") and hasattr(self, "_pool_status"):
             sync_swimming_pool(self.app_state.other, self._pe, self._pool_status)
 
@@ -425,7 +456,6 @@ class WaterDemandApp(ctk.CTk):
         ).pack(pady=12)
 
     def _sync_hvac_live(self) -> None:
-        from services.automation import sync_hvac
         if hasattr(self, "_he"):
             sync_hvac(self.app_state.other, self._he)
 
@@ -489,6 +519,70 @@ class WaterDemandApp(ctk.CTk):
             self.app_state.other.fire_tank[plot] = float(auto_val)
             lbl.configure(text=f"{auto_val:,} (auto — NBC Table 7)")
 
+    def _sewage_page(self):
+        frame = ScrollablePage(self.container)
+        header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
+        header.pack(fill="x", padx=5, pady=5)
+        ctk.CTkLabel(header, text="Sewage Generation", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
+        ctk.CTkLabel(
+            frame,
+            text="Population-based sewage generation — auto-calculated from residential/commercial data.",
+            font=("Arial", 11, "italic"),
+        ).pack(anchor="w", padx=20, pady=(0, 5))
+        self.sewage_table = ResultTableView(frame)
+        self.sewage_table.pack(fill="both", expand=True, padx=15, pady=10)
+        ctk.CTkLabel(
+            frame,
+            text="Updates automatically as you enter data on other pages.",
+            font=("Arial", 10, "italic"),
+            text_color="#666666",
+        ).pack(pady=(0, 8))
+        return frame
+
+    def _refresh_sewage(self, silent: bool = False) -> None:
+        if not hasattr(self, "sewage_table"):
+            return
+        if not self.app_state.environmental:
+            self.sewage_table.set_rows("Sewage Generation Calculations", [("Enter project data first", "—", "")])
+            return
+        sections = build_sewage_generation_table_sections(
+            self.app_state.project,
+            self.app_state.environmental,
+        )
+        self.sewage_table.set_sections(sections)
+
+    def _solid_waste_page(self):
+        frame = ScrollablePage(self.container)
+        header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
+        header.pack(fill="x", padx=5, pady=5)
+        ctk.CTkLabel(header, text="Solid Waste Generation", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
+        ctk.CTkLabel(
+            frame,
+            text="Solid waste and e-waste calculations — auto-calculated from population and STP data.",
+            font=("Arial", 11, "italic"),
+        ).pack(anchor="w", padx=20, pady=(0, 5))
+        self.solid_waste_table = ResultTableView(frame)
+        self.solid_waste_table.pack(fill="both", expand=True, padx=15, pady=10)
+        ctk.CTkLabel(
+            frame,
+            text="Updates automatically as you enter data on other pages.",
+            font=("Arial", 10, "italic"),
+            text_color="#666666",
+        ).pack(pady=(0, 8))
+        return frame
+
+    def _refresh_solid_waste(self, silent: bool = False) -> None:
+        if not hasattr(self, "solid_waste_table"):
+            return
+        if not self.app_state.environmental:
+            self.solid_waste_table.set_rows("Solid Waste Calculations", [("Enter project data first", "—", "")])
+            return
+        sections = build_solid_waste_table_sections(
+            self.app_state.project,
+            self.app_state.environmental,
+        )
+        self.solid_waste_table.set_sections(sections)
+
     def _oht_page(self):
         frame = ScrollablePage(self.container)
         header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
@@ -499,8 +593,8 @@ class WaterDemandApp(ctk.CTk):
             text="Overhead tank capacities auto-calculate from residential/commercial demand.",
             font=("Arial", 11, "italic"),
         ).pack(anchor="w", padx=20, pady=(0, 5))
-        self.oht_box = ctk.CTkTextbox(frame, height=420, font=("Courier", 11))
-        self.oht_box.pack(fill="both", expand=True, padx=15, pady=10)
+        self.oht_table = ResultTableView(frame)
+        self.oht_table.pack(fill="both", expand=True, padx=15, pady=10)
         ctk.CTkLabel(
             frame,
             text="Updates automatically as you enter data on other pages.",
@@ -510,25 +604,13 @@ class WaterDemandApp(ctk.CTk):
         return frame
 
     def _refresh_oht(self, silent: bool = False) -> None:
-        lines = ["OHT DETAILS (auto-calculated)", "=" * 60, ""]
+        if not hasattr(self, "oht_table"):
+            return
         if not self.app_state.results:
-            lines.append("Enter residential/commercial data first.")
-        else:
-            for plot_name in self._plots():
-                plot = self.app_state.results.plots[plot_name]
-                lines.append(plot_name)
-                if not plot.oht_rows:
-                    lines.append("  No OHT rows")
-                for row in plot.oht_rows:
-                    lines.append(
-                        f"  {row['wing']}: Dom {row['domestic_kld']} KLD | "
-                        f"Flush {row['flushing_kld']} KLD | "
-                        f"Fire Break {row['fire_break_kld']} KLD | "
-                        f"Fire OHT {row['fire_oht_kld']} KLD"
-                    )
-                lines.append("")
-        self.oht_box.delete("1.0", "end")
-        self.oht_box.insert("1.0", "\n".join(lines))
+            self.oht_table.set_rows("OHT Details", [("Enter residential/commercial data first", "—", "")])
+            return
+        sections = build_oht_table_sections(self.app_state.results, self._plots())
+        self.oht_table.set_sections(sections)
 
     def _save_dict(self, entries, target):
         for plot, entry in entries.items():
@@ -539,8 +621,8 @@ class WaterDemandApp(ctk.CTk):
         header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
         header.pack(fill="x", padx=5, pady=5)
         ctk.CTkLabel(header, text="STP Summary", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
-        self.stp_box = ctk.CTkTextbox(frame, height=420, font=("Courier", 11))
-        self.stp_box.pack(fill="both", expand=True, padx=15, pady=10)
+        self.stp_table = ResultTableView(frame)
+        self.stp_table.pack(fill="both", expand=True, padx=15, pady=10)
         ctk.CTkLabel(
             frame,
             text="Updates automatically as you enter data on other pages.",
@@ -550,31 +632,21 @@ class WaterDemandApp(ctk.CTk):
         return frame
 
     def _refresh_stp(self, silent: bool = False):
-        if not self.app_state.results:
-            self.stp_box.delete("1.0", "end")
-            self.stp_box.insert("1.0", "Enter project data to calculate STP.")
+        if not hasattr(self, "stp_table"):
             return
-        lines = []
-        for plot_name in self._plots():
-            plot = self.app_state.results.plots[plot_name]
-            lines.append(f"=== {plot_name} ===")
-            for section in plot.stp_sections:
-                lines.append(
-                    f"  {section.scope}: Water {section.total_water_lpd:,} | Sewage {section.sewage_lpd:,} | "
-                    f"Say {section.say_stp_kld} KLD | Treated {section.treated_water_lpd:,} | "
-                    f"Excess {section.excess_treated_lpd:,}"
-                )
-            lines.append(f"  Total STP: {plot.stp_capacity_kld} KLD\n")
-        self.stp_box.delete("1.0", "end")
-        self.stp_box.insert("1.0", "\n".join(lines))
+        if not self.app_state.results:
+            self.stp_table.set_rows("STP Summary", [("Enter project data to calculate STP", "—", "")])
+            return
+        sections = build_stp_table_sections(self.app_state.results, self._plots())
+        self.stp_table.set_sections(sections)
 
     def _preview_page(self):
         frame = ScrollablePage(self.container)
         header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
         header.pack(fill="x", padx=5, pady=5)
         ctk.CTkLabel(header, text="Report Preview", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
-        self.preview_box = ctk.CTkTextbox(frame, height=360, font=("Courier", 11))
-        self.preview_box.pack(fill="both", expand=True, padx=15, pady=10)
+        self.preview_table = ResultTableView(frame)
+        self.preview_table.pack(fill="both", expand=True, padx=15, pady=10)
         ctk.CTkLabel(
             frame,
             text="Summary updates live — no Calculate button required.",
@@ -592,34 +664,23 @@ class WaterDemandApp(ctk.CTk):
         return frame
 
     def _refresh_preview(self, silent: bool = False) -> None:
-        lines = ["WATER DEMAND REPORT SUMMARY", "=" * 60, ""]
+        if not hasattr(self, "preview_table"):
+            return
         if not self.app_state.results:
-            lines.append("Complete Project, Residential, and Commercial pages first.")
-        else:
-            project = self.app_state.project
-            lines.extend(
-                [
-                    f"Project: {project.project_name}",
-                    f"Client: {project.client_name}",
-                    f"Location: {project.project_location}",
-                    f"Engineer: {project.engineer_name}",
-                    "",
-                ]
+            self.preview_table.set_rows(
+                "Preview",
+                [("Complete Project, Residential, and Commercial pages first", "—", "")],
             )
-            total = self.app_state.results.total
-            lines.append(f"Total Water Demand: {total.get('Total Water (LPD)', 0):,} LPD")
-            lines.append(f"Total STP Capacity: {total.get('Total STP Capacity (KLD)', 0)} KLD")
-            lines.append(f"Total Population: {total.get('Total Population', 0):,}")
-            lines.append("")
-            for plot_name in self._plots():
-                plot = self.app_state.results.plots[plot_name]
-                lines.append(
-                    f"{plot_name}: Res {plot.res_population} pop / {plot.res_total_lpd:,} LPD | "
-                    f"Comm {plot.com_population} pop / {plot.com_total_lpd:,} LPD | "
-                    f"Grand Total {plot.dry_total_water_lpd:,} LPD"
-                )
-        self.preview_box.delete("1.0", "end")
-        self.preview_box.insert("1.0", "\n".join(lines))
+            return
+        sections = build_preview_table_sections(
+            self.app_state.project,
+            self.app_state.results,
+            self._plots(),
+            other=self.app_state.other,
+            rwh_summary=None,
+            environmental=self.app_state.environmental,
+        )
+        self.preview_table.set_sections(sections)
 
     def _settings_page(self):
         frame = ScrollablePage(self.container)
@@ -652,7 +713,6 @@ class WaterDemandApp(ctk.CTk):
         return int(self.app_state.other.fire_tank.get(plot, 0))
 
     def _next_from_project(self):
-        from config.page_visibility import wizard_first_page_after_project
         self.show(wizard_first_page_after_project(self.app_state.project.project_type))
 
     def _next_from_residential(self):
@@ -668,8 +728,6 @@ class WaterDemandApp(ctk.CTk):
         return name
 
     def show(self, name: str) -> None:
-        from config.nbc_2026 import is_project_type_set
-        from config.page_visibility import visible_pages
         if not is_project_type_set(self.app_state.project.project_type) and name != "Project":
             name = "Project"
         name = self._resolve_page_name(name)
@@ -690,6 +748,10 @@ class WaterDemandApp(ctk.CTk):
             page.refresh()
         if name == "STP":
             self._refresh_stp()
+        elif name == "Sewage":
+            self._refresh_sewage()
+        elif name == "SolidWaste":
+            self._refresh_solid_waste()
         elif name == "OHT":
             self._refresh_oht()
         elif name == "Preview":
@@ -704,7 +766,6 @@ class WaterDemandApp(ctk.CTk):
 
     def _calc(self):
         try:
-            from services.automation import sync_pages_to_state
             sync_pages_to_state(self)
             self.app_state.auto_calculate()
             self._refresh_live_panels()
@@ -715,11 +776,15 @@ class WaterDemandApp(ctk.CTk):
         """Update auto-calculated panels without manual refresh buttons."""
         if hasattr(self, "_ugt_labels"):
             self._refresh_ugt()
-        if self._current_page == "OHT" and hasattr(self, "oht_box"):
+        if hasattr(self, "oht_table"):
             self._refresh_oht(silent=True)
-        elif self._current_page == "STP" and hasattr(self, "stp_box"):
+        if hasattr(self, "stp_table"):
             self._refresh_stp(silent=True)
-        elif self._current_page == "Preview" and hasattr(self, "preview_box"):
+        if hasattr(self, "sewage_table"):
+            self._refresh_sewage(silent=True)
+        if hasattr(self, "solid_waste_table"):
+            self._refresh_solid_waste(silent=True)
+        if hasattr(self, "preview_table"):
             self._refresh_preview(silent=True)
 
     def _open_preview(self):
@@ -765,8 +830,7 @@ class WaterDemandApp(ctk.CTk):
         xlsx_path = os.path.join(reports_dir, f"{safe_name}_Water_Demand.xlsx")
 
         try:
-            from services.project_service import persist_project_state
-            persist_project_state(self.app_state, self.current_user, DB_PATH)
+            persist_project_state(self.app_state, db_path=DB_PATH)
             logo = LOGO_PATH if os.path.exists(LOGO_PATH) else None
             export_pdf(pdf_path, self.app_state.project, self.app_state.results, logo)
             export_excel(xlsx_path, self.app_state.project, self.app_state.results)
@@ -793,16 +857,15 @@ class WaterDemandApp(ctk.CTk):
             self._autosave_before_close()
         except Exception:
             pass
-        from services.project_service import create_new_project_state
-        self.app_state = create_new_project_state(self.current_user, DB_PATH)
-        self._reload_ui_from_state()
+        self.app_state = create_new_project_state(db_path=DB_PATH)
+        self.apply_state(self.app_state)
 
     def _save_db(self):
         try:
             self._calc()
-            from services.project_service import persist_project_state
             is_update = persist_project_state(self.app_state, self.current_user, DB_PATH)
-            self.title(self._window_title())
+            if self.on_header_update:
+                self.on_header_update()
             action = "updated" if is_update else "saved"
             messagebox.showinfo("Saved", f"Project {action}.\nID: {self.app_state.project.project_id}")
             if self.on_autosave:
@@ -811,7 +874,6 @@ class WaterDemandApp(ctk.CTk):
             messagebox.showerror("Error", str(exc))
 
     def _open_db(self):
-        from services.project_service import find_projects, load_project_state
         projs = find_projects()
         if not projs:
             messagebox.showinfo("Open Project", "No saved projects.")
@@ -855,8 +917,7 @@ class WaterDemandApp(ctk.CTk):
                 messagebox.showwarning("Open Project", "Select a project.")
                 return
             try:
-                self.app_state = load_project_state(pid, DB_PATH)
-                self._reload_ui_from_state()
+                self.apply_state(load_project_state(pid, DB_PATH))
                 dialog.destroy()
                 messagebox.showinfo("Loaded", f"Project loaded.\nID: {pid}")
             except ValueError as exc:
@@ -901,7 +962,12 @@ def _load_json_file(fp):
 
 
 def main():
-    WaterDemandApp().mainloop()
+    from app_launcher import main as launch_main
+    launch_main()
+
+
+# Backward-compatible alias for tests and legacy entry points
+WaterDemandApp = ProjectWorkspace
 
 
 if __name__ == "__main__":

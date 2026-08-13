@@ -5,8 +5,9 @@ import sys
 import unittest
 
 WORKSPACE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-if WORKSPACE_ROOT not in sys.path:
-    sys.path.insert(0, WORKSPACE_ROOT)
+APP_ROOT = os.path.join(WORKSPACE_ROOT, "water_demand_app")
+if APP_ROOT not in sys.path:
+    sys.path.insert(0, APP_ROOT)
 
 
 class TestSidebarNavigation(unittest.TestCase):
@@ -14,17 +15,13 @@ class TestSidebarNavigation(unittest.TestCase):
     def setUpClass(cls) -> None:
         try:
             import customtkinter as ctk
-            import importlib.util
-
-            spec = importlib.util.spec_from_file_location("water_main", os.path.join(WORKSPACE_ROOT, "main.py"))
-            water_main = importlib.util.module_from_spec(spec)
-            sys.modules["water_main"] = water_main
-            assert spec.loader is not None
-            spec.loader.exec_module(water_main)
-            WaterDemandApp = water_main.WaterDemandApp
+            from _app_sidebar import ProjectWorkspace
 
             cls.ctk = ctk
-            cls.app = WaterDemandApp()
+            cls.root = ctk.CTk()
+            cls.root.withdraw()
+            cls.app = ProjectWorkspace(cls.root)
+            cls.app.ensure_pages_built()
             cls.app.withdraw()
             cls.app.update_idletasks()
             cls.app.update()
@@ -35,6 +32,8 @@ class TestSidebarNavigation(unittest.TestCase):
     def tearDownClass(cls) -> None:
         if hasattr(cls, "app"):
             cls.app.destroy()
+        if hasattr(cls, "root"):
+            cls.root.destroy()
 
     def test_all_nav_pages_registered(self) -> None:
         for key, _label in self.app.NAV:
@@ -52,8 +51,8 @@ class TestSidebarNavigation(unittest.TestCase):
                 self.app.update()
                 self.assertIn(key, self.app.pages)
 
-    def test_rwh_page_exists(self) -> None:
-        self.assertIn("RWH", self.app.pages)
+    def test_rwh_not_in_pages(self) -> None:
+        self.assertNotIn("RWH", self.app.pages)
 
     def test_oht_page_exists(self) -> None:
         self.assertIn("OHT", self.app.pages)

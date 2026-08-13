@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from config.nbc_2026 import PROJECT_TYPE_UNSET
 from models.project import ProjectData, RevisionInfo
-from models.user import UserSession
 from services.database import (
     DB_PATH,
+    get_project_history,
+    get_project_summary,
     load_project_from_db,
     parse_project_snapshot,
     project_exists,
@@ -34,7 +34,7 @@ def generate_project_id(db_path: str = DB_PATH) -> str:
             return f"WD-{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
 
-def create_new_project_state(user: Optional[UserSession] = None, db_path: str = DB_PATH) -> AppState:
+def create_new_project_state(db_path: str = DB_PATH) -> AppState:
     """Fresh project with auto-generated IDs."""
     state = AppState()
     state.project = ProjectData(
@@ -43,12 +43,12 @@ def create_new_project_state(user: Optional[UserSession] = None, db_path: str = 
         client_name="",
         project_location="",
         project_type=PROJECT_TYPE_UNSET,
-        engineer_name=user.full_name if user else "Akash",
+        engineer_name="",
         project_no=next_project_number(db_path),
         date=datetime.now().strftime("%d-%m-%Y"),
         revision=RevisionInfo(
             date=datetime.now().strftime("%d-%m-%Y"),
-            prepared_by=user.full_name if user else "",
+            prepared_by="",
         ),
     )
     state.residential = []
@@ -58,6 +58,9 @@ def create_new_project_state(user: Optional[UserSession] = None, db_path: str = 
 
 def load_project_state(project_id: str, db_path: str = DB_PATH) -> AppState:
     """Load an existing project into AppState."""
+    summary = get_project_summary(project_id, db_path)
+    if not summary:
+        raise ValueError(f"Project not found: {project_id}")
     data = load_project_from_db(project_id, db_path)
     project, residential, commercial, other, calculated = parse_project_snapshot(data)
     state = AppState()
@@ -72,13 +75,8 @@ def load_project_state(project_id: str, db_path: str = DB_PATH) -> AppState:
     return state
 
 
-def persist_project_state(
-    state: AppState,
-    user: Optional[UserSession] = None,
-    db_path: str = DB_PATH,
-) -> bool:
+def persist_project_state(state: AppState, db_path: str = DB_PATH) -> bool:
     """Save project; returns True if updated existing, False if new."""
-    username = user.username if user else ""
     return save_project(
         state.project,
         state.residential,
@@ -86,10 +84,11 @@ def persist_project_state(
         state.other,
         state.results.to_dict() if state.results else None,
         db_path=db_path,
-        created_by=username,
-        updated_by=username,
     )
 
 
 def find_projects(query: str = "", limit: int = 50, db_path: str = DB_PATH):
-    return search_projects(query, limit=limit, db_path=db_path)
+    """Search/list projects by ID, name, client, location, type, or date."""
+    if query:
+        return search_projects(query, limit=limit, db_path=db_path)
+    return get_project_history(limit, db_path)

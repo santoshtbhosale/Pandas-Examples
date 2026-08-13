@@ -5,8 +5,6 @@ from __future__ import annotations
 from typing import FrozenSet, Tuple
 
 from config.nbc_2026 import (
-    PROJECT_TYPE_UNSET,
-    is_project_type_set,
     PROJECT_TYPE_COLLEGE,
     PROJECT_TYPE_COMMERCIAL,
     PROJECT_TYPE_HOSPITAL,
@@ -19,6 +17,7 @@ from config.nbc_2026 import (
     PROJECT_TYPE_SCHOOL,
     PROJECT_TYPE_TOWNSHIP,
     PROJECT_TYPE_WAREHOUSE,
+    is_project_type_set,
 )
 
 # Sidebar page keys in wizard order
@@ -33,16 +32,27 @@ WIZARD_PAGE_ORDER: Tuple[str, ...] = (
     "Swimming",
     "HVAC",
     "UGT",
+    "Sewage",
     "OHT",
     "STP",
+    "SolidWaste",
     "Preview",
     "Report",
-    "RWH",
     "Settings",
 )
 
 _COMMON_TAIL: FrozenSet[str] = frozenset(
-    {"Landscape", "UGT", "OHT", "STP", "Preview", "Report", "RWH", "Settings"}
+    {
+        "Landscape",
+        "UGT",
+        "Sewage",
+        "OHT",
+        "STP",
+        "SolidWaste",
+        "Preview",
+        "Report",
+        "Settings",
+    }
 )
 
 _PAGES_BY_TYPE: dict[str, FrozenSet[str]] = {
@@ -53,8 +63,36 @@ _PAGES_BY_TYPE: dict[str, FrozenSet[str]] = {
     ),
     PROJECT_TYPE_HOSPITAL: frozenset({"Project", "Hospital", *_COMMON_TAIL}),
     PROJECT_TYPE_HOTEL: frozenset({"Project", "Hotel", "Swimming", *_COMMON_TAIL}),
-    PROJECT_TYPE_SCHOOL: frozenset({"Project", "Commercial", "Landscape", "UGT", "OHT", "STP", "Preview", "Report", "RWH", "Settings"}),
-    PROJECT_TYPE_COLLEGE: frozenset({"Project", "Commercial", "Landscape", "UGT", "OHT", "STP", "Preview", "Report", "RWH", "Settings"}),
+    PROJECT_TYPE_SCHOOL: frozenset(
+        {
+            "Project",
+            "Commercial",
+            "Landscape",
+            "UGT",
+            "Sewage",
+            "OHT",
+            "STP",
+            "SolidWaste",
+            "Preview",
+            "Report",
+            "Settings",
+        }
+    ),
+    PROJECT_TYPE_COLLEGE: frozenset(
+        {
+            "Project",
+            "Commercial",
+            "Landscape",
+            "UGT",
+            "Sewage",
+            "OHT",
+            "STP",
+            "SolidWaste",
+            "Preview",
+            "Report",
+            "Settings",
+        }
+    ),
     PROJECT_TYPE_IT_PARK: frozenset({"Project", "Commercial", "HVAC", *_COMMON_TAIL}),
     PROJECT_TYPE_MALL: frozenset({"Project", "Commercial", "HVAC", "FoodCourt", *_COMMON_TAIL}),
     PROJECT_TYPE_INDUSTRIAL: frozenset({"Project", "Commercial", *_COMMON_TAIL}),

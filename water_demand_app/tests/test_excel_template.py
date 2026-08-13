@@ -50,6 +50,8 @@ class TestTemplateExcelExport(unittest.TestCase):
                     "Plot-A STP",
                     "Plot-B STP",
                     "Summary",
+                    "Sewage Generation",
+                    "Solid Waste Generation",
                 ],
             )
             self.assertEqual(wb["Cover"]["B4"].value, "TEST PROJECT")
