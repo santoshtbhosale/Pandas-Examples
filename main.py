@@ -5729,17 +5729,26 @@ class ProjectPage(ScrollablePage):
         row = 0
         for key, label, default in [
             ("project_name", "Project Name", "PROPOSED RESIDENTIAL & COMM. AT PUNAVALE"),
-            ("client_name", "Client Name", "MR.PRATHMESH GAIKWAD"),
+            ("client_name", "Client Name", ""),
         ]:
             ctk.CTkLabel(self.form, text=label, font=("Arial", 13, "bold")).grid(
                 row=row, column=0, padx=16, pady=8, sticky="w"
             )
-            ent = ctk.CTkEntry(self.form, width=480, height=34)
-            ent.insert(0, getattr(self.state.project, key, default) or default)
-            ent.grid(row=row, column=1, padx=16, pady=8, sticky="w")
-            self.entries[key] = ent
             if key == "client_name":
-                ent.bind("<KeyRelease>", self._on_client_type)
+                cell = ctk.CTkFrame(self.form, fg_color="transparent")
+                cell.grid(row=row, column=1, padx=16, pady=8, sticky="w")
+                ent = ctk.CTkEntry(cell, width=480, height=34)
+                ent.pack(anchor="w")
+                self._client_suggestions = ctk.CTkFrame(cell, fg_color="transparent")
+                self._client_suggestions.pack(fill="x", anchor="w")
+                ent.insert(0, getattr(self.state.project, key, "") or "")
+                ent.bind("<KeyRelease>", self._on_client_key_release)
+                ent.bind("<FocusOut>", self._on_client_focus_out)
+            else:
+                ent = ctk.CTkEntry(self.form, width=480, height=34)
+                ent.insert(0, getattr(self.state.project, key, default) or default)
+                ent.grid(row=row, column=1, padx=16, pady=8, sticky="w")
+            self.entries[key] = ent
             row += 1
 
         if not self.state.project.project_no:
@@ -5997,21 +6006,57 @@ class ProjectPage(ScrollablePage):
             pass
         self.schedule_auto_calculate(self.state)
 
-    def _on_client_type(self, _event=None) -> None:
+    def _on_client_key_release(self, _event=None) -> None:
         if not self._details_visible:
             return
-        text = self.entries["client_name"].get().strip()
-        matches = search_clients(text)
+        self._update_client_suggestions(self.entries["client_name"].get())
+
+    def _on_client_focus_out(self, _event=None) -> None:
+        try:
+            self.after(150, self._clear_client_suggestions)
+        except Exception:
+            self._clear_client_suggestions()
+
+    def _clear_client_suggestions(self) -> None:
+        frame = getattr(self, "_client_suggestions", None)
+        if frame is None:
+            return
+        for child in frame.winfo_children():
+            child.destroy()
+
+    def _update_client_suggestions(self, text: str) -> None:
+        self._clear_client_suggestions()
+        prefix = (text or "").strip()
+        if not prefix:
+            return
+        matches = search_clients(prefix)
         if not matches:
             return
-        best = matches[0]
-        if text.lower() not in best["client_name"].lower() and text.lower() not in best["client_key"]:
-            return
-        if best.get("client_name"):
-            self.entries["client_name"].delete(0, "end")
-            self.entries["client_name"].insert(0, best["client_name"])
-        if best.get("engineer_name"):
-            self.engineer_var.set(best["engineer_name"])
+        for match in matches:
+            name = (match.get("client_name") or "").strip()
+            if not name:
+                continue
+            ctk.CTkButton(
+                self._client_suggestions,
+                text=name,
+                anchor="w",
+                fg_color="#F4F7FA",
+                hover_color="#E8EFF5",
+                text_color=BRAND_NAVY,
+                height=28,
+                command=lambda record=match: self._apply_client_suggestion(record),
+            ).pack(fill="x", pady=1)
+
+    def _apply_client_suggestion(self, match: dict) -> None:
+        entry = self.entries["client_name"]
+        name = (match.get("client_name") or "").strip()
+        entry.delete(0, "end")
+        if name:
+            entry.insert(0, name)
+        engineer = (match.get("engineer_name") or "").strip()
+        if engineer and hasattr(self, "engineer_var"):
+            self.engineer_var.set(engineer)
+        self._clear_client_suggestions()
 
     def _save_and_next(self) -> None:
         if not is_project_type_set(self.state.project.project_type):
