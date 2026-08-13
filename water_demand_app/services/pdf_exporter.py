@@ -9,6 +9,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import (
     Image,
+    KeepTogether,
     PageBreak,
     Paragraph,
     SimpleDocTemplate,
@@ -159,6 +160,323 @@ class PDFExporter:
             cmds.append(("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BRAND_HEADER_GRAY)))
         return TableStyle(cmds)
 
+    def _consolidated_col_widths(self, total_width: float) -> List[float]:
+        """Proportional 10-column widths that fit within printable page width."""
+        return [
+            total_width * 0.05,   # SR.NO
+            total_width * 0.22,   # DESCRIPTION
+            total_width * 0.10,   # PLOT-A RES
+            total_width * 0.10,   # PLOT-A COMM
+            total_width * 0.10,   # PLOT-A SUB
+            total_width * 0.10,   # PLOT-B RES
+            total_width * 0.10,   # PLOT-B COMM
+            total_width * 0.10,   # PLOT-B SUB
+            total_width * 0.08,   # TOTAL
+            total_width * 0.05,   # UNITS
+        ]
+
+    def _consolidated_header_row(self) -> list:
+        return [
+            self._th("SR.NO"),
+            self._th("DESCRIPTION"),
+            self._th("PLOT-A RES"),
+            self._th("PLOT-A COMM"),
+            self._th("PLOT-A SUB"),
+            self._th("PLOT-B RES"),
+            self._th("PLOT-B COMM"),
+            self._th("PLOT-B SUB"),
+            self._th("TOTAL"),
+            self._th("UNITS"),
+        ]
+
+    def _consolidated_table(self, data_rows: list, col_widths: List[float]) -> Table:
+        rows = [self._consolidated_header_row(), *data_rows]
+        table = Table(rows, colWidths=col_widths, repeatRows=1)
+        table.setStyle(self._grid_style())
+        return table
+
+    def _consolidated_section_heading(self, section: str, subtitle: str = "") -> Paragraph:
+        text = f"<b>{section}</b>"
+        if subtitle:
+            text += f"<br/><b>{subtitle}</b>"
+        return self._p(
+            text,
+            "ConsSec",
+            fontSize=8,
+            fontName="Helvetica-Bold",
+            textColor=colors.HexColor(BRAND_DARK_GRAY),
+            spaceAfter=6,
+        )
+
+    def _consolidated_subheading(self, title: str) -> Paragraph:
+        return self._p(
+            f"<b>{title}</b>",
+            "ConsSub",
+            fontSize=7.5,
+            fontName="Helvetica-Bold",
+            textColor=colors.HexColor(BRAND_DARK_GRAY),
+            spaceBefore=10,
+            spaceAfter=4,
+        )
+
+    def _build_consolidated(self) -> List[Any]:
+        story: List[Any] = [self._eng_header(), Spacer(1, 5)]
+        story.append(self._section_bar("CONSOLIDATED STATEMENT", BRAND_DARK_GRAY))
+        story.append(Spacer(1, 8))
+
+        pa = self.results.plots["Plot-A"]
+        pb = self.results.plots["Plot-B"]
+        tot = self.results.total
+        col_widths = self._consolidated_col_widths(self.page_width)
+
+        def kld(v: float) -> str:
+            return f"{v / 1000:.2f}"
+
+        def empty_sr() -> Paragraph:
+            return self._tc("", 0)
+
+        # --- SECTION-8: Building / Population ---
+        building_rows = [
+            [
+                empty_sr(),
+                self._tc("Number Of Building", 0),
+                self._tc(pa.num_buildings_res),
+                self._tc(pa.num_buildings_com),
+                self._tc(pa.num_buildings_res + pa.num_buildings_com),
+                self._tc(pb.num_buildings_res),
+                self._tc(pb.num_buildings_com),
+                self._tc(pb.num_buildings_res + pb.num_buildings_com),
+                self._tc(
+                    pa.num_buildings_res + pa.num_buildings_com
+                    + pb.num_buildings_res + pb.num_buildings_com
+                ),
+                self._tc("NO.S"),
+            ],
+            [
+                empty_sr(),
+                self._tc("Total Number Of Flats", 0),
+                self._tc(pa.total_flats),
+                self._tc(0),
+                self._tc(pa.total_flats),
+                self._tc(pb.total_flats),
+                self._tc(0),
+                self._tc(pb.total_flats),
+                self._tc(tot.get("Total Flats", 0)),
+                self._tc("NO.S"),
+            ],
+            [
+                empty_sr(),
+                self._tc("Total Residential Building Population", 0),
+                self._tc(pa.res_population),
+                self._tc(pa.com_population),
+                self._tc(pa.total_population),
+                self._tc(pb.res_population),
+                self._tc(pb.com_population),
+                self._tc(pb.total_population),
+                self._tc(tot.get("Total Population", 0)),
+                self._tc("NO.S"),
+            ],
+        ]
+
+        story.append(
+            self._consolidated_section_heading("SECTION-8", "BUILDING / POPULATION DETAILS")
+        )
+        story.append(Spacer(1, 4))
+        story.append(self._consolidated_table(building_rows, col_widths))
+        story.append(Spacer(1, 8))
+
+        # --- DRY SEASON ---
+        dry_specs = [
+            ("Fresh Water Requirement", pa.res_domestic_lpd, pa.com_domestic_lpd, pb.res_domestic_lpd, pb.com_domestic_lpd),
+            ("Flushing Water Requirement", pa.res_flushing_lpd, pa.com_flushing_lpd, pb.res_flushing_lpd, pb.com_flushing_lpd),
+            ("Kitchen Water Requirement", pa.kitchen_water_lpd, 0, pb.kitchen_water_lpd, 0),
+            ("Landscape Water Requirement", pa.landscape_dry_lpd, 0, pb.landscape_dry_lpd, 0),
+            ("Swimming Pool Makeup Water Requirement", pa.swimming_pool_lpd, 0, pb.swimming_pool_lpd, 0),
+            ("HVAC Water Requirement", pa.hvac_lpd, 0, pb.hvac_lpd, 0),
+            (
+                "Total Water Requirement",
+                pa.dry_total_water_lpd,
+                pa.com_total_lpd + pa.landscape_dry_lpd + pa.swimming_pool_lpd + pa.hvac_lpd + pa.kitchen_water_lpd,
+                pb.dry_total_water_lpd,
+                pb.com_total_lpd + pb.landscape_dry_lpd + pb.swimming_pool_lpd + pb.hvac_lpd + pb.kitchen_water_lpd,
+            ),
+            ("Total Treated Water", pa.dry_treated_water_lpd, 0, pb.dry_treated_water_lpd, 0),
+            ("Excess Treated Water To Corporation Line", pa.dry_excess_treated_lpd, 0, pb.dry_excess_treated_lpd, 0),
+        ]
+        dry_data_rows = []
+        for idx, (desc, a_res, a_com, b_res, b_com) in enumerate(dry_specs, 1):
+            if idx == 1:
+                a_sub = a_res + a_com
+                b_sub = b_res + b_com
+            elif idx == 2:
+                a_sub = a_res + a_com
+                b_sub = b_res + b_com
+            elif idx in (3, 4, 5, 6):
+                a_sub = a_res
+                b_sub = b_res
+            elif idx == 7:
+                a_sub = pa.dry_total_water_lpd
+                b_sub = pb.dry_total_water_lpd
+            elif idx == 8:
+                a_sub = pa.dry_treated_water_lpd
+                b_sub = pb.dry_treated_water_lpd
+            else:
+                a_sub = pa.dry_excess_treated_lpd
+                b_sub = pb.dry_excess_treated_lpd
+            dry_data_rows.append(
+                [
+                    empty_sr(),
+                    self._tc(desc, 0),
+                    self._tc(kld(a_res if idx <= 6 else a_sub)),
+                    self._tc(kld(a_com if idx <= 2 else 0)),
+                    self._tc(kld(a_sub)),
+                    self._tc(kld(b_res if idx <= 6 else b_sub)),
+                    self._tc(kld(b_com if idx <= 2 else 0)),
+                    self._tc(kld(b_sub)),
+                    self._tc(kld(a_sub + b_sub)),
+                    self._tc("KLD"),
+                ]
+            )
+
+        story.append(
+            KeepTogether(
+                [
+                    self._consolidated_subheading("DRY SEASON"),
+                    Spacer(1, 4),
+                    self._consolidated_table(dry_data_rows, col_widths),
+                ]
+            )
+        )
+        story.append(Spacer(1, 8))
+
+        # --- WET SEASON ---
+        wet_specs = [
+            ("FRESH WATER REQUIREMENT", pa.res_domestic_lpd, pa.com_domestic_lpd),
+            ("FLUSHING WATER REQUIREMENTS", pa.res_flushing_lpd, pa.com_flushing_lpd),
+            ("KITCHEN WATER REQUIREMENT", pa.kitchen_water_lpd, 0),
+            ("LANDSCAPE WATER REQUIRED", pa.landscape_wet_lpd, 0),
+            ("SWIMMING POOL MAKEUP WATER REQUIRMENT", pa.swimming_pool_lpd, 0),
+            ("HVAC WATER REQUIREMENT", pa.hvac_lpd, 0),
+            ("TOTAL WATER REQUIREMENT", pa.wet_total_water_lpd, pa.com_total_lpd),
+            ("TOTAL TREATED WATER", pa.wet_treated_water_lpd, 0),
+            ("EXCESS TREATED WATER WATER TO COPORATION LINE", pa.wet_excess_treated_lpd, 0),
+        ]
+        wet_data_rows = []
+        for idx, (desc, a_val, a_com) in enumerate(wet_specs, 1):
+            b_val = {
+                1: pb.res_domestic_lpd,
+                2: pb.res_flushing_lpd,
+                3: pb.kitchen_water_lpd,
+                4: pb.landscape_wet_lpd,
+                5: pb.swimming_pool_lpd,
+                6: pb.hvac_lpd,
+                7: pb.wet_total_water_lpd,
+                8: pb.wet_treated_water_lpd,
+                9: pb.wet_excess_treated_lpd,
+            }[idx]
+            b_com = (
+                pb.com_domestic_lpd
+                if idx == 1
+                else (pb.com_flushing_lpd if idx == 2 else (pb.com_total_lpd if idx == 7 else 0))
+            )
+            a_sub = a_val + (a_com if idx <= 2 else 0) if idx <= 2 else a_val
+            b_sub = b_val + (b_com if idx <= 2 else 0) if idx <= 2 else b_val
+            if idx == 7:
+                a_sub = pa.wet_total_water_lpd
+                b_sub = pb.wet_total_water_lpd
+            wet_data_rows.append(
+                [
+                    empty_sr(),
+                    self._tc(desc, 0),
+                    self._tc(kld(a_val if idx <= 5 else a_sub)),
+                    self._tc(kld(a_com if idx <= 2 else 0)),
+                    self._tc(kld(a_sub)),
+                    self._tc(kld(b_val if idx <= 5 else b_sub)),
+                    self._tc(kld(b_com if idx <= 2 else 0)),
+                    self._tc(kld(b_sub)),
+                    self._tc(kld(a_sub + b_sub)),
+                    self._tc("KLD"),
+                ]
+            )
+
+        story.append(
+            KeepTogether(
+                [
+                    self._consolidated_subheading("WET SEASON"),
+                    Spacer(1, 4),
+                    self._consolidated_table(wet_data_rows, col_widths),
+                ]
+            )
+        )
+        story.append(Spacer(1, 8))
+
+        # --- SECTION-9: UGT ---
+        ugt_specs = [
+            ("DOMESTIC UGT CAPACITY", pa.ugt_domestic_liters, pb.ugt_domestic_liters),
+            ("FLUSHING UGT CAPACITY", pa.ugt_flushing_liters, pb.ugt_flushing_liters),
+            ("FIRE UGT CAPACITY", pa.fire_tank_liters, pb.fire_tank_liters),
+        ]
+        ugt_data_rows = []
+        for desc, a_v, b_v in ugt_specs:
+            ugt_data_rows.append(
+                [
+                    empty_sr(),
+                    self._tc(desc, 0),
+                    self._tc(f"{a_v / 1000:.2f}"),
+                    self._tc("0.00"),
+                    self._tc(f"{a_v / 1000:.2f}"),
+                    self._tc(f"{b_v / 1000:.2f}"),
+                    self._tc("0.00"),
+                    self._tc(f"{b_v / 1000:.2f}"),
+                    self._tc(f"{(a_v + b_v) / 1000:.2f}"),
+                    self._tc("LIT/DAY"),
+                ]
+            )
+
+        story.append(
+            KeepTogether(
+                [
+                    self._consolidated_section_heading("SECTION-9", "UGT DETAILS"),
+                    Spacer(1, 4),
+                    self._consolidated_table(ugt_data_rows, col_widths),
+                ]
+            )
+        )
+        story.append(Spacer(1, 8))
+
+        # --- SECTION-10: STP ---
+        stp_specs = [
+            ("SEWAGE GENERATION", pa.sewage_lpd, pb.sewage_lpd),
+            ("STP Capacity", pa.stp_capacity_kld * 1000, pb.stp_capacity_kld * 1000),
+        ]
+        stp_data_rows = []
+        for desc, a_v, b_v in stp_specs:
+            stp_data_rows.append(
+                [
+                    empty_sr(),
+                    self._tc(desc, 0),
+                    self._tc(f"{a_v / 1000:.2f}"),
+                    self._tc("0.00"),
+                    self._tc(f"{a_v / 1000:.2f}"),
+                    self._tc(f"{b_v / 1000:.2f}"),
+                    self._tc("0.00"),
+                    self._tc(f"{b_v / 1000:.2f}"),
+                    self._tc(f"{(a_v + b_v) / 1000:.2f}"),
+                    self._tc("LIT/DAY"),
+                ]
+            )
+
+        story.append(
+            KeepTogether(
+                [
+                    self._consolidated_section_heading("SECTION-10", "STP DETAILS"),
+                    Spacer(1, 4),
+                    self._consolidated_table(stp_data_rows, col_widths),
+                ]
+            )
+        )
+        return story
+
     def _build_cover(self) -> List[Any]:
         story: List[Any] = []
         if self.logo_path and os.path.exists(self.logo_path):
@@ -243,212 +561,6 @@ class PDFExporter:
             self._p(COMPANY_ADDRESS, "Addr", fontSize=6, alignment=1)
         )
         story.append(self._p(COMPANY_CONTACT, "Contact", fontSize=6, alignment=1))
-        return story
-
-    def _build_consolidated(self) -> List[Any]:
-        story: List[Any] = [self._eng_header(), Spacer(1, 5)]
-        story.append(self._section_bar("CONSOLIDATED STATEMENT", BRAND_DARK_GRAY))
-        story.append(Spacer(1, 5))
-
-        pa = self.results.plots["Plot-A"]
-        pb = self.results.plots["Plot-B"]
-        tot = self.results.total
-
-        def kld(v: float) -> str:
-            return f"{v / 1000:.2f}"
-
-        header = [
-            self._th("SR.NO"),
-            self._th("DESCRIPTION"),
-            self._th("PLOT-A RES"),
-            self._th("PLOT-A COMM"),
-            self._th("PLOT-A SUB"),
-            self._th("PLOT-B RES"),
-            self._th("PLOT-B COMM"),
-            self._th("PLOT-B SUB"),
-            self._th("TOTAL"),
-            self._th("UNITS"),
-        ]
-
-        rows = [header]
-        rows.append(
-            [
-                self._tc("SECTION-8", 0),
-                self._tc("Number Of Building", 0),
-                self._tc(pa.num_buildings_res),
-                self._tc(pa.num_buildings_com),
-                self._tc(pa.num_buildings_res + pa.num_buildings_com),
-                self._tc(pb.num_buildings_res),
-                self._tc(pb.num_buildings_com),
-                self._tc(pb.num_buildings_res + pb.num_buildings_com),
-                self._tc(pa.num_buildings_res + pa.num_buildings_com + pb.num_buildings_res + pb.num_buildings_com),
-                self._tc("NO.S"),
-            ]
-        )
-        rows.append(
-            [
-                self._tc("", 0),
-                self._tc("Total Number Of Flats", 0),
-                self._tc(pa.total_flats),
-                self._tc(0),
-                self._tc(pa.total_flats),
-                self._tc(pb.total_flats),
-                self._tc(0),
-                self._tc(pb.total_flats),
-                self._tc(tot.get("Total Flats", 0)),
-                self._tc("NO.S"),
-            ]
-        )
-        rows.append(
-            [
-                self._tc("", 0),
-                self._tc("Total Residential Building Population", 0),
-                self._tc(pa.res_population),
-                self._tc(pa.com_population),
-                self._tc(pa.total_population),
-                self._tc(pb.res_population),
-                self._tc(pb.com_population),
-                self._tc(pb.total_population),
-                self._tc(tot.get("Total Population", 0)),
-                self._tc("NO.S"),
-            ]
-        )
-
-        dry_rows = [
-            ("Fresh Water Requirement", pa.res_domestic_lpd, pa.com_domestic_lpd, pb.res_domestic_lpd, pb.com_domestic_lpd),
-            ("Flushing Water Requirement", pa.res_flushing_lpd, pa.com_flushing_lpd, pb.res_flushing_lpd, pb.com_flushing_lpd),
-            ("Kitchen Water Requirement", pa.kitchen_water_lpd, 0, pb.kitchen_water_lpd, 0),
-            ("Landscape Water Requirement", pa.landscape_dry_lpd, 0, pb.landscape_dry_lpd, 0),
-            ("Swimming Pool Makeup Water Requirement", pa.swimming_pool_lpd, 0, pb.swimming_pool_lpd, 0),
-            ("HVAC Water Requirement", pa.hvac_lpd, 0, pb.hvac_lpd, 0),
-            ("Total Water Requirement", pa.dry_total_water_lpd, pa.com_total_lpd + pa.landscape_dry_lpd + pa.swimming_pool_lpd + pa.hvac_lpd + pa.kitchen_water_lpd, pb.dry_total_water_lpd, pb.com_total_lpd + pb.landscape_dry_lpd + pb.swimming_pool_lpd + pb.hvac_lpd + pb.kitchen_water_lpd),
-            ("Total Treated Water", pa.dry_treated_water_lpd, 0, pb.dry_treated_water_lpd, 0),
-            ("Excess Treated Water To Corporation Line", pa.dry_excess_treated_lpd, 0, pb.dry_excess_treated_lpd, 0),
-        ]
-        for idx, (desc, a_res, a_com, b_res, b_com) in enumerate(dry_rows, 1):
-            a_sub = (a_res if idx <= 2 else 0) + (a_com if idx <= 2 else a_res)
-            if idx == 1:
-                a_sub = a_res + a_com
-            elif idx == 2:
-                a_sub = a_res + a_com
-            elif idx in (3, 4, 5, 6):
-                a_sub = a_res
-                b_sub = b_res
-            elif idx == 7:
-                a_sub = pa.dry_total_water_lpd
-                b_sub = pb.dry_total_water_lpd
-            elif idx == 8:
-                a_sub = pa.dry_treated_water_lpd
-                b_sub = pb.dry_treated_water_lpd
-            else:
-                a_sub = pa.dry_excess_treated_lpd
-                b_sub = pb.dry_excess_treated_lpd
-            if idx <= 6:
-                b_sub = b_res + (b_com if idx <= 2 else 0) if idx <= 2 else b_res
-            rows.append(
-                [
-                    self._tc(f"SECTION-7" if idx == 1 else "", 0),
-                    self._tc(desc, 0),
-                    self._tc(kld(a_res if idx <= 6 else a_sub)),
-                    self._tc(kld(a_com if idx <= 2 else 0)),
-                    self._tc(kld(a_sub)),
-                    self._tc(kld(b_res if idx <= 6 else b_sub)),
-                    self._tc(kld(b_com if idx <= 2 else 0)),
-                    self._tc(kld(b_sub)),
-                    self._tc(kld(a_sub + b_sub)),
-                    self._tc("KLD"),
-                ]
-            )
-
-        wet_rows = [
-            ("FRESH WATER REQUIREMENT", pa.res_domestic_lpd, pa.com_domestic_lpd),
-            ("FLUSHING WATER REQUIREMENTS", pa.res_flushing_lpd, pa.com_flushing_lpd),
-            ("KITCHEN WATER REQUIREMENT", pa.kitchen_water_lpd, 0),
-            ("LANDSCAPE WATER REQUIRED", pa.landscape_wet_lpd, 0),
-            ("SWIMMING POOL MAKEUP WATER REQUIRMENT", pa.swimming_pool_lpd, 0),
-            ("HVAC WATER REQUIREMENT", pa.hvac_lpd, 0),
-            ("TOTAL WATER REQUIREMENT", pa.wet_total_water_lpd, pa.com_total_lpd),
-            ("TOTAL TREATED WATER", pa.wet_treated_water_lpd, 0),
-            ("EXCESS TREATED WATER WATER TO COPORATION LINE", pa.wet_excess_treated_lpd, 0),
-        ]
-        for idx, (desc, a_val, a_com) in enumerate(wet_rows, 1):
-            b_val = {
-                1: pb.res_domestic_lpd,
-                2: pb.res_flushing_lpd,
-                3: pb.kitchen_water_lpd,
-                4: pb.landscape_wet_lpd,
-                5: pb.swimming_pool_lpd,
-                6: pb.hvac_lpd,
-                7: pb.wet_total_water_lpd,
-                8: pb.wet_treated_water_lpd,
-                9: pb.wet_excess_treated_lpd,
-            }[idx]
-            b_com = pb.com_domestic_lpd if idx == 1 else (pb.com_flushing_lpd if idx == 2 else (pb.com_total_lpd if idx == 7 else 0))
-            a_sub = a_val + (a_com if idx <= 2 else 0) if idx <= 2 else a_val
-            b_sub = b_val + (b_com if idx <= 2 else 0) if idx <= 2 else b_val
-            if idx == 7:
-                a_sub = pa.wet_total_water_lpd
-                b_sub = pb.wet_total_water_lpd
-            rows.append(
-                [
-                    self._tc(f"SECTION-9" if idx == 1 else "", 0),
-                    self._tc(desc, 0),
-                    self._tc(kld(a_val if idx <= 5 else a_sub)),
-                    self._tc(kld(a_com if idx <= 2 else 0)),
-                    self._tc(kld(a_sub)),
-                    self._tc(kld(b_val if idx <= 5 else b_sub)),
-                    self._tc(kld(b_com if idx <= 2 else 0)),
-                    self._tc(kld(b_sub)),
-                    self._tc(kld(a_sub + b_sub)),
-                    self._tc("KLD"),
-                ]
-            )
-
-        ugt_rows = [
-            ("DOMESTIC UGT CAPACITY", pa.ugt_domestic_liters, pb.ugt_domestic_liters),
-            ("FLUSHING UGT CAPACITY", pa.ugt_flushing_liters, pb.ugt_flushing_liters),
-            ("FIRE UGT CAPACITY", pa.fire_tank_liters, pb.fire_tank_liters),
-        ]
-        for idx, (desc, a_v, b_v) in enumerate(ugt_rows, 1):
-            rows.append(
-                [
-                    self._tc(f"SECTION-10" if idx == 1 else "UGT DETAILS", 0),
-                    self._tc(desc, 0),
-                    self._tc(f"{a_v / 1000:.2f}"),
-                    self._tc("0.00"),
-                    self._tc(f"{a_v / 1000:.2f}"),
-                    self._tc(f"{b_v / 1000:.2f}"),
-                    self._tc("0.00"),
-                    self._tc(f"{b_v / 1000:.2f}"),
-                    self._tc(f"{(a_v + b_v) / 1000:.2f}"),
-                    self._tc("LIT/DAY"),
-                ]
-            )
-
-        stp_rows = [
-            ("SEWAGE GENERATION", pa.sewage_lpd, pb.sewage_lpd),
-            ("STP Capacity", pa.stp_capacity_kld * 1000, pb.stp_capacity_kld * 1000),
-        ]
-        for idx, (desc, a_v, b_v) in enumerate(stp_rows, 1):
-            rows.append(
-                [
-                    self._tc("STP DETAILS" if idx == 1 else "", 0),
-                    self._tc(desc, 0),
-                    self._tc(f"{a_v / 1000:.2f}"),
-                    self._tc("0.00"),
-                    self._tc(f"{a_v / 1000:.2f}"),
-                    self._tc(f"{b_v / 1000:.2f}"),
-                    self._tc("0.00"),
-                    self._tc(f"{b_v / 1000:.2f}"),
-                    self._tc(f"{(a_v + b_v) / 1000:.2f}"),
-                    self._tc("LIT/DAY"),
-                ]
-            )
-
-        col_widths = [35, 130, 55, 55, 55, 55, 55, 55, 55, 45]
-        t = Table(rows, colWidths=col_widths, repeatRows=1)
-        t.setStyle(self._grid_style())
-        story.append(t)
         return story
 
     def _build_plot_demand(self, plot_name: str) -> List[Any]:
