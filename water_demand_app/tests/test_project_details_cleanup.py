@@ -52,15 +52,13 @@ class TestProjectDetailsCleanup(unittest.TestCase):
         for field in ("project_name", "client_name"):
             self.assertIn(field, self.page.entries)
 
-    def test_has_project_type_display(self) -> None:
-        self.assertTrue(hasattr(self.page, "project_type_display"))
-
-    def test_has_reference_and_date_labels(self) -> None:
-        self.assertTrue(hasattr(self.page, "project_no_label"))
-        self.assertTrue(hasattr(self.page, "date_label"))
-
     def test_no_plot_mode_widget(self) -> None:
         self.assertFalse(hasattr(self.page, "plot_mode_var"))
+
+    def test_no_removed_metadata_fields_in_ui(self) -> None:
+        self.assertFalse(hasattr(self.page, "project_type_display"))
+        self.assertFalse(hasattr(self.page, "project_no_label"))
+        self.assertFalse(hasattr(self.page, "date_label"))
 
 
 if __name__ == "__main__":

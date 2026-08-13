@@ -1,11 +1,10 @@
-"""Regression tests for Client Name editing, clearing, and autocomplete behavior."""
+"""Regression tests for Client Name editing and clearing on Project Details."""
 
 from __future__ import annotations
 
 import os
 import sys
 import unittest
-from unittest.mock import patch
 
 WORKSPACE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 APP_ROOT = os.path.join(WORKSPACE_ROOT, "water_demand_app")
@@ -22,13 +21,11 @@ class TestClientNameField(unittest.TestCase):
         try:
             import customtkinter as ctk
 
-            from ui.app_state import AppState
             from ui.pages.project_page import ProjectPage
 
             cls.ctk = ctk
             cls.root = ctk.CTk()
             cls.root.withdraw()
-            cls.AppState = AppState
             cls.ProjectPage = ProjectPage
         except Exception as exc:
             raise unittest.SkipTest(f"GUI not available: {exc}") from exc
@@ -58,9 +55,7 @@ class TestClientNameField(unittest.TestCase):
 
     def test_user_can_type_client_name(self) -> None:
         page = self._make_page()
-        with patch("ui.pages.project_page.search_clients", return_value=[]):
-            self._set_client_text(page, "ABC")
-            page._on_client_key_release()
+        self._set_client_text(page, "ABC")
         self.assertEqual(page.entries["client_name"].get(), "ABC")
 
     def test_ctrl_a_delete_clears_client_name(self) -> None:
@@ -71,54 +66,19 @@ class TestClientNameField(unittest.TestCase):
 
     def test_user_can_replace_typed_value(self) -> None:
         page = self._make_page()
-        with patch("ui.pages.project_page.search_clients", return_value=[]):
-            self._set_client_text(page, "ABC")
-            page._on_client_key_release()
-            self._set_client_text(page, "XYZ")
-            page._on_client_key_release()
+        self._set_client_text(page, "ABC")
+        self._set_client_text(page, "XYZ")
         self.assertEqual(page.entries["client_name"].get(), "XYZ")
 
-    def test_autocomplete_does_not_auto_insert_without_selection(self) -> None:
+    def test_typing_does_not_auto_overwrite(self) -> None:
         page = self._make_page()
-        matches = [
-            {
-                "client_key": "abc_developers",
-                "client_name": "ABC Developers",
-                "engineer_name": "Akash",
-            }
-        ]
-        with patch("ui.pages.project_page.search_clients", return_value=matches):
-            self._set_client_text(page, "ABC")
-            page._on_client_key_release()
+        self._set_client_text(page, "ABC")
         self.assertEqual(page.entries["client_name"].get(), "ABC")
-        self.assertGreater(len(page._client_suggestions.winfo_children()), 0)
 
-    def test_explicit_suggestion_selection_populates_field(self) -> None:
+    def test_selected_value_can_be_cleared(self) -> None:
         page = self._make_page()
-        match = {
-            "client_key": "abc_developers",
-            "client_name": "ABC Developers Pvt Ltd",
-            "engineer_name": "Omkar",
-        }
-        with patch("ui.pages.project_page.search_clients", return_value=[match]):
-            self._set_client_text(page, "ABC")
-            page._on_client_key_release()
-            page._apply_client_suggestion(match)
-        self.assertEqual(page.entries["client_name"].get(), "ABC Developers Pvt Ltd")
-        self.assertEqual(page.engineer_var.get(), "Omkar")
-
-    def test_selected_suggestion_can_be_cleared(self) -> None:
-        page = self._make_page()
-        match = {"client_key": "abc", "client_name": "ABC Developers", "engineer_name": ""}
-        page._apply_client_suggestion(match)
+        self._set_client_text(page, "ABC Developers")
         self._set_client_text(page, "")
-        self.assertEqual(page.entries["client_name"].get(), "")
-
-    def test_focus_out_does_not_restore_old_client_name(self) -> None:
-        page = self._make_page()
-        self._set_client_text(page, "")
-        page._on_client_focus_out()
-        page.update_idletasks()
         self.assertEqual(page.entries["client_name"].get(), "")
 
     def test_back_navigation_preserves_user_entered_client_name(self) -> None:
