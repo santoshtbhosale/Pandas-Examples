@@ -114,10 +114,12 @@ class TestUIUXV2(unittest.TestCase):
 
     def test_engineering_config_conditional(self) -> None:
         from config.nbc_2026 import PROJECT_TYPE_COMMERCIAL, PROJECT_TYPE_RESIDENTIAL
-        from ui.pages.project_page import show_project_engineering_configuration
+        from ui.pages.project_page import show_project_engineering_configuration, show_report_signoff
 
         self.assertTrue(show_project_engineering_configuration(PROJECT_TYPE_RESIDENTIAL))
         self.assertFalse(show_project_engineering_configuration(PROJECT_TYPE_COMMERCIAL))
+        self.assertTrue(show_report_signoff(PROJECT_TYPE_RESIDENTIAL))
+        self.assertTrue(show_report_signoff(PROJECT_TYPE_COMMERCIAL))
 
     def test_excel_still_generates(self) -> None:
         project = ProjectData(project_name="UX TEST", project_type=PROJECT_TYPE_RESIDENTIAL)

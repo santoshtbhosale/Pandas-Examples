@@ -51,6 +51,11 @@ def build_professional_page_header(parent, title: str, subtitle: str = "", step:
     return wrapper
 
 
+def show_report_signoff(_project_type: str) -> bool:
+    """Report Sign-off is common to every project type."""
+    return True
+
+
 def show_project_engineering_configuration(project_type: str) -> bool:
     """Show building-level configuration only for residential-family project types."""
     return project_type in (
@@ -206,6 +211,11 @@ class ProjectPage(ScrollablePage):
         ).grid(row=row, column=1, padx=16, pady=6, sticky="w")
         row += 1
 
+        self._engineering_start_row = engineering_start_row
+        self._engineering_end_row = row - 1
+
+        signoff_start_row = row
+
         ctk.CTkLabel(
             self.form,
             text="Report Sign-off",
@@ -262,32 +272,70 @@ class ProjectPage(ScrollablePage):
             width=220,
         ).pack(side="left", padx=8)
 
-        self._engineering_start_row = engineering_start_row
-        self._engineering_end_row = row - 1
-        self._set_engineering_configuration_visibility()
+        self._signoff_start_row = signoff_start_row
+        self._signoff_end_row = row - 1
+        self._apply_section_visibility()
 
         if is_project_type_set(self.state.project.project_type):
             self._show_details()
         else:
             self._hide_details()
 
-    def _set_engineering_configuration_visibility(self) -> None:
-        if not hasattr(self, "_engineering_start_row"):
-            return
-        show = show_project_engineering_configuration(self.state.project.project_type)
+    def _set_row_range_visibility(self, start_row: int, end_row: int, show: bool) -> None:
         for widget in self.form.winfo_children():
             try:
                 info = widget.grid_info()
                 if not info:
                     continue
                 row = int(info.get("row", -1))
-                if self._engineering_start_row <= row <= self._engineering_end_row:
+                if start_row <= row <= end_row:
                     if show:
                         widget.grid()
                     else:
                         widget.grid_remove()
             except Exception:
                 pass
+
+    def _set_engineering_configuration_visibility(self) -> None:
+        if not hasattr(self, "_engineering_start_row"):
+            return
+        show = show_project_engineering_configuration(self.state.project.project_type)
+        self._set_row_range_visibility(
+            self._engineering_start_row,
+            self._engineering_end_row,
+            show,
+        )
+
+    def _set_report_signoff_visibility(self) -> None:
+        if not hasattr(self, "_signoff_start_row"):
+            return
+        self._set_row_range_visibility(
+            self._signoff_start_row,
+            self._signoff_end_row,
+            show_report_signoff(self.state.project.project_type),
+        )
+
+    def _apply_section_visibility(self) -> None:
+        """Apply independent visibility rules for engineering config and sign-off."""
+        self._set_engineering_configuration_visibility()
+        self._set_report_signoff_visibility()
+
+    def section_rows_visible(self, start_row: int, end_row: int) -> bool:
+        """Return True when every widget in the row range is currently mapped."""
+        visible = False
+        for widget in self.form.winfo_children():
+            try:
+                info = widget.grid_info()
+                if not info:
+                    continue
+                row = int(info.get("row", -1))
+                if start_row <= row <= end_row:
+                    visible = True
+                    if not widget.winfo_ismapped():
+                        return False
+            except Exception:
+                pass
+        return visible
 
     def _update_workflow_hint(self) -> None:
         if not hasattr(self, "workflow_hint"):
@@ -463,7 +511,7 @@ class ProjectPage(ScrollablePage):
         if hasattr(self, "approved_var"):
             self.approved_var.set(project.revision.approved_by or "Omkar")
 
-        self._set_engineering_configuration_visibility()
+        self._apply_section_visibility()
         if is_project_type_set(project.project_type):
             self._show_details()
         else:
