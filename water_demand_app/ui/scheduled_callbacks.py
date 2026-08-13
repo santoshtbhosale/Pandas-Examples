@@ -33,6 +33,45 @@ def safe_widget_callback(widget: Any, callback: Callable[[], None]) -> Callable[
     def wrapper() -> None:
         if not widget_is_alive(widget):
             return
-        callback()
+        try:
+            callback()
+        except tk.TclError:
+            return
 
     return wrapper
+
+
+def safe_entry_text(entry: Any) -> str:
+    if not widget_is_alive(entry):
+        return ""
+    try:
+        return entry.get()
+    except tk.TclError:
+        return ""
+
+
+def safe_set_entry_text(entry: Any, value: str) -> None:
+    if not widget_is_alive(entry):
+        return
+    text = value or ""
+    try:
+        current = entry.get()
+    except tk.TclError:
+        return
+    if current == text:
+        return
+    try:
+        entry.delete(0, "end")
+        if text:
+            entry.insert(0, text)
+    except tk.TclError:
+        return
+
+
+def safe_stringvar_set(var: Any, value: str, *, widget: Any = None) -> None:
+    if widget is not None and not widget_is_alive(widget):
+        return
+    try:
+        var.set(value)
+    except tk.TclError:
+        return

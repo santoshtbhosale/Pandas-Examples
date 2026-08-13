@@ -24,7 +24,7 @@ from services.lookup_db import next_project_number, upsert_client
 from ui.app_state import AppState
 from ui.components.scrollable_frame import ScrollablePage
 from ui.components.validation import ValidationError, validate_positive_int, validate_required
-from ui.scheduled_callbacks import cancel_after, widget_is_alive
+from ui.scheduled_callbacks import cancel_after, safe_entry_text, safe_set_entry_text, safe_stringvar_set, safe_widget_callback, widget_is_alive
 
 FORM_PAD_X = 16
 FORM_ROW_PAD_Y = 6
@@ -352,12 +352,11 @@ class ProjectPage(ScrollablePage):
             return
         config = self.building_config_var.get().strip()
         _, height = parse_building_config(config)
-        if height > 0 and not self.height_entry.get().strip():
-            self.height_entry.delete(0, "end")
-            self.height_entry.insert(0, str(int(height)))
+        if height > 0 and not safe_entry_text(self.height_entry).strip():
+            safe_set_entry_text(self.height_entry, str(int(height)))
         self.state.project.building_config = config
         try:
-            self.state.project.building_height_m = float(self.height_entry.get() or height or 0)
+            self.state.project.building_height_m = float(safe_entry_text(self.height_entry) or height or 0)
         except ValueError:
             pass
         self.schedule_auto_calculate(self.state)
@@ -410,7 +409,10 @@ class ProjectPage(ScrollablePage):
             self.on_next()
 
             cancel_after(self, self._deferred_sync_job)
-            self._deferred_sync_job = self.after(100, self._deferred_post_navigation_sync)
+            self._deferred_sync_job = self.after(
+                100,
+                safe_widget_callback(self, self._deferred_post_navigation_sync),
+            )
         except ValidationError as exc:
             messagebox.showerror("Validation Error", exc.message)
         except (ValueError, TypeError) as exc:
@@ -444,35 +446,27 @@ class ProjectPage(ScrollablePage):
             entry = self.entries.get(key)
             if entry is not None:
                 value = getattr(project, key, "") or ""
-                if entry.get() != value:
-                    entry.delete(0, "end")
-                    entry.insert(0, value)
+                safe_set_entry_text(entry, value)
 
         if hasattr(self, "building_config_var"):
-            self.building_config_var.set(project.building_config or "G+7")
+            safe_stringvar_set(self.building_config_var, project.building_config or "G+7")
         if hasattr(self, "height_entry"):
             height = project.building_height_m or 0
-            current = self.height_entry.get()
             target = str(int(height)) if float(height).is_integer() else str(height)
-            if current != target:
-                self.height_entry.delete(0, "end")
-                self.height_entry.insert(0, target)
+            safe_set_entry_text(self.height_entry, target)
         if hasattr(self, "wings_entry"):
-            target = str(project.num_wings or 1)
-            if self.wings_entry.get() != target:
-                self.wings_entry.delete(0, "end")
-                self.wings_entry.insert(0, target)
+            safe_set_entry_text(self.wings_entry, str(project.num_wings or 1))
         if hasattr(self, "building_type_var"):
-            self.building_type_var.set(project.building_type or BUILDING_TYPES[0])
+            safe_stringvar_set(self.building_type_var, project.building_type or BUILDING_TYPES[0])
 
         if hasattr(self, "engineer_var"):
-            self.engineer_var.set(project.engineer_name or "Akash")
+            safe_stringvar_set(self.engineer_var, project.engineer_name or "Akash")
         if hasattr(self, "prepared_var"):
-            self.prepared_var.set(project.revision.prepared_by or "Akash")
+            safe_stringvar_set(self.prepared_var, project.revision.prepared_by or "Akash")
         if hasattr(self, "checked_var"):
-            self.checked_var.set(project.revision.checked_by or "Akash")
+            safe_stringvar_set(self.checked_var, project.revision.checked_by or "Akash")
         if hasattr(self, "approved_var"):
-            self.approved_var.set(project.revision.approved_by or "Omkar")
+            safe_stringvar_set(self.approved_var, project.revision.approved_by or "Omkar")
 
         self._apply_section_visibility()
         if is_project_type_set(project.project_type):

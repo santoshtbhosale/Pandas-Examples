@@ -45,7 +45,7 @@ from ui.components.preview_dialog import PreviewDialog
 from ui.components.result_table import ResultTableView
 from ui.components.scrollable_frame import ScrollablePage
 from ui.components.validation import ValidationError, validate_positive_float, validate_required
-from ui.scheduled_callbacks import cancel_after, widget_is_alive
+from ui.scheduled_callbacks import cancel_after, safe_widget_callback, widget_is_alive
 from ui.pages.commercial_page import CommercialPage
 from ui.pages.final_page import FinalPage
 from ui.pages.project_page import ProjectPage
@@ -92,10 +92,20 @@ def _destroy_page(page) -> None:
             cancel()
         except Exception:
             pass
+    master = None
+    try:
+        master = page.master
+    except Exception:
+        pass
     try:
         page.destroy()
     except Exception:
         pass
+    if master is not None and widget_is_alive(master):
+        try:
+            master.update_idletasks()
+        except Exception:
+            pass
 
 
 class ProjectWorkspace(ctk.CTkFrame):
@@ -163,37 +173,42 @@ class ProjectWorkspace(ctk.CTkFrame):
         self._pages_built = True
         self.show("Project")
 
-    def reset_for_new_type(self) -> None:
-        """Drop cached workflow pages before a new project/type is shown."""
+    def suspend_pending_work(self) -> None:
+        """Cancel timers while the workspace is hidden (e.g. on the type selector)."""
         cancel_after(self, self._calc_job)
         self._calc_job = None
+        for page in self.pages.values():
+            cancel = getattr(page, "cancel_pending_callbacks", None)
+            if callable(cancel):
+                try:
+                    cancel()
+                except Exception:
+                    pass
+
+    def _teardown_pages(self) -> None:
+        """Destroy all workflow pages and flush pending Tk events."""
+        self.suspend_pending_work()
         for page in list(self.pages.values()):
             _destroy_page(page)
         self.pages.clear()
+
+    def reset_for_new_type(self) -> None:
+        """Drop cached workflow pages before a new project/type is shown."""
+        self._teardown_pages()
         self._current_page = "Project"
         self._calc_dirty = True
 
     def apply_state(self, state: AppState) -> None:
         """Install project state and reset stale lazily-built pages."""
-        cancel_after(self, self._calc_job)
-        self._calc_job = None
-        for page in list(self.pages.values()):
-            _destroy_page(page)
-        self.pages.clear()
+        self._teardown_pages()
         self.app_state = state
         self._current_page = "Project"
         self._calc_dirty = True
         self._build_pages()
         self._rebuild_sidebar()
-        project_page = self.pages.get("Project")
-        if project_page is not None:
-            if hasattr(project_page, "refresh"):
-                project_page.refresh()
-            if is_project_type_set(self.app_state.project.project_type) and hasattr(project_page, "_show_details"):
-                project_page._show_details()
         self.show("Project")
         if widget_is_alive(self):
-            self._calc_job = self.after(80, self._run_scheduled_calc)
+            self._calc_job = self.after(80, safe_widget_callback(self, self._run_scheduled_calc))
         if self.on_header_update:
             self.on_header_update()
 
@@ -584,7 +599,7 @@ class ProjectWorkspace(ctk.CTkFrame):
             elif nxt == "Preview":
                 self._refresh_preview(silent=True)
 
-            self.after(150, lambda: self._schedule_calc(50))
+            self.after(150, safe_widget_callback(self, lambda: self._schedule_calc(50)))
 
         except Exception as exc:
             traceback.print_exc()
@@ -1039,7 +1054,7 @@ class ProjectWorkspace(ctk.CTkFrame):
         self._calc_dirty = True
         cancel_after(self, self._calc_job)
         if widget_is_alive(self):
-            self._calc_job = self.after(delay_ms, self._run_scheduled_calc)
+            self._calc_job = self.after(delay_ms, safe_widget_callback(self, self._run_scheduled_calc))
 
     def _run_scheduled_calc(self) -> None:
         self._calc_job = None

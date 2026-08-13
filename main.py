@@ -5333,9 +5333,48 @@ def safe_widget_callback(widget: Any, callback: Callable[[], None]) -> Callable[
     def wrapper() -> None:
         if not widget_is_alive(widget):
             return
-        callback()
+        try:
+            callback()
+        except tk.TclError:
+            return
 
     return wrapper
+
+
+def safe_entry_text(entry: Any) -> str:
+    if not widget_is_alive(entry):
+        return ""
+    try:
+        return entry.get()
+    except tk.TclError:
+        return ""
+
+
+def safe_set_entry_text(entry: Any, value: str) -> None:
+    if not widget_is_alive(entry):
+        return
+    text = value or ""
+    try:
+        current = entry.get()
+    except tk.TclError:
+        return
+    if current == text:
+        return
+    try:
+        entry.delete(0, "end")
+        if text:
+            entry.insert(0, text)
+    except tk.TclError:
+        return
+
+
+def safe_stringvar_set(var: Any, value: str, *, widget: Any = None) -> None:
+    if widget is not None and not widget_is_alive(widget):
+        return
+    try:
+        var.set(value)
+    except tk.TclError:
+        return
 
 # ==================== ui/app_state.py ====================
 
@@ -5446,7 +5485,7 @@ PAGE_BG = "#F0F2F5"
 class ScrollablePage(ctk.CTkScrollableFrame):
     """Full-size scrollable page shell used by every wizard screen."""
 
-    _PENDING_JOB_ATTRS = ("_resize_after_id", "_auto_calc_after_id")
+    _PENDING_JOB_ATTRS = ("_auto_calc_after_id",)
 
     def __init__(self, master, **kwargs) -> None:
         kwargs.setdefault("fg_color", PAGE_BG)
@@ -5454,11 +5493,7 @@ class ScrollablePage(ctk.CTkScrollableFrame):
         kwargs.setdefault("border_width", 0)
         kwargs.setdefault("label_text", "")
         super().__init__(master, **kwargs)
-        self._resize_after_id: str | None = None
         self._auto_calc_after_id: str | None = None
-        self.bind("<Configure>", self._on_self_configure, add="+")
-        self.bind("<Map>", self._schedule_resize, add="+")
-        self._schedule_after_idle(self._sync_to_parent)
 
     def cancel_pending_callbacks(self) -> None:
         for attr in self._PENDING_JOB_ATTRS:
@@ -5471,48 +5506,6 @@ class ScrollablePage(ctk.CTkScrollableFrame):
             super().destroy()
         except Exception:
             pass
-
-    def grid(self, **kwargs):
-        kwargs.setdefault("sticky", "nsew")
-        super().grid(**kwargs)
-        self._schedule_resize()
-
-    def pack(self, **kwargs):
-        kwargs.setdefault("fill", "both")
-        kwargs.setdefault("expand", True)
-        super().pack(**kwargs)
-        self._schedule_resize()
-
-    def _schedule_after_idle(self, callback: Callable[[], None]) -> None:
-        cancel_after(self, self._resize_after_id)
-        wrapped = safe_widget_callback(self, callback)
-        self._resize_after_id = self.after_idle(wrapped)
-
-    def _on_self_configure(self, event) -> None:
-        if event.widget is not self or not widget_is_alive(self):
-            return
-        self._schedule_resize()
-
-    def _schedule_resize(self, _event=None) -> None:
-        if not widget_is_alive(self):
-            return
-        cancel_after(self, self._resize_after_id)
-        self._resize_after_id = self.after_idle(safe_widget_callback(self, self._sync_to_parent))
-
-    def _sync_to_parent(self) -> None:
-        self._resize_after_id = None
-        if not widget_is_alive(self):
-            return
-        parent = self.master
-        if parent is None or not widget_is_alive(parent):
-            return
-        width = parent.winfo_width()
-        height = parent.winfo_height()
-        if width > 20 and height > 20:
-            try:
-                self.configure(width=width, height=height)
-            except Exception:
-                pass
 
     def schedule_auto_calculate(
         self,
@@ -6818,12 +6811,11 @@ class ProjectPage(ScrollablePage):
             return
         config = self.building_config_var.get().strip()
         _, height = parse_building_config(config)
-        if height > 0 and not self.height_entry.get().strip():
-            self.height_entry.delete(0, "end")
-            self.height_entry.insert(0, str(int(height)))
+        if height > 0 and not safe_entry_text(self.height_entry).strip():
+            safe_set_entry_text(self.height_entry, str(int(height)))
         self.state.project.building_config = config
         try:
-            self.state.project.building_height_m = float(self.height_entry.get() or height or 0)
+            self.state.project.building_height_m = float(safe_entry_text(self.height_entry) or height or 0)
         except ValueError:
             pass
         self.schedule_auto_calculate(self.state)
@@ -6876,7 +6868,10 @@ class ProjectPage(ScrollablePage):
             self.on_next()
 
             cancel_after(self, self._deferred_sync_job)
-            self._deferred_sync_job = self.after(100, self._deferred_post_navigation_sync)
+            self._deferred_sync_job = self.after(
+                100,
+                safe_widget_callback(self, self._deferred_post_navigation_sync),
+            )
         except ValidationError as exc:
             messagebox.showerror("Validation Error", exc.message)
         except (ValueError, TypeError) as exc:
@@ -6910,35 +6905,27 @@ class ProjectPage(ScrollablePage):
             entry = self.entries.get(key)
             if entry is not None:
                 value = getattr(project, key, "") or ""
-                if entry.get() != value:
-                    entry.delete(0, "end")
-                    entry.insert(0, value)
+                safe_set_entry_text(entry, value)
 
         if hasattr(self, "building_config_var"):
-            self.building_config_var.set(project.building_config or "G+7")
+            safe_stringvar_set(self.building_config_var, project.building_config or "G+7")
         if hasattr(self, "height_entry"):
             height = project.building_height_m or 0
-            current = self.height_entry.get()
             target = str(int(height)) if float(height).is_integer() else str(height)
-            if current != target:
-                self.height_entry.delete(0, "end")
-                self.height_entry.insert(0, target)
+            safe_set_entry_text(self.height_entry, target)
         if hasattr(self, "wings_entry"):
-            target = str(project.num_wings or 1)
-            if self.wings_entry.get() != target:
-                self.wings_entry.delete(0, "end")
-                self.wings_entry.insert(0, target)
+            safe_set_entry_text(self.wings_entry, str(project.num_wings or 1))
         if hasattr(self, "building_type_var"):
-            self.building_type_var.set(project.building_type or BUILDING_TYPES[0])
+            safe_stringvar_set(self.building_type_var, project.building_type or BUILDING_TYPES[0])
 
         if hasattr(self, "engineer_var"):
-            self.engineer_var.set(project.engineer_name or "Akash")
+            safe_stringvar_set(self.engineer_var, project.engineer_name or "Akash")
         if hasattr(self, "prepared_var"):
-            self.prepared_var.set(project.revision.prepared_by or "Akash")
+            safe_stringvar_set(self.prepared_var, project.revision.prepared_by or "Akash")
         if hasattr(self, "checked_var"):
-            self.checked_var.set(project.revision.checked_by or "Akash")
+            safe_stringvar_set(self.checked_var, project.revision.checked_by or "Akash")
         if hasattr(self, "approved_var"):
-            self.approved_var.set(project.revision.approved_by or "Omkar")
+            safe_stringvar_set(self.approved_var, project.revision.approved_by or "Omkar")
 
         self._apply_section_visibility()
         if is_project_type_set(project.project_type):
@@ -7928,10 +7915,20 @@ def _destroy_page(page) -> None:
             cancel()
         except Exception:
             pass
+    master = None
+    try:
+        master = page.master
+    except Exception:
+        pass
     try:
         page.destroy()
     except Exception:
         pass
+    if master is not None and widget_is_alive(master):
+        try:
+            master.update_idletasks()
+        except Exception:
+            pass
 
 
 class ProjectWorkspace(ctk.CTkFrame):
@@ -7999,37 +7996,42 @@ class ProjectWorkspace(ctk.CTkFrame):
         self._pages_built = True
         self.show("Project")
 
-    def reset_for_new_type(self) -> None:
-        """Drop cached workflow pages before a new project/type is shown."""
+    def suspend_pending_work(self) -> None:
+        """Cancel timers while the workspace is hidden (e.g. on the type selector)."""
         cancel_after(self, self._calc_job)
         self._calc_job = None
+        for page in self.pages.values():
+            cancel = getattr(page, "cancel_pending_callbacks", None)
+            if callable(cancel):
+                try:
+                    cancel()
+                except Exception:
+                    pass
+
+    def _teardown_pages(self) -> None:
+        """Destroy all workflow pages and flush pending Tk events."""
+        self.suspend_pending_work()
         for page in list(self.pages.values()):
             _destroy_page(page)
         self.pages.clear()
+
+    def reset_for_new_type(self) -> None:
+        """Drop cached workflow pages before a new project/type is shown."""
+        self._teardown_pages()
         self._current_page = "Project"
         self._calc_dirty = True
 
     def apply_state(self, state: AppState) -> None:
         """Install project state and reset stale lazily-built pages."""
-        cancel_after(self, self._calc_job)
-        self._calc_job = None
-        for page in list(self.pages.values()):
-            _destroy_page(page)
-        self.pages.clear()
+        self._teardown_pages()
         self.app_state = state
         self._current_page = "Project"
         self._calc_dirty = True
         self._build_pages()
         self._rebuild_sidebar()
-        project_page = self.pages.get("Project")
-        if project_page is not None:
-            if hasattr(project_page, "refresh"):
-                project_page.refresh()
-            if is_project_type_set(self.app_state.project.project_type) and hasattr(project_page, "_show_details"):
-                project_page._show_details()
         self.show("Project")
         if widget_is_alive(self):
-            self._calc_job = self.after(80, self._run_scheduled_calc)
+            self._calc_job = self.after(80, safe_widget_callback(self, self._run_scheduled_calc))
         if self.on_header_update:
             self.on_header_update()
 
@@ -8419,7 +8421,7 @@ class ProjectWorkspace(ctk.CTkFrame):
             elif nxt == "Preview":
                 self._refresh_preview(silent=True)
 
-            self.after(150, lambda: self._schedule_calc(50))
+            self.after(150, safe_widget_callback(self, lambda: self._schedule_calc(50)))
 
         except Exception as exc:
             traceback.print_exc()
@@ -8874,7 +8876,7 @@ class ProjectWorkspace(ctk.CTkFrame):
         self._calc_dirty = True
         cancel_after(self, self._calc_job)
         if widget_is_alive(self):
-            self._calc_job = self.after(delay_ms, self._run_scheduled_calc)
+            self._calc_job = self.after(delay_ms, safe_widget_callback(self, self._run_scheduled_calc))
 
     def _run_scheduled_calc(self) -> None:
         self._calc_job = None
@@ -9296,7 +9298,6 @@ class Application(ctk.CTk):
         ws._calc_dirty = True
         ws.apply_state(state)
         ws._pages_built = True
-        ws.show("Project")
 
         self._mode = "project"
         if state.project.project_id:
@@ -9325,6 +9326,9 @@ class Application(ctk.CTk):
         self._mode = "type_selector"
         self._clear_body()
         if self._workspace is not None:
+            suspend = getattr(self._workspace, "suspend_pending_work", None)
+            if callable(suspend):
+                suspend()
             self._workspace.grid_remove()
         if self._dashboard is not None:
             self._dashboard.grid_remove()

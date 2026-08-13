@@ -11,7 +11,7 @@ APP_ROOT = os.path.join(WORKSPACE_ROOT, "water_demand_app")
 if APP_ROOT not in sys.path:
     sys.path.insert(0, APP_ROOT)
 
-from config.nbc_2026 import PROJECT_TYPE_COMMERCIAL, PROJECT_TYPE_RESIDENTIAL, project_type_label
+from config.nbc_2026 import PROJECT_TYPE_COMMERCIAL, PROJECT_TYPE_RESIDENTIAL, PROJECT_TYPE_WAREHOUSE, project_type_label
 from services.project_service import create_new_project_state
 from ui.components.scrollable_frame import ScrollablePage
 from ui.scheduled_callbacks import widget_is_alive
@@ -141,6 +141,21 @@ class TestProjectTypeNavigationCallbacks(unittest.TestCase):
             app.update_idletasks()
             self.root.update_idletasks()
             self.assertNotEqual(app._workspace._current_page, "Project")
+        finally:
+            app.destroy()
+
+    def test_warehouse_type_navigation_without_invalid_command(self) -> None:
+        app = self.Application()
+        app.withdraw()
+        try:
+            app._start_new_project()
+            app.update_idletasks()
+            self._select_type_and_continue(app, project_type_label(PROJECT_TYPE_WAREHOUSE))
+            self.root.update_idletasks()
+            page = app._workspace.pages["Project"]
+            self.assertTrue(widget_is_alive(page))
+            self.assertEqual(app._workspace._current_page, "Project")
+            self.assertTrue(page._details_visible)
         finally:
             app.destroy()
 

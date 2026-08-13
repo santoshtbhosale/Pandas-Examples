@@ -236,7 +236,6 @@ class Application(ctk.CTk):
         ws._calc_dirty = True
         ws.apply_state(state)
         ws._pages_built = True
-        ws.show("Project")
 
         self._mode = "project"
         if state.project.project_id:
@@ -265,6 +264,9 @@ class Application(ctk.CTk):
         self._mode = "type_selector"
         self._clear_body()
         if self._workspace is not None:
+            suspend = getattr(self._workspace, "suspend_pending_work", None)
+            if callable(suspend):
+                suspend()
             self._workspace.grid_remove()
         if self._dashboard is not None:
             self._dashboard.grid_remove()
