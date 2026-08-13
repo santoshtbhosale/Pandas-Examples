@@ -98,6 +98,27 @@ class TestUIUXV2(unittest.TestCase):
             if os.path.isfile(out_path):
                 os.unlink(out_path)
 
+    def test_no_planetcode_branding_in_dashboard(self) -> None:
+        import inspect
+        from ui import dashboard
+
+        source = inspect.getsource(dashboard.MainDashboard._build)
+        self.assertNotIn("PLANETCODE", source.upper())
+        self.assertNotIn("PlanetCode", source)
+
+    def test_app_title_american_edge(self) -> None:
+        from app_launcher import APP_TITLE
+
+        self.assertIn("American Edge Engineers", APP_TITLE)
+        self.assertNotIn("PlanetCode", APP_TITLE)
+
+    def test_engineering_config_conditional(self) -> None:
+        from config.nbc_2026 import PROJECT_TYPE_COMMERCIAL, PROJECT_TYPE_RESIDENTIAL
+        from ui.pages.project_page import show_project_engineering_configuration
+
+        self.assertTrue(show_project_engineering_configuration(PROJECT_TYPE_RESIDENTIAL))
+        self.assertFalse(show_project_engineering_configuration(PROJECT_TYPE_COMMERCIAL))
+
     def test_excel_still_generates(self) -> None:
         project = ProjectData(project_name="UX TEST", project_type=PROJECT_TYPE_RESIDENTIAL)
         with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
@@ -154,13 +175,42 @@ class TestNavigationPerformance(unittest.TestCase):
             with self.subTest(page=page):
                 self.assertLess(elapsed_ms, limit_ms, f"{page} navigation took {elapsed_ms:.1f}ms")
 
-    def test_apply_state_preserves_page_count(self) -> None:
+    def test_apply_state_resets_to_project_page(self) -> None:
+        from config.nbc_2026 import PROJECT_TYPE_COMMERCIAL, PROJECT_TYPE_RESIDENTIAL
         from ui.app_state import AppState
 
-        count_before = len(self.workspace.pages)
-        self.workspace.apply_state(AppState())
-        self.assertEqual(len(self.workspace.pages), count_before)
-        self.assertTrue(self.workspace._pages_built)
+        state = AppState()
+        state.project.project_type = PROJECT_TYPE_RESIDENTIAL
+        self.workspace.apply_state(state)
+        self.assertIn("Project", self.workspace.pages)
+        self.assertEqual(self.workspace._current_page, "Project")
+
+        state.project.project_type = PROJECT_TYPE_COMMERCIAL
+        self.workspace.show("Commercial")
+        self.assertIn("Commercial", self.workspace.pages)
+
+        state2 = AppState()
+        state2.project.project_type = PROJECT_TYPE_COMMERCIAL
+        self.workspace.apply_state(state2)
+        self.assertIn("Project", self.workspace.pages)
+        self.assertNotIn("Residential", self.workspace.pages)
+
+    def test_project_type_switch_navigation(self) -> None:
+        from config.nbc_2026 import PROJECT_TYPE_COMMERCIAL, PROJECT_TYPE_RESIDENTIAL
+        from ui.app_state import AppState
+
+        state = AppState()
+        state.project.project_type = PROJECT_TYPE_RESIDENTIAL
+        self.workspace.apply_state(state)
+        self.workspace._wizard_show_next("Project")
+        self.workspace.update_idletasks()
+        self.assertEqual(self.workspace._current_page, "Residential")
+
+        state.project.project_type = PROJECT_TYPE_COMMERCIAL
+        self.workspace.apply_state(state)
+        self.workspace._wizard_show_next("Project")
+        self.workspace.update_idletasks()
+        self.assertEqual(self.workspace._current_page, "Commercial")
 
 
 if __name__ == "__main__":

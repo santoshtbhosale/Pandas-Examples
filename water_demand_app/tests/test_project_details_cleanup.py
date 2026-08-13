@@ -52,8 +52,8 @@ class TestProjectDetailsCleanup(unittest.TestCase):
         for field in ("project_name", "client_name"):
             self.assertIn(field, self.page.entries)
 
-    def test_has_project_type_combo(self) -> None:
-        self.assertTrue(hasattr(self.page, "type_combo"))
+    def test_has_project_type_display(self) -> None:
+        self.assertTrue(hasattr(self.page, "project_type_display"))
 
     def test_has_reference_and_date_labels(self) -> None:
         self.assertTrue(hasattr(self.page, "project_no_label"))

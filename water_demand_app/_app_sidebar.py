@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import traceback
 from datetime import datetime
 from tkinter import filedialog, messagebox
 
@@ -19,7 +20,7 @@ from config.nbc_2026 import (
     project_type_label,
     show_residential_section,
 )
-from config.page_visibility import visible_pages, wizard_first_page_after_project, wizard_next_page
+from config.page_visibility import WIZARD_PAGE_ORDER, visible_pages, wizard_next_page
 from services.automation import sync_hvac, sync_landscape, sync_pages_to_state, sync_swimming_pool
 from services.database import DB_PATH, build_project_snapshot, init_db, parse_project_snapshot
 from services.excel_exporter import export_excel
@@ -54,20 +55,31 @@ if not os.path.exists(LOGO_PATH):
 # ============================================================
 
 def _raise_page(page) -> None:
-    """Bring a page (especially CTkScrollableFrame) to the front."""
-    if hasattr(page, "lift"):
-        page.lift()
-    elif hasattr(page, "_parent_frame"):
-        page._parent_frame.tkraise()
-    else:
+    """Reliably bring a page to the front in the shared workspace container."""
+    try:
+        page.grid(row=0, column=0, sticky="nsew")
+    except Exception:
+        pass
+    try:
         page.tkraise()
+    except Exception:
+        try:
+            page.lift()
+        except Exception:
+            pass
+    try:
+        parent_frame = getattr(page, "_parent_frame", None)
+        if parent_frame is not None:
+            parent_frame.tkraise()
+    except Exception:
+        pass
 
 
 class ProjectWorkspace(ctk.CTkFrame):
     NAV = [
-        ("Project", "1. Project Details"),
-        ("Residential", "2. Residential"),
-        ("Commercial", "3. Commercial"),
+        ("Project", "Project Details"),
+        ("Residential", "Residential"),
+        ("Commercial", "Commercial"),
         ("Hospital", "Hospital Details"),
         ("Hotel", "Hotel / Kitchen"),
         ("FoodCourt", "Food Court"),
@@ -93,6 +105,7 @@ class ProjectWorkspace(ctk.CTkFrame):
         on_header_update=None,
         current_user=None,
         on_logout=None,
+        on_new_project=None,
     ):
         super().__init__(master, fg_color="#F0F2F5", corner_radius=0)
         self.on_home = on_home
@@ -100,6 +113,7 @@ class ProjectWorkspace(ctk.CTkFrame):
         self.on_header_update = on_header_update
         self.current_user = current_user
         self.on_logout = on_logout
+        self.on_new_project = on_new_project
         self.app_state = initial_state if initial_state is not None else AppState()
         self._last_autosave_at = ""
         self._pages_built = False
@@ -124,22 +138,48 @@ class ProjectWorkspace(ctk.CTkFrame):
         self._pages_built = True
         self.show("Project")
 
+    def reset_for_new_type(self) -> None:
+        """Drop cached workflow pages before a new project/type is shown."""
+        for key, page in list(self.pages.items()):
+            try:
+                page.destroy()
+            except Exception:
+                pass
+        self.pages.clear()
+        self._current_page = "Project"
+        self._calc_dirty = True
+        if self._calc_job is not None:
+            try:
+                self.after_cancel(self._calc_job)
+            except Exception:
+                pass
+            self._calc_job = None
+
     def apply_state(self, state: AppState) -> None:
-        """Reset project data and refresh widgets without destroying pages."""
+        """Install project state and reset stale lazily-built pages."""
+        for key, page in list(self.pages.items()):
+            try:
+                page.destroy()
+            except Exception:
+                pass
+        self.pages.clear()
         self.app_state = state
         self._calc_dirty = True
-        for page in self.pages.values():
-            if hasattr(page, "state"):
-                page.state = state
+        self._build_pages()
         self._rebuild_sidebar()
-        if "Project" in self.pages and hasattr(self.pages["Project"], "refresh"):
-            self.pages["Project"].refresh()
-        for key in ("Residential", "Commercial", "Report"):
-            page = self.pages.get(key)
-            if page and hasattr(page, "refresh"):
-                page.refresh()
-        self._calc()
+        project_page = self.pages.get("Project")
+        if project_page is not None:
+            if hasattr(project_page, "refresh"):
+                project_page.refresh()
+            if is_project_type_set(self.app_state.project.project_type) and hasattr(project_page, "_show_details"):
+                project_page._show_details()
         self.show("Project")
+        if self._calc_job is not None:
+            try:
+                self.after_cancel(self._calc_job)
+            except Exception:
+                pass
+        self._calc_job = self.after(80, self._run_scheduled_calc)
         if self.on_header_update:
             self.on_header_update()
 
@@ -179,12 +219,11 @@ class ProjectWorkspace(ctk.CTkFrame):
         sb.grid_propagate(False)
         ctk.CTkLabel(
             sb,
-            text="AMERICAN EDGE\nENGINEERS",
+            text="Project Navigation",
             font=("Arial", 14, "bold"),
-            text_color=BRAND_ORANGE,
+            text_color="white",
             justify="center",
-        ).pack(pady=(20, 5))
-        ctk.CTkLabel(sb, text="Water Demand Generator", font=("Arial", 10), text_color="white").pack(pady=(0, 10))
+        ).pack(pady=(20, 12))
         if self.on_home:
             ctk.CTkButton(
                 sb,
@@ -252,7 +291,7 @@ class ProjectWorkspace(ctk.CTkFrame):
         ctk.CTkButton(sb, text="Open Project", fg_color="#2980B9", command=self._open_db).pack(
             side="bottom", fill="x", padx=10, pady=4
         )
-        ctk.CTkButton(sb, text="New Project", fg_color="#27AE60", command=self._new).pack(
+        ctk.CTkButton(sb, text="New Project", fg_color="#27AE60", command=self.on_new_project if self.on_new_project else self._new).pack(
             side="bottom", fill="x", padx=10, pady=(4, 4 if self.on_logout else 15)
         )
         if self.on_logout:
@@ -288,62 +327,92 @@ class ProjectWorkspace(ctk.CTkFrame):
                 )
 
     def _build_pages(self) -> None:
-        self.pages["Project"] = ProjectPage(
-            self.container,
-            self.app_state,
-            on_next=self._next_from_project,
-            on_type_change=self._on_project_type_changed,
-        )
-        self.pages["Residential"] = ResidentialPage(
-            self.container,
-            self.app_state,
-            on_next=self._next_from_residential,
-            on_back=lambda: self.show("Project"),
-        )
-        self.pages["Commercial"] = CommercialPage(
-            self.container,
-            self.app_state,
-            on_next=lambda: self._wizard_show_next("Commercial"),
-            on_back=self._back_from_commercial,
-        )
-        self.pages["Hospital"] = self._placeholder_page(
-            "Hospital Details",
-            "Enter hospital bed counts and medical water requirements.\n"
-            "Use Commercial page with Hospital occupancy for NBC calculations.",
-            lambda: self._wizard_show_next("Hospital"),
-        )
-        self.pages["Hotel"] = self._placeholder_page(
-            "Hotel / Kitchen / Laundry",
-            "Hotel kitchen and laundry water demands are calculated from commercial occupancy rules.\n"
-            "Add Hotel-type units on the Commercial page.",
-            lambda: self._wizard_show_next("Hotel"),
-        )
-        self.pages["FoodCourt"] = self._placeholder_page(
-            "Food Court",
-            "Food court water demand uses Restaurant occupancy (÷1.4 population density).\n"
-            "Add Restaurant units on the Commercial page.",
-            lambda: self._wizard_show_next("FoodCourt"),
-        )
-        self.pages["Landscape"] = self._form_page("Landscape (NBC-2026)", self._landscape_ui)
-        self.pages["Swimming"] = self._form_page("Swimming Pool", self._pool_ui)
-        self.pages["HVAC"] = self._form_page("HVAC Water", self._hvac_ui)
-        self.pages["UGT"] = self._form_page("UGT / Fire Tank", self._ugt_ui)
-        self.pages["Sewage"] = self._sewage_page()
-        self.pages["OHT"] = self._oht_page()
-        self.pages["STP"] = self._stp_page()
-        self.pages["SolidWaste"] = self._solid_waste_page()
-        self.pages["Preview"] = self._preview_page()
-        self.pages["Report"] = FinalPage(
-            self.container,
-            self.app_state,
-            on_back=lambda: self.show("Preview"),
-            on_generate_all=self._generate_report_all,
-        )
-        self.pages["Settings"] = self._settings_page()
-        for page in self.pages.values():
-            page.grid(row=0, column=0, sticky="nsew")
+        """Build only the lightweight Project Details page initially."""
+        if "Project" not in self.pages:
+            self.pages["Project"] = ProjectPage(
+                self.container,
+                self.app_state,
+                on_next=self._next_from_project,
+                on_type_change=self._on_project_type_changed,
+                on_back=self.on_home if self.on_home else (self.on_new_project if self.on_new_project else None),
+            )
+        page = self.pages.get("Project")
+        if page is not None:
+            try:
+                page.grid(row=0, column=0, sticky="nsew")
+            except Exception:
+                pass
 
-    def _placeholder_page(self, title: str, body: str, on_next):
+    def _build_single_page(self, key: str) -> bool:
+        if key in self.pages:
+            return True
+        visible = visible_pages(self.app_state.project.project_type)
+        if key != "Project" and key not in visible:
+            return False
+
+        if key == "Residential":
+            self.pages[key] = ResidentialPage(
+                self.container, self.app_state,
+                on_next=self._next_from_residential,
+                on_back=lambda: self.show("Project"),
+            )
+        elif key == "Commercial":
+            self.pages[key] = CommercialPage(
+                self.container, self.app_state,
+                on_next=lambda: self._wizard_show_next("Commercial"),
+                on_back=self._back_from_commercial,
+            )
+        elif key == "Hospital":
+            self.pages[key] = self._placeholder_page(
+                "Hospital Details",
+                "Enter hospital bed counts and medical water requirements.\nUse Commercial page with Hospital occupancy for NBC calculations.",
+                lambda: self._wizard_show_next("Hospital"), "Hospital")
+        elif key == "Hotel":
+            self.pages[key] = self._placeholder_page(
+                "Hotel / Kitchen / Laundry",
+                "Hotel kitchen and laundry water demands are calculated from commercial occupancy rules.\nAdd Hotel-type units on the Commercial page.",
+                lambda: self._wizard_show_next("Hotel"), "Hotel")
+        elif key == "FoodCourt":
+            self.pages[key] = self._placeholder_page(
+                "Food Court",
+                "Food court water demand uses Restaurant occupancy (÷1.4 population density).\nAdd Restaurant units on the Commercial page.",
+                lambda: self._wizard_show_next("FoodCourt"), "FoodCourt")
+        elif key == "Landscape":
+            self.pages[key] = self._form_page("Landscape (NBC-2026)", self._landscape_ui, "Landscape")
+        elif key == "Swimming":
+            self.pages[key] = self._form_page("Swimming Pool", self._pool_ui, "Swimming")
+        elif key == "HVAC":
+            self.pages[key] = self._form_page("HVAC Water", self._hvac_ui, "HVAC")
+        elif key == "UGT":
+            self.pages[key] = self._form_page("UGT / Fire Tank", self._ugt_ui, "UGT")
+        elif key == "Sewage":
+            self.pages[key] = self._sewage_page()
+        elif key == "OHT":
+            self.pages[key] = self._oht_page()
+        elif key == "STP":
+            self.pages[key] = self._stp_page()
+        elif key == "SolidWaste":
+            self.pages[key] = self._solid_waste_page()
+        elif key == "Preview":
+            self.pages[key] = self._preview_page()
+        elif key == "Report":
+            self.pages[key] = FinalPage(
+                self.container, self.app_state,
+                on_back=lambda: self.show("Preview"),
+                on_generate_all=self._generate_report_all,
+            )
+        elif key == "Settings":
+            self.pages[key] = self._settings_page()
+        else:
+            return False
+
+        try:
+            self.pages[key].grid(row=0, column=0, sticky="nsew")
+        except Exception:
+            pass
+        return True
+
+    def _placeholder_page(self, title: str, body: str, on_next, page_key: str):
         frame = ScrollablePage(self.container)
         header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
         header.pack(fill="x", padx=5, pady=5)
@@ -351,36 +420,182 @@ class ProjectWorkspace(ctk.CTkFrame):
         ctk.CTkLabel(frame, text=body, font=("Arial", 12), justify="left", wraplength=900).pack(
             anchor="w", padx=20, pady=20
         )
-        ctk.CTkButton(frame, text="Next ->", fg_color=BRAND_ORANGE, command=on_next).pack(pady=12)
+        nav = ctk.CTkFrame(frame, fg_color="transparent")
+        nav.pack(fill="x", padx=16, pady=12)
+        ctk.CTkButton(
+            nav, text="← Back", width=120, fg_color="#7F8C8D",
+            command=lambda pk=page_key: self._wizard_show_previous(pk),
+        ).pack(side="left")
+        ctk.CTkButton(nav, text="Next →", width=140, fg_color=BRAND_ORANGE, command=on_next).pack(side="right")
         return frame
 
+    def _discard_inapplicable_pages(self) -> None:
+        allowed = visible_pages(self.app_state.project.project_type)
+        for key in list(self.pages.keys()):
+            if key == "Project" or key in allowed:
+                continue
+            page = self.pages.pop(key, None)
+            if page is not None:
+                try:
+                    page.destroy()
+                except Exception:
+                    pass
+
     def _on_project_type_changed(self) -> None:
+        self._discard_inapplicable_pages()
         self._rebuild_sidebar()
         if not is_project_type_set(self.app_state.project.project_type):
             self.show("Project")
             if "Project" in self.pages and hasattr(self.pages["Project"], "refresh"):
                 self.pages["Project"].refresh()
             return
-        self._calc()
+        self._schedule_calc(120)
         visible = visible_pages(self.app_state.project.project_type)
         if self._current_page not in visible:
             self.show("Project")
         if "Project" in self.pages and hasattr(self.pages["Project"], "refresh"):
             self.pages["Project"].refresh()
 
-    def _wizard_show_next(self, current: str) -> None:
-        nxt = wizard_next_page(current, self.app_state.project.project_type)
-        if nxt:
-            self.show(nxt)
-        else:
-            self.show("Preview")
+    def _wizard_show_previous(self, current: str) -> None:
+        project_type = self.app_state.project.project_type
+        if not is_project_type_set(project_type):
+            self.show("Project")
+            return
+        pages = visible_pages(project_type)
+        if current not in pages:
+            self.show("Project")
+            return
+        previous = None
+        for key in WIZARD_PAGE_ORDER:
+            if key not in pages:
+                continue
+            if key == current:
+                break
+            previous = key
+        if previous:
+            self._navigate_to_page(previous)
 
-    def _form_page(self, title, builder):
+    def _navigate_to_page(self, target: str) -> bool:
+        project_type = self.app_state.project.project_type
+        if target != "Project" and not is_project_type_set(project_type):
+            self.show("Project")
+            return False
+        allowed = visible_pages(project_type)
+        if target not in allowed:
+            self.show("Project")
+            return False
+        if not self._ensure_page_available(target):
+            return False
+        try:
+            page = self.pages.get(target)
+            if page is None or not page.winfo_exists():
+                if not self._ensure_page_available(target):
+                    return False
+            self.show(target)
+            return self._current_page == target
+        except Exception as exc:
+            traceback.print_exc()
+            messagebox.showerror(
+                "Navigation Error",
+                f"Unable to open the next section. Please check the project information and try again.\n\n{exc}",
+            )
+            return False
+
+    def _wizard_show_next(self, current: str) -> None:
+        try:
+            project_type = self.app_state.project.project_type
+            if not is_project_type_set(project_type):
+                messagebox.showwarning("Project Type", "Please select a project type before continuing.")
+                self.show("Project")
+                return
+
+            pages = visible_pages(project_type)
+            if current not in pages:
+                self.show("Project")
+                return
+
+            nxt = wizard_next_page(current, project_type)
+            if nxt is None:
+                return
+
+            if not self._ensure_page_available(nxt):
+                messagebox.showerror("Navigation Error", f"Unable to open the next section: {nxt}")
+                return
+
+            page = self.pages.get(nxt)
+            if page is None:
+                messagebox.showerror("Navigation Error", f"The next section '{nxt}' could not be opened.")
+                return
+
+            for key, other in list(self.pages.items()):
+                if key == nxt:
+                    continue
+                try:
+                    other.grid_remove()
+                except Exception:
+                    try:
+                        other.pack_forget()
+                    except Exception:
+                        pass
+
+            page.grid(row=0, column=0, sticky="nsew")
+            page.tkraise()
+            try:
+                parent_frame = getattr(page, "_parent_frame", None)
+                if parent_frame is not None:
+                    parent_frame.tkraise()
+            except Exception:
+                pass
+
+            self._current_page = nxt
+            for key, btn in self.nav_btns.items():
+                try:
+                    btn.configure(fg_color=BRAND_ORANGE if key == nxt else "transparent")
+                except Exception:
+                    pass
+
+            if nxt == "STP":
+                self._refresh_stp(silent=True)
+            elif nxt == "Sewage":
+                self._refresh_sewage(silent=True)
+            elif nxt == "SolidWaste":
+                self._refresh_solid_waste(silent=True)
+            elif nxt == "OHT":
+                self._refresh_oht(silent=True)
+            elif nxt == "Preview":
+                self._refresh_preview(silent=True)
+
+            self.after(150, lambda: self._schedule_calc(50))
+
+        except Exception as exc:
+            traceback.print_exc()
+            messagebox.showerror(
+                "Navigation Error",
+                f"Unable to open the next section. Please check the project information and try again.\n\n{exc}",
+            )
+
+    def _form_page(self, title, builder, page_key):
         frame = ScrollablePage(self.container)
         header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
         header.pack(fill="x", padx=5, pady=5)
         ctk.CTkLabel(header, text=title, font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
         builder(frame)
+
+        nav = ctk.CTkFrame(frame, fg_color="transparent")
+        nav.pack(fill="x", padx=16, pady=(4, 14))
+        ctk.CTkButton(
+            nav, text="← Back", width=120, fg_color="#7F8C8D",
+            command=lambda pk=page_key: self._wizard_show_previous(pk),
+        ).pack(side="left")
+
+        next_commands = {
+            "Landscape": self._save_landscape,
+            "Swimming": self._save_pool,
+            "HVAC": lambda: (self._sync_hvac_live(), self._wizard_show_next("HVAC")),
+            "UGT": lambda: self._wizard_show_next("UGT"),
+        }
+        next_command = next_commands.get(page_key, lambda pk=page_key: self._wizard_show_next(pk))
+        ctk.CTkButton(nav, text="Next →", width=140, fg_color=BRAND_ORANGE, command=next_command).pack(side="right")
         return frame
 
     def _landscape_ui(self, parent):
@@ -397,7 +612,6 @@ class ProjectWorkspace(ctk.CTkFrame):
             entry.bind("<KeyRelease>", lambda *_: (self._sync_landscape_live(), self._schedule_calc()))
             self._le[plot] = entry
         ctk.CTkLabel(parent, text="Auto: 6 L/sq.m/day per NBC-2026 (live)", font=("Arial", 11, "italic")).pack(anchor="w", padx=20)
-        ctk.CTkButton(parent, text="Next ->", fg_color=BRAND_ORANGE, command=self._save_landscape).pack(pady=12)
 
     def _sync_landscape_live(self) -> None:
         if hasattr(self, "_le"):
@@ -407,7 +621,6 @@ class ProjectWorkspace(ctk.CTkFrame):
         try:
             for plot, entry in self._le.items():
                 self.app_state.other.landscape_area[plot] = validate_positive_float(entry.get(), f"Landscape {plot}")
-            self._calc()
             self._wizard_show_next("Landscape")
         except ValidationError as exc:
             messagebox.showerror("Error", exc.message)
@@ -439,7 +652,6 @@ class ProjectWorkspace(ctk.CTkFrame):
             entry.grid(row=i, column=2, padx=10, pady=8, sticky="w")
             entry.bind("<KeyRelease>", lambda *_: (self._sync_pool_live(), self._schedule_calc()))
             self._pe[plot] = entry
-        ctk.CTkButton(parent, text="Next ->", fg_color=BRAND_ORANGE, command=self._save_pool).pack(pady=12)
 
     def _sync_pool_live(self) -> None:
         if hasattr(self, "_pe") and hasattr(self, "_pool_status"):
@@ -454,7 +666,6 @@ class ProjectWorkspace(ctk.CTkFrame):
                 self.app_state.other.swimming_pool[plot] = 0.0
             else:
                 self.app_state.other.swimming_pool[plot] = float(self._pe[plot].get() or 0)
-        self._calc()
         self._wizard_show_next("Swimming")
 
     def _hvac_ui(self, parent):
@@ -470,12 +681,6 @@ class ProjectWorkspace(ctk.CTkFrame):
             entry.grid(row=i, column=1, padx=10, pady=8, sticky="w")
             entry.bind("<KeyRelease>", lambda *_: (self._sync_hvac_live(), self._schedule_calc()))
             self._he[plot] = entry
-        ctk.CTkButton(
-            parent,
-            text="Next ->",
-            fg_color=BRAND_ORANGE,
-            command=lambda: (self._sync_hvac_live(), self._calc(), self._wizard_show_next("HVAC")),
-        ).pack(pady=12)
 
     def _sync_hvac_live(self) -> None:
         if hasattr(self, "_he"):
@@ -533,7 +738,6 @@ class ProjectWorkspace(ctk.CTkFrame):
             text="UGT storage: Domestic 2-day, Flushing 1-day, Fire 1-day (auto-calculated in report)",
             font=("Arial", 11, "italic"),
         ).pack(anchor="w", padx=20, pady=5)
-        ctk.CTkButton(parent, text="Next ->", fg_color=BRAND_ORANGE, command=lambda: self._wizard_show_next("UGT")).pack(pady=12)
 
     def _refresh_ugt(self) -> None:
         for plot, lbl in getattr(self, "_ugt_labels", {}).items():
@@ -541,7 +745,7 @@ class ProjectWorkspace(ctk.CTkFrame):
             self.app_state.other.fire_tank[plot] = float(auto_val)
             lbl.configure(text=f"{auto_val:,} (auto — NBC Table 7)")
 
-    def _result_page(self, title: str, subtitle: str, table_attr: str):
+    def _result_page(self, title: str, subtitle: str, table_attr: str, page_key: str):
         frame = ScrollablePage(self.container)
         frame.grid_rowconfigure(1, weight=1)
         header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
@@ -561,7 +765,17 @@ class ProjectWorkspace(ctk.CTkFrame):
             text="Updates automatically as you enter data on other pages.",
             font=("Arial", 10, "italic"),
             text_color="#666666",
-        ).pack(pady=(0, 8))
+        ).pack(pady=(0, 6))
+        nav = ctk.CTkFrame(frame, fg_color="transparent")
+        nav.pack(fill="x", padx=16, pady=(2, 12))
+        ctk.CTkButton(
+            nav, text="← Back", width=120, fg_color="#7F8C8D",
+            command=lambda pk=page_key: self._wizard_show_previous(pk),
+        ).pack(side="left")
+        ctk.CTkButton(
+            nav, text="Next →", width=140, fg_color=BRAND_ORANGE,
+            command=lambda pk=page_key: self._wizard_show_next(pk),
+        ).pack(side="right")
         return frame
 
     def _sewage_page(self):
@@ -569,6 +783,7 @@ class ProjectWorkspace(ctk.CTkFrame):
             "Sewage Generation",
             "Sewage Generation Calculations — auto-calculated from residential/commercial data.",
             "sewage_table",
+            "Sewage",
         )
 
     def _refresh_sewage(self, silent: bool = False) -> None:
@@ -588,6 +803,7 @@ class ProjectWorkspace(ctk.CTkFrame):
             "Solid Waste Generation",
             "Solid waste and e-waste calculations — auto-calculated from population and STP data.",
             "solid_waste_table",
+            "SolidWaste",
         )
 
     def _refresh_solid_waste(self, silent: bool = False) -> None:
@@ -607,6 +823,7 @@ class ProjectWorkspace(ctk.CTkFrame):
             "OHT Details",
             "Overhead tank capacities auto-calculate from residential/commercial demand.",
             "oht_table",
+            "OHT",
         )
 
     def _refresh_oht(self, silent: bool = False) -> None:
@@ -627,6 +844,7 @@ class ProjectWorkspace(ctk.CTkFrame):
             "STP Summary",
             "Sewage treatment summary — auto-calculated from project inputs.",
             "stp_table",
+            "STP",
         )
 
     def _refresh_stp(self, silent: bool = False):
@@ -653,13 +871,16 @@ class ProjectWorkspace(ctk.CTkFrame):
             text_color="#666666",
         ).pack(pady=(0, 6))
         ctk.CTkButton(frame, text="Open Full Preview", fg_color="#2980B9", height=38, command=self._open_preview).pack(pady=6)
+        nav = ctk.CTkFrame(frame, fg_color="transparent")
+        nav.pack(fill="x", padx=16, pady=(2, 12))
         ctk.CTkButton(
-            frame,
-            text="Go to Generate Report",
-            fg_color=BRAND_ORANGE,
-            height=38,
-            command=lambda: (self._calc(), self.show("Report")),
-        ).pack(pady=6)
+            nav, text="← Back", width=120, fg_color="#7F8C8D",
+            command=lambda: self._wizard_show_previous("Preview"),
+        ).pack(side="left")
+        ctk.CTkButton(
+            nav, text="Next → Generate Report", width=190, fg_color=BRAND_ORANGE,
+            command=lambda: self._navigate_to_page("Report"),
+        ).pack(side="right")
         return frame
 
     def _refresh_preview(self, silent: bool = False) -> None:
@@ -703,6 +924,10 @@ class ProjectWorkspace(ctk.CTkFrame):
         ).pack(fill="x", anchor="w", padx=20, pady=10)
         ctk.CTkButton(frame, text="Export JSON", fg_color="#2980B9", command=self._exp_json).pack(pady=8)
         ctk.CTkButton(frame, text="Import JSON", fg_color="#2980B9", command=self._imp_json).pack(pady=8)
+        ctk.CTkButton(
+            frame, text="← Back", width=120, fg_color="#7F8C8D",
+            command=lambda: self._wizard_show_previous("Settings"),
+        ).pack(pady=(8, 14))
         return frame
 
     def _auto_fire_tank(self, plot: str) -> int:
@@ -712,7 +937,7 @@ class ProjectWorkspace(ctk.CTkFrame):
         return int(self.app_state.other.fire_tank.get(plot, 0))
 
     def _next_from_project(self):
-        self.show(wizard_first_page_after_project(self.app_state.project.project_type))
+        self._wizard_show_next("Project")
 
     def _next_from_residential(self):
         self._wizard_show_next("Residential")
@@ -726,6 +951,22 @@ class ProjectWorkspace(ctk.CTkFrame):
     def _resolve_page_name(self, name: str) -> str:
         return name
 
+    def _ensure_page_available(self, name: str) -> bool:
+        if name in self.pages:
+            try:
+                return bool(self.pages[name].winfo_exists())
+            except Exception:
+                return True
+        try:
+            return self._build_single_page(name)
+        except Exception as exc:
+            traceback.print_exc()
+            messagebox.showerror(
+                "Open Page",
+                f"Unable to open '{name}'. Please check the project information and try again.\n\n{exc}",
+            )
+            return False
+
     def show(self, name: str) -> None:
         if not is_project_type_set(self.app_state.project.project_type) and name != "Project":
             name = "Project"
@@ -733,15 +974,26 @@ class ProjectWorkspace(ctk.CTkFrame):
         allowed = visible_pages(self.app_state.project.project_type)
         if name not in allowed:
             name = "Project"
-        if name not in self.pages:
-            messagebox.showwarning(
-                "Navigation",
-                f"The '{name}' page is not available.\n"
-                "It may be hidden for the current project type or not yet loaded.",
-            )
+
+        if not self._ensure_page_available(name):
             return
+
+        try:
+            self.container.grid(row=0, column=1, sticky="nsew", padx=8, pady=8)
+        except Exception:
+            pass
+
         self._current_page = name
         page = self.pages[name]
+
+        for key, other in list(self.pages.items()):
+            if key == name:
+                continue
+            try:
+                other.grid_remove()
+            except Exception:
+                pass
+
         _raise_page(page)
         if name == "Project" and hasattr(page, "refresh"):
             page.refresh()

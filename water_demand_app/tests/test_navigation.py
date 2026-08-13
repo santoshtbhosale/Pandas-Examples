@@ -39,6 +39,7 @@ class TestSidebarNavigation(unittest.TestCase):
         for key, _label in self.app.NAV:
             if not self.app._nav_visible(key):
                 continue
+            self.app.show(key)
             self.assertIn(key, self.app.pages, f"Page '{key}' missing from self.pages")
 
     def test_show_every_page_without_error(self) -> None:
@@ -55,6 +56,7 @@ class TestSidebarNavigation(unittest.TestCase):
         self.assertNotIn("RWH", self.app.pages)
 
     def test_oht_page_exists(self) -> None:
+        self.app.show("OHT")
         self.assertIn("OHT", self.app.pages)
 
     def test_hospital_type_navigation(self) -> None:

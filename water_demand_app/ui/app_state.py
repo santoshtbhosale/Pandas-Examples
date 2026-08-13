@@ -64,11 +64,12 @@ class AppState:
             self.environmental = None
 
     def apply_project_type(self, new_type: str) -> None:
-        """Clear data for sections hidden by the new project type."""
+        """Apply a project type without blocking the UI."""
         old_type = self.project.project_type
         self.project.project_type = new_type
-        if not is_project_type_set(new_type) or not is_project_type_set(old_type):
-            self.auto_calculate()
+        if not is_project_type_set(new_type):
+            return
+        if not is_project_type_set(old_type):
             return
         if not show_residential_section(new_type):
             self.residential = []
@@ -82,7 +83,6 @@ class AppState:
         if not hvac_applicable(new_type):
             for plot in list(self.other.hvac_water.keys()):
                 self.other.hvac_water[plot] = 0.0
-        self.auto_calculate()
 
     def sync_building_defaults(self) -> None:
         """Apply project-level building settings to residential wings when empty."""

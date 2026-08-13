@@ -30,6 +30,7 @@ from tkinter import filedialog, messagebox
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 import customtkinter as ctk
+from PIL import Image as PILImage
 from tkcalendar import DateEntry
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
