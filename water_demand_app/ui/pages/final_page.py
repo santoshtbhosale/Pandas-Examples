@@ -13,8 +13,10 @@ from services.json_io import save_project_json
 from services.pdf_exporter import export_pdf
 from ui.app_state import AppState
 from ui.components.preview_dialog import PreviewDialog
+from ui.components.progress_dialog import run_with_progress
 from ui.components.scrollable_frame import ScrollablePage
 from ui.components.validation import safe_execute
+from ui.components.wizard import WizardNavBar, build_page_header, wizard_step_index
 
 
 class FinalPage(ScrollablePage):
@@ -24,25 +26,26 @@ class FinalPage(ScrollablePage):
         state: AppState,
         on_back,
         on_generate_all: Optional[Callable[[], None]] = None,
+        page_key: str = "Report",
     ) -> None:
         super().__init__(master)
         self.state = state
         self.on_back = on_back
         self.on_generate_all = on_generate_all
+        self.page_key = page_key
         self.summary_label = None
         self.detail_text = None
         self._build()
 
     def _build(self) -> None:
-        header = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=8)
-        header.pack(fill="x", padx=10, pady=(5, 10))
-        ctk.CTkLabel(header, text="Generate Report", font=("Arial", 22, "bold"), text_color="white").pack(pady=12)
-        ctk.CTkLabel(
-            header,
-            text="Calculate, validate, export PDF & Excel, save project, and open preview",
-            font=("Arial", 11),
-            text_color="#DDDDDD",
-        ).pack(pady=(0, 10))
+        step, total = wizard_step_index(self.page_key, self.state.project.project_type)
+        build_page_header(
+            self,
+            "Generate Report",
+            "Calculate, validate, export PDF & Excel, save project, and open preview.",
+            step=step,
+            total=total,
+        )
 
         if self.on_generate_all:
             ctk.CTkButton(
@@ -68,7 +71,13 @@ class FinalPage(ScrollablePage):
         ctk.CTkButton(act_frame, text="Export Excel", command=self._export_excel, fg_color="#27AE60", width=130).grid(row=0, column=2, padx=8)
         ctk.CTkButton(act_frame, text="Save JSON", command=self._save_json, fg_color="#2980B9", width=110).grid(row=0, column=3, padx=8)
         ctk.CTkButton(act_frame, text="Save to Database", command=self._save_db, fg_color="#16A085", width=140).grid(row=0, column=4, padx=8)
-        ctk.CTkButton(act_frame, text="<- Back to Edit", command=self.on_back, fg_color="gray", width=120).grid(row=0, column=5, padx=8)
+
+        WizardNavBar(
+            self,
+            on_back=self.on_back,
+            back_text="← Back to Preview",
+            show_back=True,
+        ).pack(pady=(4, 14))
 
     def refresh(self) -> None:
         if not self.state.results:
@@ -119,6 +128,10 @@ class FinalPage(ScrollablePage):
             return
         PreviewDialog(self.winfo_toplevel(), self.state.project, self.state.results, on_export_pdf=self._export_pdf)
 
+    def _logo_path(self) -> Optional[str]:
+        logo = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "logo.png")
+        return logo if os.path.exists(logo) else None
+
     def _export_pdf(self) -> None:
         if not self._ensure_results():
             return
@@ -129,13 +142,22 @@ class FinalPage(ScrollablePage):
         )
         if not file_path:
             return
+        logo = self._logo_path()
 
         def do_export():
-            logo = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "logo.png")
-            export_pdf(file_path, self.state.project, self.state.results, logo if os.path.exists(logo) else None)
+            export_pdf(file_path, self.state.project, self.state.results, logo)
 
-        if safe_execute(do_export, lambda msg: messagebox.showerror("PDF Error", msg)):
+        def on_success(_result=None) -> None:
             messagebox.showinfo("Success", "8-Page Professional PDF Exported Successfully!")
+
+        run_with_progress(
+            self,
+            "Export PDF",
+            "Generating your 8-page water demand PDF report. Please wait...",
+            do_export,
+            on_success=on_success,
+            on_error=lambda msg: messagebox.showerror("PDF Error", str(msg)),
+        )
 
     def _export_excel(self) -> None:
         if not self._ensure_results():
@@ -151,8 +173,17 @@ class FinalPage(ScrollablePage):
         def do_export():
             export_excel(file_path, self.state.project, self.state.results)
 
-        if safe_execute(do_export, lambda msg: messagebox.showerror("Excel Error", msg)):
+        def on_success(_result=None) -> None:
             messagebox.showinfo("Success", "Excel Exported Successfully with Plot Tabs!")
+
+        run_with_progress(
+            self,
+            "Export Excel",
+            "Generating your Excel workbook. Please wait...",
+            do_export,
+            on_success=on_success,
+            on_error=lambda msg: messagebox.showerror("Excel Error", str(msg)),
+        )
 
     def _save_json(self) -> None:
         file_path = filedialog.asksaveasfilename(

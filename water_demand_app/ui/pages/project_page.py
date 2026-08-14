@@ -75,12 +75,13 @@ def show_project_engineering_configuration(project_type: str) -> bool:
 
 
 class ProjectPage(ScrollablePage):
-    def __init__(self, master, state: AppState, on_next, on_type_change=None, on_back=None) -> None:
+    def __init__(self, master, state: AppState, on_next, on_type_change=None, on_back=None, on_dirty=None) -> None:
         super().__init__(master)
         self.state = state
         self.on_next = on_next
         self.on_type_change = on_type_change
         self.on_back = on_back
+        self.on_dirty = on_dirty
         self.entries: dict = {}
         self._engineering_widgets: list = []
         self._signoff_widgets: list = []
@@ -113,6 +114,9 @@ class ProjectPage(ScrollablePage):
         return label
 
     def _add_entry_row(self, parent, row: int, label: str, key: str, default: str = "") -> ctk.CTkEntry:
+        from config.field_help import FIELD_HELP
+        from ui.components.tooltip import attach_tooltip
+
         self._add_label(parent, row, label, bold=True)
         value = getattr(self.state.project, key, "") or ""
         if key == "project_name" and not value:
@@ -121,6 +125,10 @@ class ProjectPage(ScrollablePage):
         ent.insert(0, value)
         ent.grid(row=row, column=1, padx=FORM_PAD_X, pady=FORM_ROW_PAD_Y, sticky="w")
         self.entries[key] = ent
+        if key in FIELD_HELP:
+            attach_tooltip(ent, FIELD_HELP[key])
+        if self.on_dirty:
+            ent.bind("<KeyRelease>", lambda *_: self.on_dirty(), add="+")
         return ent
 
     def _build(self) -> None:

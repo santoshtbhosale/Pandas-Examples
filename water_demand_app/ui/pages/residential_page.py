@@ -17,40 +17,45 @@ from models.residential import ResidentialWing
 from ui.app_state import AppState
 from ui.components.scrollable_frame import ScrollablePage
 from ui.components.validation import ValidationError, validate_positive_int, validate_required
+from ui.components.wizard import WizardNavBar, build_page_header, wizard_step_index
 
 
 class ResidentialPage(ScrollablePage):
-    def __init__(self, master, state: AppState, on_next, on_back) -> None:
+    def __init__(self, master, state: AppState, on_next, on_back, on_dirty=None, page_key: str = "Residential") -> None:
         super().__init__(master)
         self.state = state
         self.on_next = on_next
         self.on_back = on_back
+        self.on_dirty = on_dirty
+        self.page_key = page_key
         self.rows: list = []
         self.table_frame = ctk.CTkFrame(self)
         self.subtotal_labels: dict = {}
         self._build()
 
+    def _mark_dirty(self) -> None:
+        if self.on_dirty:
+            self.on_dirty()
+        self.schedule_auto_calculate(self.state)
+
     def _plot_values(self) -> list[str]:
         return plot_dropdown_choices(self.state.project.plot_mode)
 
     def _build(self) -> None:
-        header = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=8)
-        header.pack(fill="x", padx=10, pady=(5, 10))
+        step, total = wizard_step_index(self.page_key, self.state.project.project_type)
         plot_text = "Single Plot" if self.state.project.plot_mode == PLOT_MODE_SINGLE else "Plot A + B"
-        ctk.CTkLabel(
-            header,
-            text=f"Residential / Building Details ({plot_text})",
-            font=("Arial", 20, "bold"),
-            text_color="white",
-        ).pack(pady=12)
-        ctk.CTkLabel(
-            header,
-            text="Enter BHK units only — Population, Domestic, Flushing & Kitchen auto-calculate per NBC",
-            font=("Arial", 11),
-            text_color="#ECF0F1",
-        ).pack(pady=(0, 10))
+        build_page_header(
+            self,
+            f"Residential / Building Details ({plot_text})",
+            "Enter BHK units only — Population, Domestic, Flushing & Kitchen auto-calculate per NBC.",
+            step=step,
+            total=total,
+        )
 
-        self.table_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        scroll_wrap = ctk.CTkScrollableFrame(self, orientation="horizontal", fg_color="transparent", height=300)
+        scroll_wrap.pack(fill="both", expand=True, padx=10, pady=10)
+        self.table_frame = ctk.CTkFrame(scroll_wrap, fg_color="transparent")
+        self.table_frame.pack(fill="both", expand=True)
         headers = [
             "Plot", "Wing", "Config", "Bldg Type", "Ht(m)", "Wings",
             "1BHK", "2BHK", "3BHK", "4BHK", "PH",
@@ -74,20 +79,19 @@ class ResidentialPage(ScrollablePage):
 
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=10)
-        ctk.CTkButton(btn_frame, text="+ Add Wing", command=lambda: self._add_row(), fg_color="#2980B9").grid(
-            row=0, column=0, padx=10
+        ctk.CTkButton(btn_frame, text="+ Add Wing", command=lambda: self._add_row(), fg_color="#2980B9").pack(
+            side="left", padx=10
         )
-        ctk.CTkButton(btn_frame, text="+ Add Bungalow", command=self._add_bungalow, fg_color="#2980B9").grid(
-            row=0, column=1, padx=10
+        ctk.CTkButton(btn_frame, text="+ Add Bungalow", command=self._add_bungalow, fg_color="#2980B9").pack(
+            side="left", padx=10
         )
-        ctk.CTkButton(btn_frame, text="<- Back", command=self.on_back, fg_color="gray").grid(row=0, column=2, padx=10)
-        ctk.CTkButton(
-            btn_frame,
-            text="Save & Next ->",
-            command=self._save_and_next,
-            fg_color=BRAND_ORANGE,
-            hover_color="#D06018",
-        ).grid(row=0, column=3, padx=10)
+        WizardNavBar(
+            self,
+            on_back=self.on_back,
+            on_next=self._save_and_next,
+            back_text="← Back",
+            next_text="Save & Next →",
+        ).pack(fill="x", padx=16, pady=12)
 
         self._update_subtotals()
 
@@ -118,6 +122,7 @@ class ResidentialPage(ScrollablePage):
 
     def _add_row(self, wing: ResidentialWing | None = None) -> None:
         r = len(self.rows) + 1
+        row_state = {"loading": True}
         config_values = list(BUILDING_CONFIG_EXAMPLES)
         plot_var = ctk.StringVar(
             value=ui_plot_label(wing.plot, self.state.project.plot_mode) if wing else self._plot_values()[0]
@@ -183,7 +188,8 @@ class ResidentialPage(ScrollablePage):
                 tot_lbl.configure(text="0")
                 kit_lbl.configure(text="0")
             self._update_subtotals()
-            self._sync_and_calculate()
+            if not row_state["loading"]:
+                self._sync_and_calculate()
 
         for ent in (ht_ent, wings_ent, b1_ent, b2_ent, b3_ent, b4_ent, ph_ent):
             ent.bind("<KeyRelease>", update)
@@ -225,6 +231,7 @@ class ResidentialPage(ScrollablePage):
             "pop_lbl": pop_lbl,
             "widgets": widgets + [rm_btn],
         })
+        row_state["loading"] = False
         update()
 
     def _regrid(self) -> None:
@@ -255,7 +262,7 @@ class ResidentialPage(ScrollablePage):
     def _sync_and_calculate(self) -> None:
         from services.automation import wings_from_ui_rows
         self.state.residential = wings_from_ui_rows(self.rows, self.state.project.plot_mode)
-        self.schedule_auto_calculate(self.state)
+        self._mark_dirty()
 
     def _save_and_next(self) -> None:
         wings: list = []

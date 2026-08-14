@@ -18,39 +18,44 @@ from models.commercial import CommercialUnit
 from ui.app_state import AppState
 from ui.components.scrollable_frame import ScrollablePage
 from ui.components.validation import ValidationError, validate_positive_float, validate_required
+from ui.components.wizard import WizardNavBar, build_page_header, wizard_step_index
 
 
 class CommercialPage(ScrollablePage):
-    def __init__(self, master, state: AppState, on_next, on_back) -> None:
+    def __init__(self, master, state: AppState, on_next, on_back, on_dirty=None, page_key: str = "Commercial") -> None:
         super().__init__(master)
         self.state = state
         self.on_next = on_next
         self.on_back = on_back
+        self.on_dirty = on_dirty
+        self.page_key = page_key
         self.rows: list = []
         self.table_frame = ctk.CTkFrame(self)
         self._build()
+
+    def _mark_dirty(self) -> None:
+        if self.on_dirty:
+            self.on_dirty()
+        self.schedule_auto_calculate(self.state)
 
     def _plot_values(self) -> list[str]:
         return plot_dropdown_choices(self.state.project.plot_mode)
 
     def _build(self) -> None:
-        header = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=8)
-        header.pack(fill="x", padx=10, pady=(5, 10))
+        step, total = wizard_step_index(self.page_key, self.state.project.project_type)
         plot_text = "Single Plot" if self.state.project.plot_mode == PLOT_MODE_SINGLE else "Plot A + B"
-        ctk.CTkLabel(
-            header,
-            text=f"Commercial Details ({plot_text})",
-            font=("Arial", 20, "bold"),
-            text_color="white",
-        ).pack(pady=12)
-        ctk.CTkLabel(
-            header,
-            text="Select Occupancy Type and Area — Population & demand auto-calculate per NBC",
-            font=("Arial", 11),
-            text_color="#ECF0F1",
-        ).pack(pady=(0, 10))
+        build_page_header(
+            self,
+            f"Commercial Details ({plot_text})",
+            "Select Occupancy Type and Area — Population & demand auto-calculate per NBC.",
+            step=step,
+            total=total,
+        )
 
-        self.table_frame.pack(fill="both", expand=True, padx=15, pady=10)
+        scroll_wrap = ctk.CTkScrollableFrame(self, orientation="horizontal", fg_color="transparent", height=280)
+        scroll_wrap.pack(fill="both", expand=True, padx=15, pady=10)
+        self.table_frame = ctk.CTkFrame(scroll_wrap, fg_color="transparent")
+        self.table_frame.pack(fill="both", expand=True)
         headers = [
             "Plot", "Block", "Occupancy Type", "Floor", "Area (sq.m)",
             "Pop", "Dom", "Flush", "Total", "",
@@ -68,17 +73,16 @@ class CommercialPage(ScrollablePage):
 
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=10)
-        ctk.CTkButton(btn_frame, text="+ Add Commercial", command=lambda: self._add_row(), fg_color="#2980B9").grid(
-            row=0, column=0, padx=10
+        ctk.CTkButton(btn_frame, text="+ Add Commercial", command=lambda: self._add_row(), fg_color="#2980B9").pack(
+            side="left", padx=10
         )
-        ctk.CTkButton(btn_frame, text="<- Back", command=self.on_back, fg_color="gray").grid(row=0, column=1, padx=10)
-        ctk.CTkButton(
-            btn_frame,
-            text="Save & Next ->",
-            command=self._save_and_next,
-            fg_color=BRAND_ORANGE,
-            hover_color="#D06018",
-        ).grid(row=0, column=2, padx=10)
+        WizardNavBar(
+            self,
+            on_back=self.on_back,
+            on_next=self._save_and_next,
+            back_text="← Back",
+            next_text="Save & Next →",
+        ).pack(fill="x", padx=16, pady=12)
 
     def _add_default_row(self) -> None:
         self._add_row(CommercialUnit(
@@ -91,6 +95,7 @@ class CommercialPage(ScrollablePage):
 
     def _add_row(self, unit: CommercialUnit | None = None) -> None:
         r = len(self.rows) + 1
+        row_state = {"loading": True}
         type_values = list(COMMERCIAL_OCCUPANCY_TYPES)
         default_type = unit.comm_type if unit else "Office"
         if default_type not in type_values:
@@ -133,10 +138,12 @@ class CommercialPage(ScrollablePage):
                 dom_lbl.configure(text="0")
                 flu_lbl.configure(text="0")
                 tot_lbl.configure(text="0")
-            self._sync_and_calculate()
+            if not row_state["loading"]:
+                self._sync_and_calculate()
 
         area_ent.bind("<KeyRelease>", update)
         type_var.trace_add("write", update)
+        row_state["loading"] = False
         update()
 
         plot_cb.grid(row=r, column=0, padx=3, pady=5)
@@ -182,7 +189,7 @@ class CommercialPage(ScrollablePage):
     def _sync_and_calculate(self) -> None:
         from services.automation import commercial_from_ui_rows
         self.state.commercial = commercial_from_ui_rows(self.rows, self.state.project.plot_mode)
-        self.schedule_auto_calculate(self.state)
+        self._mark_dirty()
 
     def _save_and_next(self) -> None:
         units: list = []

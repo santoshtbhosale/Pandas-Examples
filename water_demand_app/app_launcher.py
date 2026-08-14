@@ -178,6 +178,19 @@ class Application(ctk.CTk):
         self.save_status_label.pack(side="right", padx=12, pady=4)
 
         self._bind_shortcuts()
+        self.protocol("WM_DELETE_WINDOW", safe_command(self._on_close_request, parent=self))
+
+    def _confirm_workspace_leave(self, action: str) -> bool:
+        if self._workspace is None:
+            return True
+        confirm = getattr(self._workspace, "confirm_leave", None)
+        if callable(confirm):
+            return confirm(action)
+        return True
+
+    def _on_close_request(self) -> None:
+        if self._confirm_workspace_leave("close the application"):
+            self._exit_application()
 
     def _bind_shortcuts(self) -> None:
         self.bind_all("<Control-n>", lambda _e: self._shortcut_new())
@@ -248,6 +261,8 @@ class Application(ctk.CTk):
         self._update_status()
 
     def _show_dashboard(self) -> None:
+        if not self._confirm_workspace_leave("return to Project Home"):
+            return
         self._mode = "dashboard"
         self._clear_body()
         if self._workspace is not None:
@@ -289,6 +304,8 @@ class Application(ctk.CTk):
 
     def _back_to_project_type_selector(self) -> None:
         """Return to Step 1 while keeping the current draft project state."""
+        if not self._confirm_workspace_leave("return to project type selection"):
+            return
         if self._workspace is None:
             self._start_new_project()
             return
@@ -329,6 +346,8 @@ class Application(ctk.CTk):
         self._update_status()
 
     def _start_new_project(self) -> None:
+        if self._mode == "project" and not self._confirm_workspace_leave("start a new project"):
+            return
         state = create_new_project_state(DB_PATH)
         self._show_project_type_selector(state)
 
@@ -421,6 +440,8 @@ class Application(ctk.CTk):
         buttons.grid(row=5, column=0, pady=(0, 20))
 
         def cancel():
+            if not self._confirm_workspace_leave("return to Project Home"):
+                return
             self._destroy_type_selector()
             self._show_dashboard()
 
@@ -473,6 +494,8 @@ class Application(ctk.CTk):
         self._update_status()
 
     def _open_project(self, project_id: str) -> None:
+        if not self._confirm_workspace_leave("open another project"):
+            return
         try:
             state = load_project_state(project_id, DB_PATH)
         except ValueError as exc:
@@ -486,6 +509,12 @@ class Application(ctk.CTk):
                 self._workspace.autosave_before_close()
             except Exception:
                 pass
+        try:
+            from services.database_backup import backup_database
+
+            backup_database(DB_PATH, reason="exit")
+        except Exception:
+            pass
         self.destroy()
 
     def _on_workspace_header_update(self) -> None:

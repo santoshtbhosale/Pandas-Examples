@@ -71,9 +71,9 @@ class ResultTableView(ctk.CTkFrame):
 
         table = ctk.CTkFrame(wrapper, fg_color="white", corner_radius=6, border_width=1, border_color=_BORDER)
         table.pack(fill="x", expand=True, padx=0, pady=0)
-        table.grid_columnconfigure(0, weight=13, uniform="result_cols")
-        table.grid_columnconfigure(1, weight=4, uniform="result_cols")
-        table.grid_columnconfigure(2, weight=3, uniform="result_cols")
+        table.grid_columnconfigure(0, weight=13, uniform="result_cols", minsize=180)
+        table.grid_columnconfigure(1, weight=4, uniform="result_cols", minsize=80)
+        table.grid_columnconfigure(2, weight=3, uniform="result_cols", minsize=60)
 
         headers = ("Description", "Value", "Unit")
         for col, label in enumerate(headers):
@@ -108,5 +108,5 @@ class ResultTableView(ctk.CTkFrame):
                     font=font,
                     text_color=fg,
                     anchor=anchor,
-                    wraplength=900 if col == 0 else 0,
+                    wraplength=680 if col == 0 else 0,
                 ).pack(fill="x", padx=10, pady=5)
