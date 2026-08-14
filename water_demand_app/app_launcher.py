@@ -24,6 +24,7 @@ from config.nbc_2026 import (
 from services.database import DB_PATH, init_db
 from services.lookup_db import init_lookup_tables
 from services.project_service import create_new_project_state, load_project_state, mark_project_opened
+from services.app_logging import log_exception
 from ui.app_state import AppState
 from ui.components.type_selector import ProjectTypeSelector
 from ui.dashboard import MainDashboard
@@ -82,6 +83,7 @@ class Application(ctk.CTk):
         self._last_saved_at = ""
         self._autosave_job = None
         self._save_state = "saved"  # saved | saving | error
+        self._type_navigation_busy = False
 
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
@@ -351,6 +353,35 @@ class Application(ctk.CTk):
         state = create_new_project_state(DB_PATH)
         self._show_project_type_selector(state)
 
+    def select_project_type(self, state: AppState, label: str) -> None:
+        """Single source of truth: set type, reset workflow, open Project Details."""
+        if self._type_navigation_busy:
+            return
+        clean = (label or "").strip()
+        if not clean or clean == PROJECT_TYPE_PLACEHOLDER:
+            return
+
+        self._type_navigation_busy = True
+        try:
+            new_type = project_type_key(clean)
+            state.apply_project_type(new_type)
+            self._destroy_type_selector()
+            if self._workspace is not None:
+                suspend = getattr(self._workspace, "suspend_pending_work", None)
+                if callable(suspend):
+                    suspend()
+                self._workspace.app_state = state
+                self._workspace.reset_for_new_type()
+            self._show_project(state)
+        except Exception as exc:
+            log_exception("Project type navigation failed", exc=exc, function="select_project_type")
+            messagebox.showerror(
+                "Navigation Error",
+                "Unable to open Project Details. Please try again.",
+            )
+        finally:
+            self._type_navigation_busy = False
+
     def _show_project_type_selector(self, state: AppState) -> None:
         self._mode = "type_selector"
         self._clear_body()
@@ -402,7 +433,7 @@ class Application(ctk.CTk):
         ).grid(row=1, column=0, pady=(0, 4))
         ctk.CTkLabel(
             card,
-            text="Choose the type of project you are preparing a water-demand report for.",
+            text="Select a project type to continue.",
             font=("Arial", 12),
             text_color="#64748B",
         ).grid(row=2, column=0, pady=(0, 12))
@@ -412,32 +443,20 @@ class Application(ctk.CTk):
             if is_project_type_set(state.project.project_type)
             else PROJECT_TYPE_PLACEHOLDER
         )
-        help_text = ctk.StringVar(value="Select a project type to continue.")
-
-        def on_type_change(label: str) -> None:
-            if label == PROJECT_TYPE_PLACEHOLDER:
-                help_text.set("Select a project type to continue.")
-            else:
-                help_text.set(f"Selected: {label}. Click Continue to open the project workflow.")
 
         selector_wrap = ctk.CTkFrame(card, fg_color="transparent")
         selector_wrap.grid(row=3, column=0, sticky="ew", padx=30, pady=(0, 8))
-        type_selector = ProjectTypeSelector(selector_wrap, initial_label=initial_label, on_selection_change=on_type_change)
+        type_selector = ProjectTypeSelector(
+            selector_wrap,
+            initial_label=initial_label,
+            on_project_type_selected=lambda lbl: self.select_project_type(state, lbl),
+        )
         type_selector.pack(fill="x")
         if initial_label != PROJECT_TYPE_PLACEHOLDER:
             type_selector.set_selected(initial_label)
-            on_type_change(initial_label)
-
-        ctk.CTkLabel(
-            card,
-            textvariable=help_text,
-            font=("Arial", 10),
-            text_color="#6B7280",
-            wraplength=700,
-        ).grid(row=4, column=0, pady=(4, 8))
 
         buttons = ctk.CTkFrame(card, fg_color="transparent")
-        buttons.grid(row=5, column=0, pady=(0, 20))
+        buttons.grid(row=4, column=0, pady=(8, 20))
 
         def cancel():
             if not self._confirm_workspace_leave("return to Project Home"):
@@ -445,50 +464,16 @@ class Application(ctk.CTk):
             self._destroy_type_selector()
             self._show_dashboard()
 
-        def continue_project():
-            label = type_selector.get_selected().strip()
-            if label == PROJECT_TYPE_PLACEHOLDER:
-                messagebox.showwarning(
-                    "Project Type Required",
-                    "Please select the project type before continuing.",
-                )
-                return
-            try:
-                new_type = project_type_key(label)
-                old_type = state.project.project_type
-                state.apply_project_type(new_type)
-                self._destroy_type_selector()
-                if self._workspace is not None:
-                    self._workspace.app_state = state
-                    self._workspace.reset_for_new_type()
-                self._show_project(state)
-            except Exception as exc:
-                traceback.print_exc()
-                messagebox.showerror(
-                    "Navigation Error",
-                    "Unable to open the next section. Please try again.",
-                )
-
         ctk.CTkButton(
             buttons,
             text="← Back to Project Home",
-            width=190,
+            width=220,
             height=42,
             fg_color="#8A969C",
             hover_color="#6F7A80",
             font=("Arial", 11, "bold"),
             command=cancel,
-        ).pack(side="left", padx=8)
-        ctk.CTkButton(
-            buttons,
-            text="Continue →",
-            width=200,
-            height=42,
-            fg_color=BRAND_ORANGE,
-            hover_color="#D06018",
-            font=("Arial", 11, "bold"),
-            command=continue_project,
-        ).pack(side="left", padx=8)
+        ).pack()
 
         self._update_header_meta()
         self._update_status()

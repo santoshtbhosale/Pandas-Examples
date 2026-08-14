@@ -193,9 +193,7 @@ class TestProjectDetailsNavigationWithSections(unittest.TestCase):
 
         selector = self._find_widget(app._type_selector, ProjectTypeSelector)
         self.assertIsNotNone(selector)
-        selector.set_selected(label)
-        continue_btn = self._find_button_with_text(app._type_selector, "Continue")
-        continue_btn.invoke()
+        selector.select_type(label)
         app.update_idletasks()
 
     def test_residential_to_commercial_preserves_signoff_visibility(self) -> None:

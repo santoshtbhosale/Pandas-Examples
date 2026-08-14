@@ -76,10 +76,7 @@ class TestProjectTypeSwitching(unittest.TestCase):
 
         selector = self._find_widget(app._type_selector, ProjectTypeSelector)
         self.assertIsNotNone(selector, "Project type selector not found")
-        selector.set_selected(label)
-        continue_btn = self._find_button_with_text(app._type_selector, "Continue")
-        self.assertIsNotNone(continue_btn, "Continue button not found on type selector")
-        continue_btn.invoke()
+        selector.select_type(label)
         app.update_idletasks()
 
     def _open_new_project_to_details(self, app, project_type_label_text: str) -> None:
@@ -187,7 +184,9 @@ class TestProjectTypeSwitching(unittest.TestCase):
             app.update_idletasks()
             selector = app._type_selector
             self.assertIsNotNone(selector)
-            self._select_type_and_continue(app, "Residential")
+            from ui.components.type_selector import ProjectTypeSelector
+            card_selector = self._find_widget(app._type_selector, ProjectTypeSelector)
+            card_selector.select_type("Residential")
             app.update_idletasks()
             self.assertIsNone(app._type_selector)
             self.assertFalse(selector.winfo_exists())

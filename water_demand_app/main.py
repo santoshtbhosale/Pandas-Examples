@@ -6185,89 +6185,155 @@ def build_page_header(parent, title: str, subtitle: str = "", step: int = 0, tot
     return wrapper
 
 # ==================== ui/components/type_selector.py ====================
-"""Visual project type selection cards — compact grid, no scrolling."""
+"""Visual project type selection cards — one-click, 3-column grid, no scrolling."""
 
 
 
 
+
+TYPE_DESCRIPTIONS = {
+    "Residential": "Residential buildings",
+    "Commercial": "Commercial buildings",
+    "Mixed Use": "Mixed-use developments",
+    "Industrial": "Industrial facilities",
+    "Hospital": "Healthcare facilities",
+    "Hotel": "Hotels and hospitality",
+    "School": "School campuses",
+    "College": "College campuses",
+    "Shopping Mall": "Retail shopping malls",
+    "Mall": "Retail malls",
+    "IT Park": "IT parks and tech campuses",
+    "Warehouse": "Warehouses and logistics",
+    "Township": "Township developments",
+}
+
+
+def _bind_recursive(widget, sequence: str, handler) -> None:
+    """Bind an event on a widget and every descendant."""
+    try:
+        widget.bind(sequence, handler, add="+")
+    except Exception:
+        pass
+    for child in widget.winfo_children():
+        _bind_recursive(child, sequence, handler)
 
 
 class ProjectTypeSelector(ctk.CTkFrame):
-    """Compact grid of selectable project type cards (fits one screen)."""
+    """Compact 3-column grid; one click selects type and opens the workflow."""
 
     def __init__(
         self,
         master,
         *,
         initial_label: str = PROJECT_TYPE_PLACEHOLDER,
+        on_project_type_selected: Optional[Callable[[str], None]] = None,
         on_selection_change: Optional[Callable[[str], None]] = None,
         **kwargs,
     ) -> None:
         super().__init__(master, fg_color="transparent", **kwargs)
-        self.on_selection_change = on_selection_change
+        self.on_project_type_selected = on_project_type_selected or on_selection_change
         self._selected = ctk.StringVar(value=initial_label)
         self._cards: dict[str, ctk.CTkFrame] = {}
+        self._busy = False
         self._build()
 
     def get_selected(self) -> str:
         return self._selected.get()
 
     def set_selected(self, label: str) -> None:
+        """Update highlight only (no navigation)."""
         self._selected.set(label)
         self._refresh_highlights()
 
+    def select_type(self, label: str) -> None:
+        """Programmatic one-click selection (same as user click)."""
+        self._on_project_type_selected(label)
+
     def _build(self) -> None:
         labels = sorted(set(PROJECT_TYPE_LABELS.keys()))
-        cols = 4
+        cols = 3
         for i, label in enumerate(labels):
             row, col = divmod(i, cols)
             card = self._make_card(label)
-            card.grid(row=row, column=col, padx=4, pady=4, sticky="nsew")
+            card.grid(row=row, column=col, padx=5, pady=5, sticky="nsew")
         for c in range(cols):
             self.grid_columnconfigure(c, weight=1)
 
     def _make_card(self, label: str) -> ctk.CTkFrame:
         icon = PROJECT_TYPE_ICONS.get(label, "📋")
+        description = TYPE_DESCRIPTIONS.get(label, "Water demand report")
+
         frame = ctk.CTkFrame(
             self,
             fg_color=COLOR_CARD,
-            corner_radius=8,
+            corner_radius=10,
             border_width=2,
             border_color=COLOR_BORDER,
-            height=52,
+            height=72,
             cursor="hand2",
         )
         frame.grid_propagate(False)
         self._cards[label] = frame
 
         inner = ctk.CTkFrame(frame, fg_color="transparent")
-        inner.pack(fill="both", expand=True, padx=8, pady=6)
-        row = ctk.CTkFrame(inner, fg_color="transparent")
-        row.pack(fill="x")
-        check = ctk.CTkLabel(row, text="", font=FONT_SECTION, text_color=COLOR_ACCENT, width=14)
+        inner.pack(fill="both", expand=True, padx=10, pady=8)
+
+        title_row = ctk.CTkFrame(inner, fg_color="transparent")
+        title_row.pack(fill="x")
+        check = ctk.CTkLabel(title_row, text="", font=FONT_CAPTION, text_color=COLOR_ACCENT, width=16)
         check.pack(side="right")
         frame._check_label = check  # type: ignore[attr-defined]
         ctk.CTkLabel(
-            row,
-            text=f"{icon} {label}",
-            font=("Arial", 11, "bold"),
+            title_row,
+            text=f"{icon}  {label}",
+            font=("Arial", 12, "bold"),
             text_color=COLOR_PRIMARY,
             anchor="w",
         ).pack(side="left", fill="x", expand=True)
 
-        def select(_event=None, lbl=label):
-            self._selected.set(lbl)
-            self._refresh_highlights()
-            if self.on_selection_change:
-                self.on_selection_change(lbl)
+        ctk.CTkLabel(
+            inner,
+            text=description,
+            font=FONT_CAPTION,
+            text_color="#687684",
+            anchor="w",
+        ).pack(anchor="w", pady=(2, 0))
 
-        frame.bind("<Button-1>", select)
-        for child in frame.winfo_children():
-            child.bind("<Button-1>", select)
-            for sub in child.winfo_children():
-                sub.bind("<Button-1>", select)
+        def select(_event=None, lbl=label):
+            self._on_project_type_selected(lbl)
+
+        def on_enter(_event=None, card=frame, lbl=label):
+            if self._busy or self._selected.get() == lbl:
+                return
+            card.configure(border_color=COLOR_PRIMARY, fg_color="#F8FAFC")
+
+        def on_leave(_event=None, card=frame, lbl=label):
+            if self._busy:
+                return
+            is_sel = self._selected.get() == lbl and lbl != PROJECT_TYPE_PLACEHOLDER
+            card.configure(
+                border_color=COLOR_ACCENT if is_sel else COLOR_BORDER,
+                fg_color="#FFF8F0" if is_sel else COLOR_CARD,
+            )
+
+        _bind_recursive(frame, "<Button-1>", select)
+        _bind_recursive(frame, "<Enter>", on_enter)
+        _bind_recursive(frame, "<Leave>", on_leave)
 
         return frame
+
+    def _on_project_type_selected(self, label: str) -> None:
+        if self._busy or label == PROJECT_TYPE_PLACEHOLDER:
+            return
+        self._busy = True
+        self._selected.set(label)
+        self._refresh_highlights()
+        if self.on_project_type_selected:
+            try:
+                self.on_project_type_selected(label)
+            except Exception:
+                self._busy = False
+                raise
 
     def _refresh_highlights(self) -> None:
         selected = self._selected.get()
@@ -10097,6 +10163,7 @@ class Application(ctk.CTk):
         self._last_saved_at = ""
         self._autosave_job = None
         self._save_state = "saved"  # saved | saving | error
+        self._type_navigation_busy = False
 
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
@@ -10365,6 +10432,35 @@ class Application(ctk.CTk):
         state = create_new_project_state(DB_PATH)
         self._show_project_type_selector(state)
 
+    def select_project_type(self, state: AppState, label: str) -> None:
+        """Single source of truth: set type, reset workflow, open Project Details."""
+        if self._type_navigation_busy:
+            return
+        clean = (label or "").strip()
+        if not clean or clean == PROJECT_TYPE_PLACEHOLDER:
+            return
+
+        self._type_navigation_busy = True
+        try:
+            new_type = project_type_key(clean)
+            state.apply_project_type(new_type)
+            self._destroy_type_selector()
+            if self._workspace is not None:
+                suspend = getattr(self._workspace, "suspend_pending_work", None)
+                if callable(suspend):
+                    suspend()
+                self._workspace.app_state = state
+                self._workspace.reset_for_new_type()
+            self._show_project(state)
+        except Exception as exc:
+            log_exception("Project type navigation failed", exc=exc, function="select_project_type")
+            messagebox.showerror(
+                "Navigation Error",
+                "Unable to open Project Details. Please try again.",
+            )
+        finally:
+            self._type_navigation_busy = False
+
     def _show_project_type_selector(self, state: AppState) -> None:
         self._mode = "type_selector"
         self._clear_body()
@@ -10416,7 +10512,7 @@ class Application(ctk.CTk):
         ).grid(row=1, column=0, pady=(0, 4))
         ctk.CTkLabel(
             card,
-            text="Choose the type of project you are preparing a water-demand report for.",
+            text="Select a project type to continue.",
             font=("Arial", 12),
             text_color="#64748B",
         ).grid(row=2, column=0, pady=(0, 12))
@@ -10426,32 +10522,20 @@ class Application(ctk.CTk):
             if is_project_type_set(state.project.project_type)
             else PROJECT_TYPE_PLACEHOLDER
         )
-        help_text = ctk.StringVar(value="Select a project type to continue.")
-
-        def on_type_change(label: str) -> None:
-            if label == PROJECT_TYPE_PLACEHOLDER:
-                help_text.set("Select a project type to continue.")
-            else:
-                help_text.set(f"Selected: {label}. Click Continue to open the project workflow.")
 
         selector_wrap = ctk.CTkFrame(card, fg_color="transparent")
         selector_wrap.grid(row=3, column=0, sticky="ew", padx=30, pady=(0, 8))
-        type_selector = ProjectTypeSelector(selector_wrap, initial_label=initial_label, on_selection_change=on_type_change)
+        type_selector = ProjectTypeSelector(
+            selector_wrap,
+            initial_label=initial_label,
+            on_project_type_selected=lambda lbl: self.select_project_type(state, lbl),
+        )
         type_selector.pack(fill="x")
         if initial_label != PROJECT_TYPE_PLACEHOLDER:
             type_selector.set_selected(initial_label)
-            on_type_change(initial_label)
-
-        ctk.CTkLabel(
-            card,
-            textvariable=help_text,
-            font=("Arial", 10),
-            text_color="#6B7280",
-            wraplength=700,
-        ).grid(row=4, column=0, pady=(4, 8))
 
         buttons = ctk.CTkFrame(card, fg_color="transparent")
-        buttons.grid(row=5, column=0, pady=(0, 20))
+        buttons.grid(row=4, column=0, pady=(8, 20))
 
         def cancel():
             if not self._confirm_workspace_leave("return to Project Home"):
@@ -10459,50 +10543,16 @@ class Application(ctk.CTk):
             self._destroy_type_selector()
             self._show_dashboard()
 
-        def continue_project():
-            label = type_selector.get_selected().strip()
-            if label == PROJECT_TYPE_PLACEHOLDER:
-                messagebox.showwarning(
-                    "Project Type Required",
-                    "Please select the project type before continuing.",
-                )
-                return
-            try:
-                new_type = project_type_key(label)
-                old_type = state.project.project_type
-                state.apply_project_type(new_type)
-                self._destroy_type_selector()
-                if self._workspace is not None:
-                    self._workspace.app_state = state
-                    self._workspace.reset_for_new_type()
-                self._show_project(state)
-            except Exception as exc:
-                traceback.print_exc()
-                messagebox.showerror(
-                    "Navigation Error",
-                    "Unable to open the next section. Please try again.",
-                )
-
         ctk.CTkButton(
             buttons,
             text="← Back to Project Home",
-            width=190,
+            width=220,
             height=42,
             fg_color="#8A969C",
             hover_color="#6F7A80",
             font=("Arial", 11, "bold"),
             command=cancel,
-        ).pack(side="left", padx=8)
-        ctk.CTkButton(
-            buttons,
-            text="Continue →",
-            width=200,
-            height=42,
-            fg_color=BRAND_ORANGE,
-            hover_color="#D06018",
-            font=("Arial", 11, "bold"),
-            command=continue_project,
-        ).pack(side="left", padx=8)
+        ).pack()
 
         self._update_header_meta()
         self._update_status()
