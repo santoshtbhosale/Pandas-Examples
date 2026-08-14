@@ -7,9 +7,9 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-# Brand colors
-BRAND_NAVY = "#001F3F"
-BRAND_ORANGE = "#F37021"
+# Brand colors — American Edge Engineers corporate palette
+BRAND_NAVY = "#123B5D"
+BRAND_ORANGE = "#F28C28"
 BRAND_DARK_GRAY = "#34495E"
 BRAND_HEADER_GRAY = "#7F8C8D"
 BRAND_DEMAND_ORANGE = "#E67E22"

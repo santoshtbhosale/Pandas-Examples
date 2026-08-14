@@ -57,8 +57,8 @@ class TestProjectDetailsCleanup(unittest.TestCase):
 
     def test_no_removed_metadata_fields_in_ui(self) -> None:
         self.assertFalse(hasattr(self.page, "project_type_display"))
-        self.assertFalse(hasattr(self.page, "project_no_label"))
         self.assertFalse(hasattr(self.page, "date_label"))
+        self.assertTrue(hasattr(self.page, "project_no_label"))
 
 
 if __name__ == "__main__":

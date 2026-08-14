@@ -44,9 +44,9 @@ JSON_SCHEMA_VERSION = "1.0"
 
 
 
-# Brand colors
-BRAND_NAVY = "#001F3F"
-BRAND_ORANGE = "#F37021"
+# Brand colors — American Edge Engineers corporate palette
+BRAND_NAVY = "#123B5D"
+BRAND_ORANGE = "#F28C28"
 BRAND_DARK_GRAY = "#34495E"
 BRAND_HEADER_GRAY = "#7F8C8D"
 BRAND_DEMAND_ORANGE = "#E67E22"
@@ -2841,6 +2841,53 @@ def mark_project_completed(project_id: str, db_path: str = DB_PATH) -> None:
 def remove_project(project_id: str, *, username: str = "", db_path: str = DB_PATH) -> bool:
     return delete_project(project_id, username=username, db_path=db_path)
 
+# ==================== services/app_logging.py ====================
+"""Application logging to logs/application.log."""
+
+
+
+_LOG_DIR = os.path.join(APP_DIR, "logs")
+_LOG_PATH = os.path.join(_LOG_DIR, "application.log")
+_LOGGER: Optional[logging.Logger] = None
+
+
+def get_logger() -> logging.Logger:
+    global _LOGGER
+    if _LOGGER is not None:
+        return _LOGGER
+
+    os.makedirs(_LOG_DIR, exist_ok=True)
+    logger = logging.getLogger("water_demand_app")
+    logger.setLevel(logging.DEBUG)
+    if not logger.handlers:
+        handler = logging.FileHandler(_LOG_PATH, encoding="utf-8")
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s | %(levelname)s | %(funcName)s | %(message)s")
+        )
+        logger.addHandler(handler)
+    _LOGGER = logger
+    return logger
+
+
+def log_exception(
+    message: str,
+    *,
+    exc: Optional[BaseException] = None,
+    project_id: str = "",
+    function: str = "",
+) -> None:
+    logger = get_logger()
+    parts = [message]
+    if project_id:
+        parts.append(f"project_id={project_id}")
+    if function:
+        parts.append(f"function={function}")
+    text = " | ".join(parts)
+    if exc is not None:
+        logger.error("%s\n%s", text, "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+    else:
+        logger.error(text)
+
 # ==================== services/automation.py ====================
 """Live automation — sync UI inputs to state and apply building parser rules."""
 
@@ -5277,28 +5324,109 @@ def safe_execute(action: Callable, on_error: Callable[[str], None]) -> bool:
         return False
 
 # ==================== ui/gui_safe.py ====================
-"""Safe GUI callback wrappers — show errors instead of crashing the application."""
+"""Safe GUI callback wrappers — user-friendly errors and application logging."""
+
 
 
 
 F = TypeVar("F", bound=Callable[..., Any])
 
+_USER_MESSAGE = "Something went wrong. Please try again."
+
 
 def safe_command(callback: F, parent: Optional[Any] = None, title: str = "Error") -> F:
-    """Wrap a GUI callback so unexpected exceptions are shown and logged."""
+    """Wrap a GUI callback so unexpected exceptions are logged and shown safely."""
 
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             return callback(*args, **kwargs)
         except Exception as exc:
-            traceback.print_exc()
+            log_exception(
+                str(exc),
+                exc=exc,
+                function=getattr(callback, "__name__", "safe_command"),
+            )
             win = parent
             if win is not None and hasattr(win, "winfo_toplevel"):
                 win = win.winfo_toplevel()
-            messagebox.showerror(title, f"An unexpected error occurred:\n{exc}", parent=win)
+            messagebox.showerror(title, _USER_MESSAGE, parent=win)
 
     wrapper.__name__ = getattr(callback, "__name__", "safe_command")
     return wrapper  # type: ignore[return-value]
+
+# ==================== ui/theme.py ====================
+"""Centralized UI design tokens for American Edge Engineers."""
+
+
+
+# Re-export brand colors (defined in nbc_2026 — single source of truth)
+COLOR_PRIMARY = BRAND_NAVY
+COLOR_ACCENT = BRAND_ORANGE
+COLOR_SUCCESS = "#20A968"
+COLOR_WARNING = "#F4B400"
+COLOR_DANGER = "#C0392B"
+COLOR_BACKGROUND = "#F4F6F8"
+COLOR_CARD = "#FFFFFF"
+COLOR_BORDER = "#DCE3EA"
+COLOR_TEXT_PRIMARY = "#1F2937"
+COLOR_TEXT_SECONDARY = "#687684"
+COLOR_MUTED = "#7A8794"
+COLOR_TABLE_HEADER = "#E8ECF0"
+COLOR_TABLE_ROW_ALT = "#F8FAFB"
+COLOR_TABLE_ROW_SELECTED = "#D6EAF8"
+
+# Typography
+FONT_FAMILY = "Arial"
+FONT_TITLE = (FONT_FAMILY, 22, "bold")
+FONT_SUBTITLE = (FONT_FAMILY, 11)
+FONT_SECTION = (FONT_FAMILY, 11, "bold")
+FONT_BODY = (FONT_FAMILY, 11)
+FONT_SMALL = (FONT_FAMILY, 10)
+FONT_CAPTION = (FONT_FAMILY, 9)
+FONT_STAT_VALUE = (FONT_FAMILY, 18, "bold")
+FONT_STAT_LABEL = (FONT_FAMILY, 8, "bold")
+FONT_HEADER_COMPANY = (FONT_FAMILY, 13, "bold")
+FONT_HEADER_TAGLINE = (FONT_FAMILY, 10)
+
+# Spacing & shape
+RADIUS_CARD = 12
+RADIUS_BUTTON = 8
+RADIUS_BADGE = 10
+PAD_PAGE = 20
+PAD_CARD = 16
+PAD_SECTION = 14
+ROW_HEIGHT_COMPACT = 28
+BUTTON_HEIGHT = 36
+ENTRY_HEIGHT = 34
+
+# Status badge labels (text + emoji for accessibility)
+STATUS_BADGES = {
+    "New": "🟡 New",
+    "In Progress": "🟢 In Progress",
+    "Completed": "🔵 Completed",
+    "Pending": "🟠 Pending",
+    "Delayed": "🔴 Delayed",
+    "Cancelled": "⚫ Cancelled",
+}
+
+# Project type card icons (supported types only)
+PROJECT_TYPE_ICONS = {
+    "Residential": "🏠",
+    "Commercial": "🏢",
+    "Mixed Use": "🏙",
+    "Industrial": "🏭",
+    "Hospital": "🏥",
+    "Hotel": "🏨",
+    "School": "🏫",
+    "College": "🎓",
+    "Shopping Mall": "🛍",
+    "Mall": "🛍",
+    "IT Park": "💻",
+    "Warehouse": "📦",
+    "Township": "🏘",
+}
+
+COMPANY_TAGLINE = "Engineering Project Management System"
 
 # ==================== ui/scheduled_callbacks.py ====================
 """Safe scheduling helpers for Tk/CustomTkinter widget callbacks."""
@@ -5306,6 +5434,42 @@ def safe_command(callback: F, parent: Optional[Any] = None, title: str = "Error"
 
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+TraceRegistration = Tuple[Any, str, str]  # (variable, mode, trace_id)
+
+
+class PageLifecycleMixin:
+    """Track and cancel after() jobs and variable traces for a page."""
+
+    def _init_page_lifecycle(self) -> None:
+        self._after_jobs: List[Any] = []
+        self._trace_registrations: List[TraceRegistration] = []
+
+    def schedule_after(self, delay_ms: int, callback: Callable[[], None]) -> Any:
+        job = self.after(delay_ms, callback)
+        self._after_jobs.append(job)
+        return job
+
+    def schedule_after_idle(self, callback: Callable[[], None]) -> Any:
+        job = self.after_idle(callback)
+        self._after_jobs.append(job)
+        return job
+
+    def register_trace(self, var: Any, mode: str, callback: Callable) -> str:
+        trace_id = var.trace_add(mode, callback)
+        self._trace_registrations.append((var, mode, trace_id))
+        return trace_id
+
+    def cancel_page_lifecycle(self) -> None:
+        for job in list(self._after_jobs):
+            cancel_after(self, job)
+        self._after_jobs.clear()
+        for var, mode, trace_id in list(self._trace_registrations):
+            try:
+                var.trace_remove(mode, trace_id)
+            except (tk.TclError, AttributeError, ValueError):
+                pass
+        self._trace_registrations.clear()
 
 
 def widget_is_alive(widget: Any) -> bool:
@@ -5482,7 +5646,7 @@ class AppState:
 PAGE_BG = "#F0F2F5"
 
 
-class ScrollablePage(ctk.CTkScrollableFrame):
+class ScrollablePage(PageLifecycleMixin, ctk.CTkScrollableFrame):
     """Full-size scrollable page shell used by every wizard screen."""
 
     _PENDING_JOB_ATTRS = ("_auto_calc_after_id",)
@@ -5493,9 +5657,11 @@ class ScrollablePage(ctk.CTkScrollableFrame):
         kwargs.setdefault("border_width", 0)
         kwargs.setdefault("label_text", "")
         super().__init__(master, **kwargs)
+        self._init_page_lifecycle()
         self._auto_calc_after_id: str | None = None
 
     def cancel_pending_callbacks(self) -> None:
+        self.cancel_page_lifecycle()
         for attr in self._PENDING_JOB_ATTRS:
             cancel_after(self, getattr(self, attr, None))
             setattr(self, attr, None)
@@ -5527,6 +5693,243 @@ class ScrollablePage(ctk.CTkScrollableFrame):
                 callback()
 
         self._auto_calc_after_id = self.after(delay_ms, safe_widget_callback(self, _run))
+
+# ==================== ui/components/wizard.py ====================
+"""Shared wizard step indicator and navigation bar."""
+
+
+
+
+
+
+def wizard_step_labels(project_type: str) -> list[str]:
+    """Ordered workflow step labels including type selection."""
+    labels = ["Project Type"]
+    for key in WIZARD_PAGE_ORDER:
+        if key in visible_pages(project_type):
+            labels.append(key if key != "Project" else "Project Details")
+    return labels
+
+
+def wizard_step_index(page_key: str, project_type: str) -> tuple[int, int]:
+    """Return (current_step_1based, total_steps) for a workflow page key."""
+    labels = wizard_step_labels(project_type)
+    lookup = "Project Type" if page_key == "Type" else ("Project Details" if page_key == "Project" else page_key)
+    try:
+        idx = labels.index(lookup)
+    except ValueError:
+        idx = 0
+    return idx + 1, len(labels)
+
+
+class StepIndicator(ctk.CTkFrame):
+    """Compact step badge: STEP 2 OF 8 — Project Details."""
+
+    def __init__(self, master, *, step: int, total: int, title: str, **kwargs) -> None:
+        super().__init__(master, fg_color="transparent", **kwargs)
+        badge = ctk.CTkLabel(
+            self,
+            text=f"STEP {step} OF {total}",
+            font=FONT_CAPTION,
+            text_color=COLOR_ACCENT,
+            fg_color="#FFF1E8",
+            corner_radius=12,
+            padx=12,
+            pady=5,
+        )
+        badge.pack(side="left")
+        ctk.CTkLabel(
+            self,
+            text=title,
+            font=FONT_SECTION,
+            text_color=COLOR_PRIMARY,
+        ).pack(side="left", padx=(10, 0))
+
+
+class WizardNavBar(ctk.CTkFrame):
+    """Standard Back / Next navigation row."""
+
+    def __init__(
+        self,
+        master,
+        *,
+        on_back: Optional[Callable[[], None]] = None,
+        on_next: Optional[Callable[[], None]] = None,
+        back_text: str = "← Back",
+        next_text: str = "Next →",
+        show_back: bool = True,
+        **kwargs,
+    ) -> None:
+        super().__init__(master, fg_color="transparent", **kwargs)
+        if show_back and on_back is not None:
+            ctk.CTkButton(
+                self,
+                text=back_text,
+                command=on_back,
+                fg_color="#7F8C8D",
+                hover_color="#667071",
+                width=140,
+                height=36,
+            ).pack(side="left", padx=8)
+        if on_next is not None:
+            ctk.CTkButton(
+                self,
+                text=next_text,
+                command=on_next,
+                fg_color=COLOR_ACCENT,
+                hover_color="#D06018",
+                width=220,
+                height=36,
+            ).pack(side="right", padx=8)
+
+
+def build_page_header(parent, title: str, subtitle: str = "", step: int = 0, total: int = 0) -> ctk.CTkFrame:
+    """Consistent white card header for workflow pages."""
+    wrapper = ctk.CTkFrame(parent, fg_color="white", corner_radius=12, border_width=1, border_color=COLOR_BORDER)
+    wrapper.pack(fill="x", padx=18, pady=(14, 10))
+    wrapper.grid_columnconfigure(0, weight=1)
+
+    left = ctk.CTkFrame(wrapper, fg_color="transparent")
+    left.grid(row=0, column=0, sticky="w", padx=20, pady=15)
+    ctk.CTkLabel(left, text=title, font=("Arial", 21, "bold"), text_color=COLOR_PRIMARY, anchor="w").pack(anchor="w")
+    if subtitle:
+        ctk.CTkLabel(
+            left,
+            text=subtitle,
+            font=FONT_SUBTITLE,
+            text_color=COLOR_TEXT_SECONDARY,
+            anchor="w",
+        ).pack(anchor="w", pady=(4, 0))
+
+    if step > 0 and total > 0:
+        StepIndicator(wrapper, step=step, total=total, title=title).grid(
+            row=0, column=1, padx=18, pady=15, sticky="e"
+        )
+    return wrapper
+
+# ==================== ui/components/type_selector.py ====================
+"""Visual project type selection cards."""
+
+
+
+
+
+
+TYPE_DESCRIPTIONS = {
+    "Residential": "Apartments, villas and housing projects.",
+    "Commercial": "Offices, shops and business developments.",
+    "Mixed Use": "Residential and commercial combined.",
+    "Township": "Large multi-component developments.",
+    "Hotel": "Hotels and hospitality projects.",
+    "Hospital": "Hospitals and healthcare facilities.",
+    "School": "Schools and educational campuses.",
+    "College": "Colleges and higher-education campuses.",
+    "Shopping Mall": "Malls and retail developments.",
+    "Mall": "Malls and retail developments.",
+    "IT Park": "IT parks and technology campuses.",
+    "Industrial": "Industrial and manufacturing projects.",
+    "Warehouse": "Warehouses and storage facilities.",
+}
+
+
+class ProjectTypeSelector(ctk.CTkFrame):
+    """Grid of selectable project type cards."""
+
+    def __init__(
+        self,
+        master,
+        *,
+        initial_label: str = PROJECT_TYPE_PLACEHOLDER,
+        on_selection_change: Optional[Callable[[str], None]] = None,
+        **kwargs,
+    ) -> None:
+        super().__init__(master, fg_color="transparent", **kwargs)
+        self.on_selection_change = on_selection_change
+        self._selected = ctk.StringVar(value=initial_label)
+        self._cards: dict[str, ctk.CTkFrame] = {}
+        self._build()
+
+    def get_selected(self) -> str:
+        return self._selected.get()
+
+    def set_selected(self, label: str) -> None:
+        self._selected.set(label)
+        self._refresh_highlights()
+
+    def _build(self) -> None:
+        labels = sorted(set(PROJECT_TYPE_LABELS.keys()))
+        cols = 3
+        for i, label in enumerate(labels):
+            row, col = divmod(i, cols)
+            card = self._make_card(label)
+            card.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
+            for c in range(cols):
+                self.grid_columnconfigure(c, weight=1)
+
+    def _make_card(self, label: str) -> ctk.CTkFrame:
+        icon = PROJECT_TYPE_ICONS.get(label, "📋")
+        frame = ctk.CTkFrame(
+            self,
+            fg_color=COLOR_CARD,
+            corner_radius=10,
+            border_width=2,
+            border_color=COLOR_BORDER,
+            width=200,
+            height=88,
+            cursor="hand2",
+        )
+        frame.grid_propagate(False)
+        self._cards[label] = frame
+
+        inner = ctk.CTkFrame(frame, fg_color="transparent")
+        inner.pack(fill="both", expand=True, padx=10, pady=8)
+        title_row = ctk.CTkFrame(inner, fg_color="transparent")
+        title_row.pack(fill="x")
+        check = ctk.CTkLabel(title_row, text="", font=FONT_SECTION, text_color=COLOR_ACCENT, width=16)
+        check.pack(side="right")
+        frame._check_label = check  # type: ignore[attr-defined]
+        ctk.CTkLabel(
+            title_row,
+            text=f"{icon}  {label}",
+            font=FONT_SECTION,
+            text_color=COLOR_PRIMARY,
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True)
+        ctk.CTkLabel(
+            inner,
+            text=TYPE_DESCRIPTIONS.get(label, ""),
+            font=("Arial", 9),
+            text_color=COLOR_TEXT_SECONDARY,
+            anchor="w",
+            wraplength=170,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 0))
+
+        def select(_event=None, lbl=label):
+            self._selected.set(lbl)
+            self._refresh_highlights()
+            if self.on_selection_change:
+                self.on_selection_change(lbl)
+
+        frame.bind("<Button-1>", select)
+        for child in frame.winfo_children():
+            child.bind("<Button-1>", select)
+            for sub in child.winfo_children():
+                sub.bind("<Button-1>", select)
+
+        return frame
+
+    def _refresh_highlights(self) -> None:
+        selected = self._selected.get()
+        for label, card in self._cards.items():
+            is_sel = label == selected and selected != PROJECT_TYPE_PLACEHOLDER
+            card.configure(
+                border_color=COLOR_ACCENT if is_sel else COLOR_BORDER,
+                fg_color="#FFF8F0" if is_sel else COLOR_CARD,
+            )
+            check = getattr(card, "_check_label", None)
+            if check is not None:
+                check.configure(text="✓" if is_sel else "")
 
 # ==================== ui/components/result_table.py ====================
 """Professional Description | Value | Unit tables for engineering report screens."""
@@ -5880,7 +6283,7 @@ class MainDashboard(ctk.CTkFrame):
         on_open_project: Callable[[str], None],
         on_exit: Callable[[], None],
     ) -> None:
-        super().__init__(master, fg_color="#F4F6F8")
+        super().__init__(master, fg_color=COLOR_BACKGROUND)
         self.on_new_project = on_new_project
         self.on_open_project = on_open_project
         self.on_exit = on_exit
@@ -5892,7 +6295,7 @@ class MainDashboard(ctk.CTkFrame):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(3, weight=1)
 
-        hero = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=12)
+        hero = ctk.CTkFrame(self, fg_color=COLOR_CARD, corner_radius=12, border_width=1, border_color=COLOR_BORDER)
         hero.grid(row=0, column=0, sticky="ew", padx=20, pady=(14, 8))
         hero.grid_columnconfigure(0, weight=1)
 
@@ -5900,23 +6303,16 @@ class MainDashboard(ctk.CTkFrame):
         left.grid(row=0, column=0, sticky="w", padx=(18, 12), pady=14)
         ctk.CTkLabel(
             left,
-            text="AMERICAN EDGE ENGINEERS",
-            font=("Arial", 10, "bold"),
-            text_color="#AFC3D6",
+            text="Project Home",
+            font=FONT_TITLE,
+            text_color=COLOR_PRIMARY,
             anchor="w",
         ).pack(anchor="w")
         ctk.CTkLabel(
             left,
-            text="Project Home",
-            font=("Arial", 22, "bold"),
-            text_color="white",
-            anchor="w",
-        ).pack(anchor="w", pady=(2, 0))
-        ctk.CTkLabel(
-            left,
             text="Manage and monitor your engineering projects.",
-            font=("Arial", 11),
-            text_color="#D7E1EA",
+            font=FONT_SUBTITLE,
+            text_color=COLOR_TEXT_SECONDARY,
             anchor="w",
         ).pack(anchor="w", pady=(4, 0))
 
@@ -5924,7 +6320,7 @@ class MainDashboard(ctk.CTkFrame):
             hero,
             text="+ New Project",
             command=safe_command(self.on_new_project, parent=self),
-            fg_color="#20A968",
+            fg_color=COLOR_SUCCESS,
             hover_color="#1B8F58",
             width=140,
             height=36,
@@ -5935,12 +6331,12 @@ class MainDashboard(ctk.CTkFrame):
             self,
             text="PROJECT OVERVIEW",
             font=("Arial", 11, "bold"),
-            text_color=BRAND_NAVY,
+            text_color=COLOR_PRIMARY,
         ).grid(row=1, column=0, sticky="w", padx=22, pady=(0, 4))
 
         stats_row = ctk.CTkFrame(self, fg_color="transparent")
         stats_row.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 8))
-        for i in range(5):
+        for i in range(6):
             stats_row.grid_columnconfigure(i, weight=1)
 
         for column, (key, title) in enumerate([
@@ -5949,6 +6345,7 @@ class MainDashboard(ctk.CTkFrame):
             ("completed", "COMPLETED"),
             ("pending", "PENDING"),
             ("delayed", "DELAYED"),
+            ("today", "TODAY"),
         ]):
             self._stat_labels[key] = self._make_stat_card(stats_row, column, title, "0")
 
@@ -5964,24 +6361,24 @@ class MainDashboard(ctk.CTkFrame):
     def _make_stat_card(self, parent, column: int, title: str, value: str):
         card = ctk.CTkFrame(
             parent,
-            fg_color="white",
+            fg_color=COLOR_CARD,
             corner_radius=10,
             border_width=1,
-            border_color="#E0E5EA",
-            height=62,
+            border_color=COLOR_BORDER,
+            height=58,
         )
         card.grid(
             row=0,
             column=column,
             sticky="ew",
-            padx=(0 if column == 0 else 4, 4 if column < 4 else 0),
+            padx=(0 if column == 0 else 3, 3 if column < 5 else 0),
         )
         card.grid_propagate(False)
-        ctk.CTkLabel(card, text=title, font=("Arial", 8, "bold"), text_color="#7A8794").pack(
-            anchor="w", padx=12, pady=(8, 0)
+        ctk.CTkLabel(card, text=title, font=FONT_STAT_LABEL, text_color=COLOR_TEXT_SECONDARY).pack(
+            anchor="w", padx=10, pady=(6, 0)
         )
-        value_label = ctk.CTkLabel(card, text=value, font=("Arial", 18, "bold"), text_color=BRAND_NAVY)
-        value_label.pack(anchor="w", padx=12, pady=(0, 8))
+        value_label = ctk.CTkLabel(card, text=value, font=FONT_STAT_VALUE, text_color=COLOR_PRIMARY)
+        value_label.pack(anchor="w", padx=10, pady=(0, 6))
         return value_label
 
     def _update_stats(self, stats: dict) -> None:
@@ -5991,6 +6388,7 @@ class MainDashboard(ctk.CTkFrame):
             "completed": stats.get("completed", 0),
             "pending": stats.get("pending", 0),
             "delayed": stats.get("delayed", 0),
+            "today": stats.get("today", 0),
         }
         for key, value in mapping.items():
             label = self._stat_labels.get(key)
@@ -6010,7 +6408,7 @@ DashboardScreen = MainDashboard
 
 
 
-class ProjectHub(ctk.CTkFrame):
+class ProjectHub(PageLifecycleMixin, ctk.CTkFrame):
     """Compact project table with filters; only the table area scrolls."""
 
     def __init__(
@@ -6021,7 +6419,8 @@ class ProjectHub(ctk.CTkFrame):
         on_edit_project: Optional[Callable[[str], None]] = None,
         on_stats_changed: Optional[Callable[[dict], None]] = None,
     ) -> None:
-        super().__init__(master, fg_color="white", corner_radius=12, border_width=1, border_color="#E0E5EA")
+        super().__init__(master, fg_color=COLOR_CARD, corner_radius=12, border_width=1, border_color=COLOR_BORDER)
+        self._init_page_lifecycle()
         self.on_new_project = on_new_project
         self.on_open_project = on_open_project
         self.on_edit_project = on_edit_project or on_open_project
@@ -6079,14 +6478,25 @@ class ProjectHub(ctk.CTkFrame):
             row=1, column=4, padx=(0, 4), pady=(0, 8), sticky="w"
         )
         self.search_var = ctk.StringVar()
-        self.search_var.trace_add("write", lambda *_: self._schedule_search())
+        self.register_trace(self.search_var, "write", lambda *_: self._schedule_search())
         self.search_entry = ctk.CTkEntry(
             filters,
             textvariable=self.search_var,
-            placeholder_text="Search by Project ID, Project Name, Engineer...",
+            placeholder_text="Search by name, client, engineer or ID...",
             height=30,
         )
-        self.search_entry.grid(row=1, column=5, sticky="ew", padx=(0, 10), pady=(0, 8))
+        self.search_entry.grid(row=1, column=5, sticky="ew", padx=(0, 6), pady=(0, 8))
+        ctk.CTkButton(
+            filters,
+            text="Clear",
+            width=60,
+            height=30,
+            font=("Arial", 9),
+            fg_color="#E8ECF0",
+            hover_color=COLOR_BORDER,
+            text_color=COLOR_PRIMARY,
+            command=self._clear_search,
+        ).grid(row=1, column=6, padx=(0, 10), pady=(0, 8), sticky="w")
 
         header_row = ctk.CTkFrame(self, fg_color="transparent")
         header_row.grid(row=1, column=0, sticky="ew", padx=14, pady=(2, 4))
@@ -6127,14 +6537,15 @@ class ProjectHub(ctk.CTkFrame):
         self.table_wrap.grid_columnconfigure(0, weight=1)
 
         self._header_columns = [
-            ("Project ID", 108),
-            ("Project Name", 150),
-            ("Type", 88),
-            ("Engineer", 88),
-            ("Status", 82),
-            ("Time Taken", 78),
-            ("Performance", 120),
-            ("Actions", 132),
+            ("Project ID", 96),
+            ("Project Name", 120),
+            ("Client", 100),
+            ("Type", 76),
+            ("Engineer", 76),
+            ("Status", 100),
+            ("Time", 68),
+            ("Performance", 108),
+            ("Actions", 56),
         ]
         self._table_header = ctk.CTkFrame(self.table_wrap, fg_color="#E8ECF0", corner_radius=4)
         self._table_header.pack(fill="x", pady=(0, 2))
@@ -6151,13 +6562,13 @@ class ProjectHub(ctk.CTkFrame):
         self.search_entry.focus_set()
         self.search_entry.icursor("end")
 
+    def _clear_search(self) -> None:
+        self.search_var.set("")
+        self._apply_filters()
+
     def _schedule_search(self) -> None:
-        if self._search_job is not None:
-            try:
-                self.after_cancel(self._search_job)
-            except Exception:
-                pass
-        self._search_job = self.after(180, self._apply_filters)
+        cancel_after(self, self._search_job)
+        self._search_job = self.schedule_after(180, self._apply_filters)
 
     def _on_filter_change(self, *_args) -> None:
         self._apply_filters()
@@ -6197,12 +6608,34 @@ class ProjectHub(ctk.CTkFrame):
         self._selected_id = None
 
         if not self._filtered_rows:
+            query = self.search_var.get().strip()
+            if query:
+                msg = "No matching projects found."
+                btn_text = "Clear Search"
+                cmd = self._clear_search
+            elif not self._all_rows:
+                msg = "No projects found.\nCreate your first engineering project to get started."
+                btn_text = "+ New Project"
+                cmd = self.on_new_project
+            else:
+                msg = "No projects match the current filters."
+                btn_text = "Clear Filters"
+                cmd = self._clear_filters
             ctk.CTkLabel(
                 self.table_wrap,
-                text="No projects found. Click '+ New Project' to create one.",
+                text=msg,
                 font=("Arial", 10),
-                text_color="#8A949E",
-            ).pack(pady=16)
+                text_color=COLOR_TEXT_SECONDARY,
+                justify="center",
+            ).pack(pady=(16, 8))
+            ctk.CTkButton(
+                self.table_wrap,
+                text=btn_text,
+                width=140,
+                height=30,
+                fg_color=BRAND_ORANGE,
+                command=safe_command(cmd, parent=self),
+            ).pack(pady=(0, 16))
             return
 
         for row in self._filtered_rows:
@@ -6215,6 +6648,15 @@ class ProjectHub(ctk.CTkFrame):
             return f"{title} ({detail})"
         return title or detail or "—"
 
+    def _clear_filters(self) -> None:
+        self.engineer_var.set("All Engineers")
+        self.status_var.set("All Status")
+        self.search_var.set("")
+        self._apply_filters()
+
+    def _status_badge(self, label: str) -> str:
+        return STATUS_BADGES.get(label, label)
+
     def _add_row(self, row: dict) -> None:
         pid = row["project_id"]
         frame = ctk.CTkFrame(self.table_wrap, fg_color="transparent", corner_radius=2)
@@ -6224,15 +6666,16 @@ class ProjectHub(ctk.CTkFrame):
         values = [
             pid,
             row.get("project_name", ""),
+            row.get("client_name", "") or "—",
             row.get("project_type_label", "—"),
             row.get("engineer_name", "") or "—",
-            row.get("status_label", ""),
+            self._status_badge(row.get("status_label", "")),
             row.get("time_taken_display", "—"),
             self._format_performance(row),
         ]
         widths = [w for _, w in self._header_columns[:-1]]
         for i, (value, width) in enumerate(zip(values, widths)):
-            text = (value or "")[:30]
+            text = (value or "")[:28]
             lbl = ctk.CTkLabel(frame, text=text, font=("Arial", 8), width=width, anchor="w")
             lbl.grid(row=0, column=i, padx=2, pady=2, sticky="w")
             lbl.bind("<Button-1>", lambda _e, p=pid: self._select_row(p))
@@ -6243,31 +6686,44 @@ class ProjectHub(ctk.CTkFrame):
         actions.grid(row=0, column=len(values), padx=1, pady=1, sticky="w")
         ctk.CTkButton(
             actions,
-            text="Open",
-            width=40,
+            text="⋮",
+            width=32,
             height=22,
-            font=("Arial", 8),
-            fg_color=BRAND_ORANGE,
-            command=safe_command(lambda p=pid: self._open_project(p), parent=self),
-        ).pack(side="left", padx=1)
-        ctk.CTkButton(
-            actions,
-            text="Edit",
-            width=40,
-            height=22,
-            font=("Arial", 8),
-            fg_color="#2980B9",
-            command=safe_command(lambda p=pid: self._edit_project(p), parent=self),
-        ).pack(side="left", padx=1)
-        ctk.CTkButton(
-            actions,
-            text="Delete",
-            width=44,
-            height=22,
-            font=("Arial", 8),
-            fg_color="#C0392B",
-            command=safe_command(lambda p=pid, r=row: self._delete_project(p, r), parent=self),
-        ).pack(side="left", padx=1)
+            font=("Arial", 12, "bold"),
+            fg_color="#E8ECF0",
+            hover_color=COLOR_BORDER,
+            text_color=COLOR_PRIMARY,
+            command=safe_command(lambda p=pid, r=row: self._show_actions_menu(p, r), parent=self),
+        ).pack(side="left")
+
+    def _show_actions_menu(self, project_id: str, row: dict) -> None:
+        menu = ctk.CTkToplevel(self)
+        menu.title("Actions")
+        menu.geometry("200x220")
+        menu.resizable(False, False)
+        menu.transient(self.winfo_toplevel())
+        menu.grab_set()
+        body = ctk.CTkFrame(menu, fg_color="white")
+        body.pack(fill="both", expand=True, padx=10, pady=10)
+        for label, cmd in [
+            ("Open Project", lambda: self._menu_action(menu, lambda: self._open_project(project_id))),
+            ("Edit Project", lambda: self._menu_action(menu, lambda: self._edit_project(project_id))),
+            ("Delete Project", lambda: self._menu_action(menu, lambda: self._delete_project(project_id, row))),
+        ]:
+            ctk.CTkButton(
+                body,
+                text=label,
+                anchor="w",
+                fg_color="transparent",
+                hover_color="#E8ECF0",
+                text_color=COLOR_PRIMARY,
+                command=cmd,
+            ).pack(fill="x", pady=2)
+
+    def _menu_action(self, menu, action) -> None:
+        menu.grab_release()
+        menu.destroy()
+        action()
 
     def _select_row(self, project_id: str) -> None:
         self._selected_id = project_id
@@ -6296,21 +6752,14 @@ class ProjectHub(ctk.CTkFrame):
 
         body = ctk.CTkFrame(dialog, fg_color="white")
         body.pack(fill="both", expand=True, padx=18, pady=18)
-        ctk.CTkLabel(body, text="Delete Project", font=("Arial", 18, "bold"), text_color=BRAND_NAVY).pack(
+        ctk.CTkLabel(body, text="Delete Project Permanently?", font=("Arial", 18, "bold"), text_color=BRAND_NAVY).pack(
             anchor="w", pady=(0, 8)
         )
         ctk.CTkLabel(
             body,
-            text="Are you sure you want to delete this project?",
-            font=("Arial", 11),
-            text_color="#4B5563",
-            justify="left",
-        ).pack(anchor="w", pady=(0, 10))
-        ctk.CTkLabel(
-            body,
             text=(
                 f"Project:\n{row.get('project_name', '')}\n\n"
-                f"Project ID:\n{project_id}\n\n"
+                f"Client:\n{row.get('client_name', '') or '—'}\n\n"
                 f"Engineer:\n{row.get('engineer_name', '') or '—'}"
             ),
             font=("Arial", 11),
@@ -6346,7 +6795,7 @@ class ProjectHub(ctk.CTkFrame):
         ctk.CTkButton(buttons, text="Cancel", width=120, fg_color="#95A5A6", command=_cancel).pack(
             side="left", padx=(0, 8)
         )
-        ctk.CTkButton(buttons, text="Delete Project", width=140, fg_color="#C0392B", command=_confirm).pack(
+        ctk.CTkButton(buttons, text="Delete Permanently", width=160, fg_color="#C0392B", command=_confirm).pack(
             side="right"
         )
 
@@ -6550,6 +6999,10 @@ class ProjectPage(ScrollablePage):
         cancel_after(self, self._deferred_sync_job)
         self._deferred_sync_job = None
 
+    def _add_section_header(self, parent, row: int, text: str) -> None:
+        label = ctk.CTkLabel(parent, text=text, font=("Arial", 13, "bold"), text_color=COLOR_PRIMARY, anchor="w")
+        label.grid(row=row, column=0, columnspan=2, padx=FORM_PAD_X, pady=SECTION_PAD_Y, sticky="w")
+
     def _add_label(self, parent, row: int, text: str, *, bold: bool = False, section: bool = False) -> ctk.CTkLabel:
         font = ("Arial", 14, "bold") if section else ("Arial", 13, "bold" if bold else "normal")
         kwargs = {"font": font, "anchor": "w"}
@@ -6577,11 +7030,13 @@ class ProjectPage(ScrollablePage):
         return ent
 
     def _build(self) -> None:
-        build_professional_page_header(
+        step, total = wizard_step_index("Project", self.state.project.project_type)
+        build_page_header(
             self,
             "Project Details",
-            "Enter the basic project information first. Fields are kept simple and only required information is shown.",
-            "STEP 2 • PROJECT DETAILS",
+            "Enter the basic project information. Only required fields are shown.",
+            step=step,
+            total=total,
         )
 
         self.workflow_hint = ctk.CTkLabel(
@@ -6596,10 +7051,10 @@ class ProjectPage(ScrollablePage):
         self.details_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.form = ctk.CTkFrame(
             self.details_frame,
-            fg_color="white",
+            fg_color=COLOR_CARD,
             corner_radius=12,
             border_width=1,
-            border_color="#DCE3EA",
+            border_color=COLOR_BORDER,
         )
         self.form.pack(fill="x", padx=16, pady=8)
         self.form.grid_columnconfigure(0, weight=0)
@@ -6609,16 +7064,30 @@ class ProjectPage(ScrollablePage):
             self.state.project.project_no = next_project_number()
 
         row = 0
-        self._add_entry_row(self.form, row, "Project Name", "project_name", "NEW PROJECT")
+        self._add_section_header(self.form, row, "SECTION 1 — PROJECT INFORMATION")
         row += 1
-        self._add_entry_row(self.form, row, "Client Name", "client_name")
+        self._add_entry_row(self.form, row, "Project Name *", "project_name", "NEW PROJECT")
+        row += 1
+        self._add_label(self.form, row, "Project Number", bold=True)
+        self.project_no_label = ctk.CTkLabel(
+            self.form,
+            text=self.state.project.project_no or "—",
+            font=("Arial", 12),
+            text_color=COLOR_TEXT_SECONDARY,
+            anchor="w",
+        )
+        self.project_no_label.grid(row=row, column=1, padx=FORM_PAD_X, pady=FORM_ROW_PAD_Y, sticky="w")
+        row += 1
+        self._add_section_header(self.form, row, "SECTION 2 — CLIENT INFORMATION")
+        row += 1
+        self._add_entry_row(self.form, row, "Client Name *", "client_name")
         row += 1
 
         engineering_header = ctk.CTkLabel(
             self.form,
-            text="Engineering Configuration",
+            text="SECTION 3 — ENGINEERING CONFIGURATION",
             font=("Arial", 14, "bold"),
-            text_color=BRAND_NAVY,
+            text_color=COLOR_PRIMARY,
             anchor="w",
         )
         engineering_header.grid(row=row, column=0, columnspan=2, padx=FORM_PAD_X, pady=SECTION_PAD_Y, sticky="w")
@@ -6669,9 +7138,9 @@ class ProjectPage(ScrollablePage):
 
         signoff_header = ctk.CTkLabel(
             self.form,
-            text="Report Sign-off",
+            text="SECTION 4 — REPORT SIGN-OFF",
             font=("Arial", 14, "bold"),
-            text_color=BRAND_NAVY,
+            text_color=COLOR_PRIMARY,
             anchor="w",
         )
         signoff_header.grid(row=row, column=0, columnspan=2, padx=FORM_PAD_X, pady=SECTION_PAD_Y, sticky="w")
@@ -6767,19 +7236,19 @@ class ProjectPage(ScrollablePage):
 
     @property
     def _engineering_start_row(self) -> int:
-        return 2
+        return 5
 
     @property
     def _engineering_end_row(self) -> int:
-        return 6
+        return 9
 
     @property
     def _signoff_start_row(self) -> int:
-        return 7
+        return 10
 
     @property
     def _signoff_end_row(self) -> int:
-        return 12
+        return 15
 
     def _update_workflow_hint(self) -> None:
         if not hasattr(self, "workflow_hint"):
@@ -9141,6 +9610,7 @@ class Application(ctk.CTk):
         self._mode = "splash"
         self._last_saved_at = ""
         self._autosave_job = None
+        self._save_state = "saved"  # saved | saving | error
 
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
@@ -9185,6 +9655,23 @@ class Application(ctk.CTk):
             except Exception:
                 self.header_logo_label = None
 
+        title_frame = ctk.CTkFrame(self.header, fg_color="transparent")
+        title_frame.grid(row=0, column=1, rowspan=2, sticky="w", padx=(0, 12), pady=8)
+        ctk.CTkLabel(
+            title_frame,
+            text=COMPANY_NAME,
+            font=FONT_HEADER_COMPANY,
+            text_color="white",
+            anchor="w",
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            title_frame,
+            text=COMPANY_TAGLINE,
+            font=FONT_HEADER_TAGLINE,
+            text_color="#AFC3D6",
+            anchor="w",
+        ).pack(anchor="w")
+
         self.header_meta = ctk.CTkLabel(
             self.header,
             text="Project Home",
@@ -9194,7 +9681,7 @@ class Application(ctk.CTk):
         )
         self.header_meta.grid(row=0, column=2, rowspan=2, padx=(8, 18), sticky="e")
 
-        self.body = ctk.CTkFrame(self, fg_color="#F0F2F5", corner_radius=0)
+        self.body = ctk.CTkFrame(self, fg_color=COLOR_BACKGROUND, corner_radius=0)
         self.body.grid(row=1, column=0, sticky="nsew")
         self.body.grid_rowconfigure(0, weight=1)
         self.body.grid_columnconfigure(0, weight=1)
@@ -9210,14 +9697,62 @@ class Application(ctk.CTk):
             anchor="w",
         )
         self.status_label.pack(side="left", padx=12, pady=4)
+        self.save_status_label = ctk.CTkLabel(
+            self.status_bar,
+            text="🟢 All changes saved",
+            font=("Arial", 10),
+            text_color="#555555",
+            anchor="e",
+        )
+        self.save_status_label.pack(side="right", padx=12, pady=4)
+
+        self._bind_shortcuts()
+
+    def _bind_shortcuts(self) -> None:
+        self.bind_all("<Control-n>", lambda _e: self._shortcut_new())
+        self.bind_all("<Control-N>", lambda _e: self._shortcut_new())
+        self.bind_all("<Control-o>", lambda _e: self._shortcut_open())
+        self.bind_all("<Control-O>", lambda _e: self._shortcut_open())
+        self.bind_all("<Control-s>", lambda _e: self._shortcut_save())
+        self.bind_all("<Control-S>", lambda _e: self._shortcut_save())
+        self.bind_all("<Escape>", lambda _e: self.focus_set())
+
+    def _shortcut_new(self) -> None:
+        if self._mode in ("dashboard", "type_selector"):
+            self._start_new_project()
+
+    def _shortcut_open(self) -> None:
+        if self._mode == "dashboard" and self._dashboard and self._dashboard.project_hub:
+            self._dashboard.project_hub.focus_search()
+
+    def _shortcut_save(self) -> None:
+        if self._workspace is not None and self._mode == "project":
+            try:
+                self._set_save_state("saving")
+                self._workspace.autosave_before_close()
+                self._on_project_autosaved()
+            except Exception:
+                self._set_save_state("error")
+
+    def _set_save_state(self, state: str) -> None:
+        self._save_state = state
+        labels = {
+            "saved": "🟢 All changes saved",
+            "saving": "🟠 Saving changes...",
+            "error": "🔴 Unable to save changes",
+        }
+        self.save_status_label.configure(text=labels.get(state, labels["saved"]))
 
     def _update_status(self) -> None:
         if self._workspace is not None and self._mode == "project":
             pid = self._workspace.app_state.project.project_id
-            saved = f"Last Saved: {self._last_saved_at}" if self._last_saved_at else "Last Saved: —"
+            saved = f"Last saved: {self._last_saved_at}" if self._last_saved_at else "Last saved: —"
             self.status_label.configure(text=f"Project ID: {pid}  |  Auto Calculation: ON  |  {saved}")
+            if self._save_state == "saved":
+                self._set_save_state("saved")
         else:
             self.status_label.configure(text="Auto Calculation: ON  |  Project Home")
+            self.save_status_label.configure(text="")
 
     def _update_header_meta(self) -> None:
         if self._workspace is not None and self._mode == "project":
@@ -9351,27 +9886,25 @@ class Application(ctk.CTk):
             corner_radius=18,
             border_width=1,
             border_color="#DCE3EA",
-            width=760,
-            height=520,
         )
-        card.grid(row=0, column=0)
-        card.grid_propagate(False)
+        card.grid(row=0, column=0, sticky="nsew", padx=24, pady=24)
+        card.grid_rowconfigure(3, weight=1)
         card.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
             card,
-            text="STEP 1 OF 2",
+            text="STEP 1 — SELECT PROJECT TYPE",
             font=("Arial", 10, "bold"),
             text_color=BRAND_ORANGE,
             fg_color="#FFF1E8",
             corner_radius=12,
             padx=12,
             pady=6,
-        ).grid(row=0, column=0, pady=(34, 10))
+        ).grid(row=0, column=0, pady=(20, 8))
         ctk.CTkLabel(
             card,
             text="Create a New Project",
-            font=("Arial", 27, "bold"),
+            font=("Arial", 24, "bold"),
             text_color=BRAND_NAVY,
         ).grid(row=1, column=0, pady=(0, 4))
         ctk.CTkLabel(
@@ -9379,109 +9912,51 @@ class Application(ctk.CTk):
             text="Choose the type of project you are preparing a water-demand report for.",
             font=("Arial", 12),
             text_color="#64748B",
-        ).grid(row=2, column=0, pady=(0, 22))
-
-        section = ctk.CTkFrame(card, fg_color="#F7F9FB", corner_radius=12, border_width=1, border_color="#E3E8ED")
-        section.grid(row=3, column=0, sticky="ew", padx=55, pady=0)
-        section.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(
-            section,
-            text="Project Type",
-            font=("Arial", 12, "bold"),
-            text_color=BRAND_NAVY,
-            anchor="w",
-        ).grid(row=0, column=0, sticky="w", padx=18, pady=(16, 6))
+        ).grid(row=2, column=0, pady=(0, 12))
 
         initial_label = (
             project_type_label(state.project.project_type)
             if is_project_type_set(state.project.project_type)
             else PROJECT_TYPE_PLACEHOLDER
         )
-        selected = ctk.StringVar(value=initial_label)
-        combo = ctk.CTkComboBox(
-            section,
-            values=[PROJECT_TYPE_PLACEHOLDER] + sorted(set(PROJECT_TYPE_LABELS.keys())),
-            variable=selected,
-            width=560,
-            height=44,
-            font=("Arial", 12),
-        )
-        combo.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 10))
-
         help_text = ctk.StringVar(value="Select a project type to continue.")
-        help_label = ctk.CTkLabel(
-            section,
+
+        def on_type_change(label: str) -> None:
+            if label == PROJECT_TYPE_PLACEHOLDER:
+                help_text.set("Select a project type to continue.")
+            else:
+                help_text.set(TYPE_DESCRIPTIONS.get(label, "The application will show relevant sections for this type."))
+
+        selector_wrap = ctk.CTkScrollableFrame(card, fg_color="transparent", height=320, label_text="")
+        selector_wrap.grid(row=3, column=0, sticky="nsew", padx=30, pady=(0, 8))
+        type_selector = ProjectTypeSelector(selector_wrap, initial_label=initial_label, on_selection_change=on_type_change)
+        type_selector.pack(fill="both", expand=True)
+        if initial_label != PROJECT_TYPE_PLACEHOLDER:
+            type_selector.set_selected(initial_label)
+            on_type_change(initial_label)
+
+        ctk.CTkLabel(
+            card,
             textvariable=help_text,
             font=("Arial", 10),
             text_color="#6B7280",
-            anchor="w",
-            justify="left",
-            wraplength=540,
-        )
-        help_label.grid(row=2, column=0, sticky="w", padx=18, pady=(0, 16))
-
-        descriptions = {
-            "Residential": "For residential buildings, apartments, villas and housing projects.",
-            "Commercial": "For offices, shops, commercial buildings and business developments.",
-            "Mixed Use": "For projects containing both residential and commercial components.",
-            "Township": "For larger developments with multiple residential/commercial components.",
-            "Hotel": "For hotels and hospitality projects.",
-            "Hospital": "For hospitals and healthcare facilities.",
-            "School": "For schools and educational campuses.",
-            "College": "For colleges and higher-education campuses.",
-            "Shopping Mall": "For malls, food courts and retail developments.",
-            "Mall": "For malls, food courts and retail developments.",
-            "IT Park": "For IT parks and technology office campuses.",
-            "Industrial": "For industrial and manufacturing projects.",
-            "Warehouse": "For warehouses and storage facilities.",
-        }
-
-        def update_help(*_):
-            label = selected.get()
-            if label == PROJECT_TYPE_PLACEHOLDER:
-                help_text.set(
-                    "Select a project type to continue. The application will then show only "
-                    "the engineering sections relevant to your project."
-                )
-            else:
-                help_text.set(
-                    descriptions.get(
-                        label,
-                        "The application will automatically show the relevant engineering sections for this project type.",
-                    )
-                )
-
-        combo.configure(command=lambda *_: update_help())
-        update_help()
-
-        ctk.CTkLabel(
-            card,
-            text="What happens next?",
-            font=("Arial", 12, "bold"),
-            text_color=BRAND_NAVY,
-        ).grid(row=4, column=0, pady=(18, 4))
-        ctk.CTkLabel(
-            card,
-            text="1. Select project type   →   2. Enter project details   →   3. Enter engineering inputs   →   4. Review & generate report",
-            font=("Arial", 10),
-            text_color="#687684",
-        ).grid(row=5, column=0, pady=(0, 18))
+            wraplength=700,
+        ).grid(row=4, column=0, pady=(4, 8))
 
         buttons = ctk.CTkFrame(card, fg_color="transparent")
-        buttons.grid(row=6, column=0, pady=(0, 24))
+        buttons.grid(row=5, column=0, pady=(0, 20))
 
         def cancel():
             self._destroy_type_selector()
             self._show_dashboard()
 
         def continue_project():
-            label = combo.get().strip() or selected.get().strip()
+            label = type_selector.get_selected().strip()
             if label == PROJECT_TYPE_PLACEHOLDER:
                 messagebox.showwarning(
                     "Project Type Required",
                     "Please select the project type before continuing.",
                 )
-                combo.focus_set()
                 return
             try:
                 new_type = project_type_key(label)
@@ -9512,8 +9987,8 @@ class Application(ctk.CTk):
         ).pack(side="left", padx=8)
         ctk.CTkButton(
             buttons,
-            text="Continue to Project Details  →",
-            width=245,
+            text="Continue →",
+            width=200,
             height=42,
             fg_color=BRAND_ORANGE,
             hover_color="#D06018",
@@ -9546,6 +10021,7 @@ class Application(ctk.CTk):
 
     def _on_project_autosaved(self) -> None:
         self._last_saved_at = datetime.now().strftime("%H:%M:%S")
+        self._set_save_state("saved")
         self._update_status()
         if self._dashboard is not None:
             self._dashboard.refresh_stats()

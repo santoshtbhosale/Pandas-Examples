@@ -189,8 +189,11 @@ class TestProjectDetailsNavigationWithSections(unittest.TestCase):
         return None
 
     def _select_type_and_continue(self, app, label: str) -> None:
-        combo = self._find_widget(app._type_selector, self.ctk.CTkComboBox)
-        combo.set(label)
+        from ui.components.type_selector import ProjectTypeSelector
+
+        selector = self._find_widget(app._type_selector, ProjectTypeSelector)
+        self.assertIsNotNone(selector)
+        selector.set_selected(label)
         continue_btn = self._find_button_with_text(app._type_selector, "Continue")
         continue_btn.invoke()
         app.update_idletasks()

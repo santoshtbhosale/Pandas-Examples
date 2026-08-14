@@ -24,7 +24,9 @@ from services.lookup_db import next_project_number, upsert_client
 from ui.app_state import AppState
 from ui.components.scrollable_frame import ScrollablePage
 from ui.components.validation import ValidationError, validate_positive_int, validate_required
+from ui.components.wizard import build_page_header, wizard_step_index
 from ui.scheduled_callbacks import cancel_after, safe_entry_text, safe_set_entry_text, safe_stringvar_set, safe_widget_callback, widget_is_alive
+from ui.theme import COLOR_BORDER, COLOR_CARD, COLOR_PRIMARY, COLOR_TEXT_SECONDARY
 
 FORM_PAD_X = 16
 FORM_ROW_PAD_Y = 6
@@ -91,6 +93,10 @@ class ProjectPage(ScrollablePage):
         cancel_after(self, self._deferred_sync_job)
         self._deferred_sync_job = None
 
+    def _add_section_header(self, parent, row: int, text: str) -> None:
+        label = ctk.CTkLabel(parent, text=text, font=("Arial", 13, "bold"), text_color=COLOR_PRIMARY, anchor="w")
+        label.grid(row=row, column=0, columnspan=2, padx=FORM_PAD_X, pady=SECTION_PAD_Y, sticky="w")
+
     def _add_label(self, parent, row: int, text: str, *, bold: bool = False, section: bool = False) -> ctk.CTkLabel:
         font = ("Arial", 14, "bold") if section else ("Arial", 13, "bold" if bold else "normal")
         kwargs = {"font": font, "anchor": "w"}
@@ -118,11 +124,13 @@ class ProjectPage(ScrollablePage):
         return ent
 
     def _build(self) -> None:
-        build_professional_page_header(
+        step, total = wizard_step_index("Project", self.state.project.project_type)
+        build_page_header(
             self,
             "Project Details",
-            "Enter the basic project information first. Fields are kept simple and only required information is shown.",
-            "STEP 2 • PROJECT DETAILS",
+            "Enter the basic project information. Only required fields are shown.",
+            step=step,
+            total=total,
         )
 
         self.workflow_hint = ctk.CTkLabel(
@@ -137,10 +145,10 @@ class ProjectPage(ScrollablePage):
         self.details_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.form = ctk.CTkFrame(
             self.details_frame,
-            fg_color="white",
+            fg_color=COLOR_CARD,
             corner_radius=12,
             border_width=1,
-            border_color="#DCE3EA",
+            border_color=COLOR_BORDER,
         )
         self.form.pack(fill="x", padx=16, pady=8)
         self.form.grid_columnconfigure(0, weight=0)
@@ -150,16 +158,30 @@ class ProjectPage(ScrollablePage):
             self.state.project.project_no = next_project_number()
 
         row = 0
-        self._add_entry_row(self.form, row, "Project Name", "project_name", "NEW PROJECT")
+        self._add_section_header(self.form, row, "SECTION 1 — PROJECT INFORMATION")
         row += 1
-        self._add_entry_row(self.form, row, "Client Name", "client_name")
+        self._add_entry_row(self.form, row, "Project Name *", "project_name", "NEW PROJECT")
+        row += 1
+        self._add_label(self.form, row, "Project Number", bold=True)
+        self.project_no_label = ctk.CTkLabel(
+            self.form,
+            text=self.state.project.project_no or "—",
+            font=("Arial", 12),
+            text_color=COLOR_TEXT_SECONDARY,
+            anchor="w",
+        )
+        self.project_no_label.grid(row=row, column=1, padx=FORM_PAD_X, pady=FORM_ROW_PAD_Y, sticky="w")
+        row += 1
+        self._add_section_header(self.form, row, "SECTION 2 — CLIENT INFORMATION")
+        row += 1
+        self._add_entry_row(self.form, row, "Client Name *", "client_name")
         row += 1
 
         engineering_header = ctk.CTkLabel(
             self.form,
-            text="Engineering Configuration",
+            text="SECTION 3 — ENGINEERING CONFIGURATION",
             font=("Arial", 14, "bold"),
-            text_color=BRAND_NAVY,
+            text_color=COLOR_PRIMARY,
             anchor="w",
         )
         engineering_header.grid(row=row, column=0, columnspan=2, padx=FORM_PAD_X, pady=SECTION_PAD_Y, sticky="w")
@@ -210,9 +232,9 @@ class ProjectPage(ScrollablePage):
 
         signoff_header = ctk.CTkLabel(
             self.form,
-            text="Report Sign-off",
+            text="SECTION 4 — REPORT SIGN-OFF",
             font=("Arial", 14, "bold"),
-            text_color=BRAND_NAVY,
+            text_color=COLOR_PRIMARY,
             anchor="w",
         )
         signoff_header.grid(row=row, column=0, columnspan=2, padx=FORM_PAD_X, pady=SECTION_PAD_Y, sticky="w")
@@ -308,19 +330,19 @@ class ProjectPage(ScrollablePage):
 
     @property
     def _engineering_start_row(self) -> int:
-        return 2
+        return 5
 
     @property
     def _engineering_end_row(self) -> int:
-        return 6
+        return 9
 
     @property
     def _signoff_start_row(self) -> int:
-        return 7
+        return 10
 
     @property
     def _signoff_end_row(self) -> int:
-        return 12
+        return 15
 
     def _update_workflow_hint(self) -> None:
         if not hasattr(self, "workflow_hint"):

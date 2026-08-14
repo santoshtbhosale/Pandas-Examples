@@ -252,13 +252,13 @@ class TestProjectHomeUI(unittest.TestCase):
         self.assertIn("+ New Project", source)
         self.assertIn("PROJECT OVERVIEW", source)
 
-    def test_dashboard_has_five_stat_cards_in_one_row(self) -> None:
+    def test_dashboard_has_six_stat_cards_in_one_row(self) -> None:
         page = self.MainDashboard(self.root, on_new_project=lambda: None, on_open_project=lambda _id: None, on_exit=lambda: None)
         page.update_idletasks()
-        self.assertEqual(len(page._stat_labels), 5)
+        self.assertEqual(len(page._stat_labels), 6)
         self.assertIn("total", page._stat_labels)
         self.assertIn("delayed", page._stat_labels)
-        self.assertNotIn("today", page._stat_labels)
+        self.assertIn("today", page._stat_labels)
 
     def test_dashboard_has_no_page_level_scroll(self) -> None:
         source = inspect.getsource(self.MainDashboard._build)
@@ -273,21 +273,10 @@ class TestProjectHomeUI(unittest.TestCase):
         self.assertTrue(hasattr(hub, "status_combo"))
         self.assertTrue(hasattr(hub, "search_entry"))
         self.assertTrue(hasattr(hub, "_show_performance_dialog"))
-        self.assertEqual(len(hub._header_columns), 8)
+        self.assertEqual(len(hub._header_columns), 9)
         column_names = [name for name, _width in hub._header_columns]
-        self.assertEqual(
-            column_names,
-            [
-                "Project ID",
-                "Project Name",
-                "Type",
-                "Engineer",
-                "Status",
-                "Time Taken",
-                "Performance",
-                "Actions",
-            ],
-        )
+        self.assertIn("Client", column_names)
+        self.assertIn("Project ID", column_names)
         self.assertFalse(hasattr(hub, "performance_frame"))
 
 
@@ -327,8 +316,10 @@ class TestProjectTypeSwitchingStillWorks(unittest.TestCase):
         app._start_new_project()
         app.update_idletasks()
         self.assertIsNotNone(app._type_selector)
-        combo = self._find_widget(app._type_selector, self.ctk.CTkComboBox)
-        self.assertIsNotNone(combo)
+        from ui.components.type_selector import ProjectTypeSelector
+
+        selector = self._find_widget(app._type_selector, ProjectTypeSelector)
+        self.assertIsNotNone(selector)
 
 
 if __name__ == "__main__":

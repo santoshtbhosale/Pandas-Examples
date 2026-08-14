@@ -14,6 +14,7 @@ from tkinter import messagebox
 from config.nbc_2026 import (
     BRAND_NAVY,
     BRAND_ORANGE,
+    COMPANY_NAME,
     PROJECT_TYPE_LABELS,
     PROJECT_TYPE_PLACEHOLDER,
     is_project_type_set,
@@ -24,9 +25,11 @@ from services.database import DB_PATH, init_db
 from services.lookup_db import init_lookup_tables
 from services.project_service import create_new_project_state, load_project_state, mark_project_opened
 from ui.app_state import AppState
+from ui.components.type_selector import ProjectTypeSelector
 from ui.dashboard import MainDashboard
 from ui.gui_safe import safe_command
 from ui.splash_screen import SplashScreen
+from ui.theme import COLOR_BACKGROUND, COMPANY_TAGLINE, FONT_HEADER_COMPANY, FONT_HEADER_TAGLINE
 
 APP_VERSION = "2.0.0"
 APP_TITLE = "American Edge Engineers - Water Demand Report Generator"
@@ -78,6 +81,7 @@ class Application(ctk.CTk):
         self._mode = "splash"
         self._last_saved_at = ""
         self._autosave_job = None
+        self._save_state = "saved"  # saved | saving | error
 
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
@@ -122,6 +126,23 @@ class Application(ctk.CTk):
             except Exception:
                 self.header_logo_label = None
 
+        title_frame = ctk.CTkFrame(self.header, fg_color="transparent")
+        title_frame.grid(row=0, column=1, rowspan=2, sticky="w", padx=(0, 12), pady=8)
+        ctk.CTkLabel(
+            title_frame,
+            text=COMPANY_NAME,
+            font=FONT_HEADER_COMPANY,
+            text_color="white",
+            anchor="w",
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            title_frame,
+            text=COMPANY_TAGLINE,
+            font=FONT_HEADER_TAGLINE,
+            text_color="#AFC3D6",
+            anchor="w",
+        ).pack(anchor="w")
+
         self.header_meta = ctk.CTkLabel(
             self.header,
             text="Project Home",
@@ -131,7 +152,7 @@ class Application(ctk.CTk):
         )
         self.header_meta.grid(row=0, column=2, rowspan=2, padx=(8, 18), sticky="e")
 
-        self.body = ctk.CTkFrame(self, fg_color="#F0F2F5", corner_radius=0)
+        self.body = ctk.CTkFrame(self, fg_color=COLOR_BACKGROUND, corner_radius=0)
         self.body.grid(row=1, column=0, sticky="nsew")
         self.body.grid_rowconfigure(0, weight=1)
         self.body.grid_columnconfigure(0, weight=1)
@@ -147,14 +168,62 @@ class Application(ctk.CTk):
             anchor="w",
         )
         self.status_label.pack(side="left", padx=12, pady=4)
+        self.save_status_label = ctk.CTkLabel(
+            self.status_bar,
+            text="🟢 All changes saved",
+            font=("Arial", 10),
+            text_color="#555555",
+            anchor="e",
+        )
+        self.save_status_label.pack(side="right", padx=12, pady=4)
+
+        self._bind_shortcuts()
+
+    def _bind_shortcuts(self) -> None:
+        self.bind_all("<Control-n>", lambda _e: self._shortcut_new())
+        self.bind_all("<Control-N>", lambda _e: self._shortcut_new())
+        self.bind_all("<Control-o>", lambda _e: self._shortcut_open())
+        self.bind_all("<Control-O>", lambda _e: self._shortcut_open())
+        self.bind_all("<Control-s>", lambda _e: self._shortcut_save())
+        self.bind_all("<Control-S>", lambda _e: self._shortcut_save())
+        self.bind_all("<Escape>", lambda _e: self.focus_set())
+
+    def _shortcut_new(self) -> None:
+        if self._mode in ("dashboard", "type_selector"):
+            self._start_new_project()
+
+    def _shortcut_open(self) -> None:
+        if self._mode == "dashboard" and self._dashboard and self._dashboard.project_hub:
+            self._dashboard.project_hub.focus_search()
+
+    def _shortcut_save(self) -> None:
+        if self._workspace is not None and self._mode == "project":
+            try:
+                self._set_save_state("saving")
+                self._workspace.autosave_before_close()
+                self._on_project_autosaved()
+            except Exception:
+                self._set_save_state("error")
+
+    def _set_save_state(self, state: str) -> None:
+        self._save_state = state
+        labels = {
+            "saved": "🟢 All changes saved",
+            "saving": "🟠 Saving changes...",
+            "error": "🔴 Unable to save changes",
+        }
+        self.save_status_label.configure(text=labels.get(state, labels["saved"]))
 
     def _update_status(self) -> None:
         if self._workspace is not None and self._mode == "project":
             pid = self._workspace.app_state.project.project_id
-            saved = f"Last Saved: {self._last_saved_at}" if self._last_saved_at else "Last Saved: —"
+            saved = f"Last saved: {self._last_saved_at}" if self._last_saved_at else "Last saved: —"
             self.status_label.configure(text=f"Project ID: {pid}  |  Auto Calculation: ON  |  {saved}")
+            if self._save_state == "saved":
+                self._set_save_state("saved")
         else:
             self.status_label.configure(text="Auto Calculation: ON  |  Project Home")
+            self.save_status_label.configure(text="")
 
     def _update_header_meta(self) -> None:
         if self._workspace is not None and self._mode == "project":
@@ -289,27 +358,25 @@ class Application(ctk.CTk):
             corner_radius=18,
             border_width=1,
             border_color="#DCE3EA",
-            width=760,
-            height=520,
         )
-        card.grid(row=0, column=0)
-        card.grid_propagate(False)
+        card.grid(row=0, column=0, sticky="nsew", padx=24, pady=24)
+        card.grid_rowconfigure(3, weight=1)
         card.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
             card,
-            text="STEP 1 OF 2",
+            text="STEP 1 — SELECT PROJECT TYPE",
             font=("Arial", 10, "bold"),
             text_color=BRAND_ORANGE,
             fg_color="#FFF1E8",
             corner_radius=12,
             padx=12,
             pady=6,
-        ).grid(row=0, column=0, pady=(34, 10))
+        ).grid(row=0, column=0, pady=(20, 8))
         ctk.CTkLabel(
             card,
             text="Create a New Project",
-            font=("Arial", 27, "bold"),
+            font=("Arial", 24, "bold"),
             text_color=BRAND_NAVY,
         ).grid(row=1, column=0, pady=(0, 4))
         ctk.CTkLabel(
@@ -317,109 +384,52 @@ class Application(ctk.CTk):
             text="Choose the type of project you are preparing a water-demand report for.",
             font=("Arial", 12),
             text_color="#64748B",
-        ).grid(row=2, column=0, pady=(0, 22))
-
-        section = ctk.CTkFrame(card, fg_color="#F7F9FB", corner_radius=12, border_width=1, border_color="#E3E8ED")
-        section.grid(row=3, column=0, sticky="ew", padx=55, pady=0)
-        section.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(
-            section,
-            text="Project Type",
-            font=("Arial", 12, "bold"),
-            text_color=BRAND_NAVY,
-            anchor="w",
-        ).grid(row=0, column=0, sticky="w", padx=18, pady=(16, 6))
+        ).grid(row=2, column=0, pady=(0, 12))
 
         initial_label = (
             project_type_label(state.project.project_type)
             if is_project_type_set(state.project.project_type)
             else PROJECT_TYPE_PLACEHOLDER
         )
-        selected = ctk.StringVar(value=initial_label)
-        combo = ctk.CTkComboBox(
-            section,
-            values=[PROJECT_TYPE_PLACEHOLDER] + sorted(set(PROJECT_TYPE_LABELS.keys())),
-            variable=selected,
-            width=560,
-            height=44,
-            font=("Arial", 12),
-        )
-        combo.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 10))
-
         help_text = ctk.StringVar(value="Select a project type to continue.")
-        help_label = ctk.CTkLabel(
-            section,
+
+        def on_type_change(label: str) -> None:
+            if label == PROJECT_TYPE_PLACEHOLDER:
+                help_text.set("Select a project type to continue.")
+            else:
+                from ui.components.type_selector import TYPE_DESCRIPTIONS
+                help_text.set(TYPE_DESCRIPTIONS.get(label, "The application will show relevant sections for this type."))
+
+        selector_wrap = ctk.CTkScrollableFrame(card, fg_color="transparent", height=320, label_text="")
+        selector_wrap.grid(row=3, column=0, sticky="nsew", padx=30, pady=(0, 8))
+        type_selector = ProjectTypeSelector(selector_wrap, initial_label=initial_label, on_selection_change=on_type_change)
+        type_selector.pack(fill="both", expand=True)
+        if initial_label != PROJECT_TYPE_PLACEHOLDER:
+            type_selector.set_selected(initial_label)
+            on_type_change(initial_label)
+
+        ctk.CTkLabel(
+            card,
             textvariable=help_text,
             font=("Arial", 10),
             text_color="#6B7280",
-            anchor="w",
-            justify="left",
-            wraplength=540,
-        )
-        help_label.grid(row=2, column=0, sticky="w", padx=18, pady=(0, 16))
-
-        descriptions = {
-            "Residential": "For residential buildings, apartments, villas and housing projects.",
-            "Commercial": "For offices, shops, commercial buildings and business developments.",
-            "Mixed Use": "For projects containing both residential and commercial components.",
-            "Township": "For larger developments with multiple residential/commercial components.",
-            "Hotel": "For hotels and hospitality projects.",
-            "Hospital": "For hospitals and healthcare facilities.",
-            "School": "For schools and educational campuses.",
-            "College": "For colleges and higher-education campuses.",
-            "Shopping Mall": "For malls, food courts and retail developments.",
-            "Mall": "For malls, food courts and retail developments.",
-            "IT Park": "For IT parks and technology office campuses.",
-            "Industrial": "For industrial and manufacturing projects.",
-            "Warehouse": "For warehouses and storage facilities.",
-        }
-
-        def update_help(*_):
-            label = selected.get()
-            if label == PROJECT_TYPE_PLACEHOLDER:
-                help_text.set(
-                    "Select a project type to continue. The application will then show only "
-                    "the engineering sections relevant to your project."
-                )
-            else:
-                help_text.set(
-                    descriptions.get(
-                        label,
-                        "The application will automatically show the relevant engineering sections for this project type.",
-                    )
-                )
-
-        combo.configure(command=lambda *_: update_help())
-        update_help()
-
-        ctk.CTkLabel(
-            card,
-            text="What happens next?",
-            font=("Arial", 12, "bold"),
-            text_color=BRAND_NAVY,
-        ).grid(row=4, column=0, pady=(18, 4))
-        ctk.CTkLabel(
-            card,
-            text="1. Select project type   →   2. Enter project details   →   3. Enter engineering inputs   →   4. Review & generate report",
-            font=("Arial", 10),
-            text_color="#687684",
-        ).grid(row=5, column=0, pady=(0, 18))
+            wraplength=700,
+        ).grid(row=4, column=0, pady=(4, 8))
 
         buttons = ctk.CTkFrame(card, fg_color="transparent")
-        buttons.grid(row=6, column=0, pady=(0, 24))
+        buttons.grid(row=5, column=0, pady=(0, 20))
 
         def cancel():
             self._destroy_type_selector()
             self._show_dashboard()
 
         def continue_project():
-            label = combo.get().strip() or selected.get().strip()
+            label = type_selector.get_selected().strip()
             if label == PROJECT_TYPE_PLACEHOLDER:
                 messagebox.showwarning(
                     "Project Type Required",
                     "Please select the project type before continuing.",
                 )
-                combo.focus_set()
                 return
             try:
                 new_type = project_type_key(label)
@@ -450,8 +460,8 @@ class Application(ctk.CTk):
         ).pack(side="left", padx=8)
         ctk.CTkButton(
             buttons,
-            text="Continue to Project Details  →",
-            width=245,
+            text="Continue →",
+            width=200,
             height=42,
             fg_color=BRAND_ORANGE,
             hover_color="#D06018",
@@ -484,6 +494,7 @@ class Application(ctk.CTk):
 
     def _on_project_autosaved(self) -> None:
         self._last_saved_at = datetime.now().strftime("%H:%M:%S")
+        self._set_save_state("saved")
         self._update_status()
         if self._dashboard is not None:
             self._dashboard.refresh_stats()

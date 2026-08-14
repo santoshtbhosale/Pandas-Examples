@@ -16,9 +16,11 @@ from services.project_workflow import (
     rows_for_stats,
 )
 from ui.gui_safe import safe_command
+from ui.scheduled_callbacks import PageLifecycleMixin, cancel_after
+from ui.theme import COLOR_BORDER, COLOR_CARD, COLOR_PRIMARY, COLOR_TEXT_SECONDARY, STATUS_BADGES
 
 
-class ProjectHub(ctk.CTkFrame):
+class ProjectHub(PageLifecycleMixin, ctk.CTkFrame):
     """Compact project table with filters; only the table area scrolls."""
 
     def __init__(
@@ -29,7 +31,8 @@ class ProjectHub(ctk.CTkFrame):
         on_edit_project: Optional[Callable[[str], None]] = None,
         on_stats_changed: Optional[Callable[[dict], None]] = None,
     ) -> None:
-        super().__init__(master, fg_color="white", corner_radius=12, border_width=1, border_color="#E0E5EA")
+        super().__init__(master, fg_color=COLOR_CARD, corner_radius=12, border_width=1, border_color=COLOR_BORDER)
+        self._init_page_lifecycle()
         self.on_new_project = on_new_project
         self.on_open_project = on_open_project
         self.on_edit_project = on_edit_project or on_open_project
@@ -87,14 +90,25 @@ class ProjectHub(ctk.CTkFrame):
             row=1, column=4, padx=(0, 4), pady=(0, 8), sticky="w"
         )
         self.search_var = ctk.StringVar()
-        self.search_var.trace_add("write", lambda *_: self._schedule_search())
+        self.register_trace(self.search_var, "write", lambda *_: self._schedule_search())
         self.search_entry = ctk.CTkEntry(
             filters,
             textvariable=self.search_var,
-            placeholder_text="Search by Project ID, Project Name, Engineer...",
+            placeholder_text="Search by name, client, engineer or ID...",
             height=30,
         )
-        self.search_entry.grid(row=1, column=5, sticky="ew", padx=(0, 10), pady=(0, 8))
+        self.search_entry.grid(row=1, column=5, sticky="ew", padx=(0, 6), pady=(0, 8))
+        ctk.CTkButton(
+            filters,
+            text="Clear",
+            width=60,
+            height=30,
+            font=("Arial", 9),
+            fg_color="#E8ECF0",
+            hover_color=COLOR_BORDER,
+            text_color=COLOR_PRIMARY,
+            command=self._clear_search,
+        ).grid(row=1, column=6, padx=(0, 10), pady=(0, 8), sticky="w")
 
         header_row = ctk.CTkFrame(self, fg_color="transparent")
         header_row.grid(row=1, column=0, sticky="ew", padx=14, pady=(2, 4))
@@ -135,14 +149,15 @@ class ProjectHub(ctk.CTkFrame):
         self.table_wrap.grid_columnconfigure(0, weight=1)
 
         self._header_columns = [
-            ("Project ID", 108),
-            ("Project Name", 150),
-            ("Type", 88),
-            ("Engineer", 88),
-            ("Status", 82),
-            ("Time Taken", 78),
-            ("Performance", 120),
-            ("Actions", 132),
+            ("Project ID", 96),
+            ("Project Name", 120),
+            ("Client", 100),
+            ("Type", 76),
+            ("Engineer", 76),
+            ("Status", 100),
+            ("Time", 68),
+            ("Performance", 108),
+            ("Actions", 56),
         ]
         self._table_header = ctk.CTkFrame(self.table_wrap, fg_color="#E8ECF0", corner_radius=4)
         self._table_header.pack(fill="x", pady=(0, 2))
@@ -159,13 +174,13 @@ class ProjectHub(ctk.CTkFrame):
         self.search_entry.focus_set()
         self.search_entry.icursor("end")
 
+    def _clear_search(self) -> None:
+        self.search_var.set("")
+        self._apply_filters()
+
     def _schedule_search(self) -> None:
-        if self._search_job is not None:
-            try:
-                self.after_cancel(self._search_job)
-            except Exception:
-                pass
-        self._search_job = self.after(180, self._apply_filters)
+        cancel_after(self, self._search_job)
+        self._search_job = self.schedule_after(180, self._apply_filters)
 
     def _on_filter_change(self, *_args) -> None:
         self._apply_filters()
@@ -205,12 +220,34 @@ class ProjectHub(ctk.CTkFrame):
         self._selected_id = None
 
         if not self._filtered_rows:
+            query = self.search_var.get().strip()
+            if query:
+                msg = "No matching projects found."
+                btn_text = "Clear Search"
+                cmd = self._clear_search
+            elif not self._all_rows:
+                msg = "No projects found.\nCreate your first engineering project to get started."
+                btn_text = "+ New Project"
+                cmd = self.on_new_project
+            else:
+                msg = "No projects match the current filters."
+                btn_text = "Clear Filters"
+                cmd = self._clear_filters
             ctk.CTkLabel(
                 self.table_wrap,
-                text="No projects found. Click '+ New Project' to create one.",
+                text=msg,
                 font=("Arial", 10),
-                text_color="#8A949E",
-            ).pack(pady=16)
+                text_color=COLOR_TEXT_SECONDARY,
+                justify="center",
+            ).pack(pady=(16, 8))
+            ctk.CTkButton(
+                self.table_wrap,
+                text=btn_text,
+                width=140,
+                height=30,
+                fg_color=BRAND_ORANGE,
+                command=safe_command(cmd, parent=self),
+            ).pack(pady=(0, 16))
             return
 
         for row in self._filtered_rows:
@@ -223,6 +260,15 @@ class ProjectHub(ctk.CTkFrame):
             return f"{title} ({detail})"
         return title or detail or "—"
 
+    def _clear_filters(self) -> None:
+        self.engineer_var.set("All Engineers")
+        self.status_var.set("All Status")
+        self.search_var.set("")
+        self._apply_filters()
+
+    def _status_badge(self, label: str) -> str:
+        return STATUS_BADGES.get(label, label)
+
     def _add_row(self, row: dict) -> None:
         pid = row["project_id"]
         frame = ctk.CTkFrame(self.table_wrap, fg_color="transparent", corner_radius=2)
@@ -232,15 +278,16 @@ class ProjectHub(ctk.CTkFrame):
         values = [
             pid,
             row.get("project_name", ""),
+            row.get("client_name", "") or "—",
             row.get("project_type_label", "—"),
             row.get("engineer_name", "") or "—",
-            row.get("status_label", ""),
+            self._status_badge(row.get("status_label", "")),
             row.get("time_taken_display", "—"),
             self._format_performance(row),
         ]
         widths = [w for _, w in self._header_columns[:-1]]
         for i, (value, width) in enumerate(zip(values, widths)):
-            text = (value or "")[:30]
+            text = (value or "")[:28]
             lbl = ctk.CTkLabel(frame, text=text, font=("Arial", 8), width=width, anchor="w")
             lbl.grid(row=0, column=i, padx=2, pady=2, sticky="w")
             lbl.bind("<Button-1>", lambda _e, p=pid: self._select_row(p))
@@ -251,31 +298,44 @@ class ProjectHub(ctk.CTkFrame):
         actions.grid(row=0, column=len(values), padx=1, pady=1, sticky="w")
         ctk.CTkButton(
             actions,
-            text="Open",
-            width=40,
+            text="⋮",
+            width=32,
             height=22,
-            font=("Arial", 8),
-            fg_color=BRAND_ORANGE,
-            command=safe_command(lambda p=pid: self._open_project(p), parent=self),
-        ).pack(side="left", padx=1)
-        ctk.CTkButton(
-            actions,
-            text="Edit",
-            width=40,
-            height=22,
-            font=("Arial", 8),
-            fg_color="#2980B9",
-            command=safe_command(lambda p=pid: self._edit_project(p), parent=self),
-        ).pack(side="left", padx=1)
-        ctk.CTkButton(
-            actions,
-            text="Delete",
-            width=44,
-            height=22,
-            font=("Arial", 8),
-            fg_color="#C0392B",
-            command=safe_command(lambda p=pid, r=row: self._delete_project(p, r), parent=self),
-        ).pack(side="left", padx=1)
+            font=("Arial", 12, "bold"),
+            fg_color="#E8ECF0",
+            hover_color=COLOR_BORDER,
+            text_color=COLOR_PRIMARY,
+            command=safe_command(lambda p=pid, r=row: self._show_actions_menu(p, r), parent=self),
+        ).pack(side="left")
+
+    def _show_actions_menu(self, project_id: str, row: dict) -> None:
+        menu = ctk.CTkToplevel(self)
+        menu.title("Actions")
+        menu.geometry("200x220")
+        menu.resizable(False, False)
+        menu.transient(self.winfo_toplevel())
+        menu.grab_set()
+        body = ctk.CTkFrame(menu, fg_color="white")
+        body.pack(fill="both", expand=True, padx=10, pady=10)
+        for label, cmd in [
+            ("Open Project", lambda: self._menu_action(menu, lambda: self._open_project(project_id))),
+            ("Edit Project", lambda: self._menu_action(menu, lambda: self._edit_project(project_id))),
+            ("Delete Project", lambda: self._menu_action(menu, lambda: self._delete_project(project_id, row))),
+        ]:
+            ctk.CTkButton(
+                body,
+                text=label,
+                anchor="w",
+                fg_color="transparent",
+                hover_color="#E8ECF0",
+                text_color=COLOR_PRIMARY,
+                command=cmd,
+            ).pack(fill="x", pady=2)
+
+    def _menu_action(self, menu, action) -> None:
+        menu.grab_release()
+        menu.destroy()
+        action()
 
     def _select_row(self, project_id: str) -> None:
         self._selected_id = project_id
@@ -304,21 +364,14 @@ class ProjectHub(ctk.CTkFrame):
 
         body = ctk.CTkFrame(dialog, fg_color="white")
         body.pack(fill="both", expand=True, padx=18, pady=18)
-        ctk.CTkLabel(body, text="Delete Project", font=("Arial", 18, "bold"), text_color=BRAND_NAVY).pack(
+        ctk.CTkLabel(body, text="Delete Project Permanently?", font=("Arial", 18, "bold"), text_color=BRAND_NAVY).pack(
             anchor="w", pady=(0, 8)
         )
         ctk.CTkLabel(
             body,
-            text="Are you sure you want to delete this project?",
-            font=("Arial", 11),
-            text_color="#4B5563",
-            justify="left",
-        ).pack(anchor="w", pady=(0, 10))
-        ctk.CTkLabel(
-            body,
             text=(
                 f"Project:\n{row.get('project_name', '')}\n\n"
-                f"Project ID:\n{project_id}\n\n"
+                f"Client:\n{row.get('client_name', '') or '—'}\n\n"
                 f"Engineer:\n{row.get('engineer_name', '') or '—'}"
             ),
             font=("Arial", 11),
@@ -354,7 +407,7 @@ class ProjectHub(ctk.CTkFrame):
         ctk.CTkButton(buttons, text="Cancel", width=120, fg_color="#95A5A6", command=_cancel).pack(
             side="left", padx=(0, 8)
         )
-        ctk.CTkButton(buttons, text="Delete Project", width=140, fg_color="#C0392B", command=_confirm).pack(
+        ctk.CTkButton(buttons, text="Delete Permanently", width=160, fg_color="#C0392B", command=_confirm).pack(
             side="right"
         )
 

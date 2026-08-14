@@ -4,12 +4,12 @@ from typing import Callable, Optional
 
 import customtkinter as ctk
 
-from ui.scheduled_callbacks import cancel_after, safe_widget_callback, widget_is_alive
+from ui.scheduled_callbacks import cancel_after, PageLifecycleMixin, safe_widget_callback, widget_is_alive
 
 PAGE_BG = "#F0F2F5"
 
 
-class ScrollablePage(ctk.CTkScrollableFrame):
+class ScrollablePage(PageLifecycleMixin, ctk.CTkScrollableFrame):
     """Full-size scrollable page shell used by every wizard screen."""
 
     _PENDING_JOB_ATTRS = ("_auto_calc_after_id",)
@@ -20,9 +20,11 @@ class ScrollablePage(ctk.CTkScrollableFrame):
         kwargs.setdefault("border_width", 0)
         kwargs.setdefault("label_text", "")
         super().__init__(master, **kwargs)
+        self._init_page_lifecycle()
         self._auto_calc_after_id: str | None = None
 
     def cancel_pending_callbacks(self) -> None:
+        self.cancel_page_lifecycle()
         for attr in self._PENDING_JOB_ATTRS:
             cancel_after(self, getattr(self, attr, None))
             setattr(self, attr, None)

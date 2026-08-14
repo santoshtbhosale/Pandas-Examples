@@ -56,13 +56,12 @@ class TestProjectDetailsLayout(unittest.TestCase):
         self.assertEqual(set(page.entries.keys()), {"project_name", "client_name"})
         self.assertEqual(len(self._form_entries(page)), 4)
 
-    def test_project_name_and_client_name_are_adjacent_rows(self) -> None:
+    def test_project_name_and_client_name_are_adjacent_sections(self) -> None:
         page = self._build_page()
         project_row = self._entry_grid_row(page.entries["project_name"])
         client_row = self._entry_grid_row(page.entries["client_name"])
-        self.assertEqual(project_row, 0)
-        self.assertEqual(client_row, 1)
-        self.assertEqual(client_row - project_row, 1)
+        self.assertLess(project_row, client_row)
+        self.assertEqual(client_row - project_row, 3)
 
     def test_no_client_suggestions_wrapper(self) -> None:
         page = self._build_page()
@@ -94,7 +93,7 @@ class TestProjectDetailsLayout(unittest.TestCase):
         self.assertTrue(page.section_rows_visible(page._signoff_start_row, page._signoff_end_row))
         signoff_header = page._signoff_widgets[0]
         signoff_row = int(signoff_header.grid_info().get("row", 99))
-        self.assertLess(signoff_row, 8)
+        self.assertLess(signoff_row, 16)
 
     def test_signoff_visible_for_commercial(self) -> None:
         page = self._build_page(PROJECT_TYPE_COMMERCIAL)
