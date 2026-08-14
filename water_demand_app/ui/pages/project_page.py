@@ -97,7 +97,31 @@ class ProjectPage(ScrollablePage):
         self._deferred_sync_job = None
         self._tooltips: list = []
         self._bound_combos: list = []
+        self._bound_entries: list = []
+        self._navigation_epoch = 0
         self._build()
+
+    def attach_navigation_epoch(self, epoch: int) -> None:
+        self._navigation_epoch = epoch
+
+    def _is_active_page(self) -> bool:
+        if not widget_is_alive(self):
+            return False
+        workspace = self._find_workspace()
+        if workspace is None:
+            return True
+        return getattr(self, "_navigation_epoch", -1) == getattr(workspace, "_navigation_epoch", -2)
+
+    def _find_workspace(self):
+        current = self
+        while current is not None:
+            if current.__class__.__name__ == "ProjectWorkspace":
+                return current
+            try:
+                current = current.master
+            except (AttributeError, RuntimeError, ValueError):
+                break
+        return None
 
     def cancel_pending_callbacks(self) -> None:
         self.prepare_for_destroy()
@@ -120,6 +144,28 @@ class ProjectPage(ScrollablePage):
             except Exception:
                 pass
         self._tooltips.clear()
+        for entry in list(self._bound_entries):
+            if widget_is_alive(entry):
+                try:
+                    entry.unbind("<KeyRelease>")
+                except (tk.TclError, AttributeError, RuntimeError, ValueError):
+                    pass
+        self._bound_entries.clear()
+
+    def _bind_entry_auto_calc(self, entry) -> None:
+        entry.bind(
+            "<KeyRelease>",
+            lambda *_: self._on_entry_changed(),
+            add="+",
+        )
+        self._bound_entries.append(entry)
+
+    def _on_entry_changed(self) -> None:
+        if not self._is_active_page():
+            return
+        if self.on_dirty:
+            self.on_dirty()
+        self.schedule_auto_calculate(self.state)
 
     def _add_section_header(self, parent, row: int, text: str) -> None:
         label = ctk.CTkLabel(parent, text=text, font=("Arial", 13, "bold"), text_color=COLOR_PRIMARY, anchor="w")
@@ -155,8 +201,15 @@ class ProjectPage(ScrollablePage):
         if key in FIELD_HELP:
             self._tooltips.append(attach_tooltip(ent, FIELD_HELP[key]))
         if self.on_dirty:
-            ent.bind("<KeyRelease>", lambda *_: self.on_dirty(), add="+")
+            ent.bind("<KeyRelease>", lambda *_: self._on_dirty_only(), add="+")
+            self._bound_entries.append(ent)
         return ent
+
+    def _on_dirty_only(self) -> None:
+        if not self._is_active_page():
+            return
+        if self.on_dirty:
+            self.on_dirty()
 
     def _build(self) -> None:
         step, total = wizard_step_index("Project", self.state.project.project_type)
@@ -242,7 +295,7 @@ class ProjectPage(ScrollablePage):
         self.height_entry = ctk.CTkEntry(self.form, width=SMALL_FIELD_WIDTH, height=34)
         self.height_entry.insert(0, str(self.state.project.building_height_m or ""))
         self.height_entry.grid(row=row, column=1, padx=FORM_PAD_X, pady=FORM_ROW_PAD_Y, sticky="w")
-        self.height_entry.bind("<KeyRelease>", lambda *_: self.schedule_auto_calculate(self.state))
+        self._bind_entry_auto_calc(self.height_entry)
         self._engineering_widgets.extend([self.form.grid_slaves(row=row, column=0)[0], self.height_entry])
         row += 1
 
@@ -405,7 +458,7 @@ class ProjectPage(ScrollablePage):
         self._update_workflow_hint()
 
     def _sync_building_height(self) -> None:
-        if not self._details_visible or not widget_is_alive(self):
+        if not self._details_visible or not self._is_active_page():
             return
         if not widget_is_alive(getattr(self, "height_entry", None)):
             return
@@ -490,7 +543,7 @@ class ProjectPage(ScrollablePage):
 
     def _deferred_post_navigation_sync(self) -> None:
         self._deferred_sync_job = None
-        if not widget_is_alive(self):
+        if not self._is_active_page():
             return
         try:
             self.state.sync_building_defaults()
@@ -502,7 +555,7 @@ class ProjectPage(ScrollablePage):
             pass
 
     def refresh(self) -> None:
-        if not widget_is_alive(self):
+        if not self._is_active_page():
             return
         project = self.state.project
 

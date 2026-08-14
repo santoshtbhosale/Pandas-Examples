@@ -16,6 +16,7 @@ from models.other_details import OtherDetails
 from models.project import ProjectData
 from models.residential import ResidentialWing
 from ui.app_state import AppState
+from ui.scheduled_callbacks import safe_widget_text, widget_is_alive
 
 
 def apply_building_parser(project: ProjectData, residential: List[ResidentialWing]) -> None:
@@ -45,22 +46,22 @@ def wings_from_ui_rows(rows: List[dict], plot_mode: str) -> List[ResidentialWing
     wings: List[ResidentialWing] = []
     for idx, row in enumerate(rows):
         try:
-            wing_name = (row["wing"].get() or "").strip()
+            wing_name = safe_widget_text(row["wing"]).strip()
             if not wing_name:
                 continue
             wings.append(
                 ResidentialWing(
-                    plot=ui_plot_label(row["plot"].get(), plot_mode),
+                    plot=ui_plot_label(safe_widget_text(row["plot"]), plot_mode),
                     wing=wing_name,
-                    building_config=row["config"].get(),
-                    building_type=row["btype"].get(),
-                    building_height_m=float(row["height"].get() or 0),
-                    num_wings=max(1, int(row["num_wings"].get() or 1)),
-                    flats_1bhk=max(0, int(row["b1"].get() or 0)),
-                    flats_2bhk=max(0, int(row["b2"].get() or 0)),
-                    flats_3bhk=max(0, int(row["b3"].get() or 0)),
-                    flats_4bhk=max(0, int(row["b4"].get() or 0)),
-                    flats_penthouse=max(0, int(row["ph"].get() or 0)),
+                    building_config=safe_widget_text(row["config"]),
+                    building_type=safe_widget_text(row["btype"]),
+                    building_height_m=float(safe_widget_text(row["height"]) or 0),
+                    num_wings=max(1, int(safe_widget_text(row["num_wings"]) or 1)),
+                    flats_1bhk=max(0, int(safe_widget_text(row["b1"]) or 0)),
+                    flats_2bhk=max(0, int(safe_widget_text(row["b2"]) or 0)),
+                    flats_3bhk=max(0, int(safe_widget_text(row["b3"]) or 0)),
+                    flats_4bhk=max(0, int(safe_widget_text(row["b4"]) or 0)),
+                    flats_penthouse=max(0, int(safe_widget_text(row["ph"]) or 0)),
                     sort_order=idx,
                 )
             )
@@ -74,18 +75,18 @@ def commercial_from_ui_rows(rows: List[dict], plot_mode: str) -> List[Commercial
     units: List[CommercialUnit] = []
     for idx, row in enumerate(rows):
         try:
-            area = float(row["area"].get() or 0)
+            area = float(safe_widget_text(row["area"]) or 0)
             if area <= 0:
                 continue
-            block = (row["block"].get() or "").strip()
+            block = safe_widget_text(row["block"]).strip()
             if not block:
                 continue
             units.append(
                 CommercialUnit(
-                    plot=ui_plot_label(row["plot"].get(), plot_mode),
+                    plot=ui_plot_label(safe_widget_text(row["plot"]), plot_mode),
                     block=block,
-                    comm_type=row["type"].get(),
-                    floor_label=(row["floor"].get() or "").strip(),
+                    comm_type=safe_widget_text(row["type"]),
+                    floor_label=safe_widget_text(row["floor"]).strip(),
                     area_sqm=area,
                     sort_order=idx,
                 )
@@ -98,7 +99,7 @@ def commercial_from_ui_rows(rows: List[dict], plot_mode: str) -> List[Commercial
 def sync_landscape(other: OtherDetails, entries: Dict[str, Any]) -> None:
     for plot, entry in entries.items():
         try:
-            other.landscape_area[plot] = float(entry.get() or 0)
+            other.landscape_area[plot] = float(safe_widget_text(entry) or 0)
         except (ValueError, TypeError):
             other.landscape_area[plot] = 0.0
 
@@ -106,7 +107,7 @@ def sync_landscape(other: OtherDetails, entries: Dict[str, Any]) -> None:
 def sync_hvac(other: OtherDetails, entries: Dict[str, Any]) -> None:
     for plot, entry in entries.items():
         try:
-            other.hvac_water[plot] = float(entry.get() or 0)
+            other.hvac_water[plot] = float(safe_widget_text(entry) or 0)
         except (ValueError, TypeError):
             other.hvac_water[plot] = 0.0
 
@@ -117,14 +118,17 @@ def sync_swimming_pool(
     status_vars: Dict[str, Any],
 ) -> None:
     for plot, status_var in status_vars.items():
-        status = POOL_STATUS_LABELS.get(status_var.get(), POOL_NOT_APPLICABLE)
+        try:
+            status = POOL_STATUS_LABELS.get(status_var.get(), POOL_NOT_APPLICABLE)
+        except (AttributeError, RuntimeError, ValueError):
+            status = POOL_NOT_APPLICABLE
         other.swimming_pool_status[plot] = status
         other.swimming_pool_na[plot] = status == POOL_NOT_APPLICABLE
         if status == POOL_NOT_APPLICABLE:
             other.swimming_pool[plot] = 0.0
         else:
             try:
-                other.swimming_pool[plot] = float(volume_entries[plot].get() or 0)
+                other.swimming_pool[plot] = float(safe_widget_text(volume_entries[plot]) or 0)
             except (ValueError, TypeError, KeyError):
                 other.swimming_pool[plot] = 0.0
 
@@ -169,20 +173,62 @@ def prepare_live_calculation(state: AppState) -> None:
     apply_fire_tanks(state)
 
 
+def sync_project_page_to_state(app: Any, page: Any) -> None:
+    """Pull Project Details inputs into AppState when the page is still alive."""
+    if not widget_is_alive(page):
+        return
+    project = app.app_state.project
+    entries = getattr(page, "entries", None) or {}
+    for key in ("project_name", "client_name"):
+        entry = entries.get(key)
+        if entry is not None and widget_is_alive(entry):
+            value = safe_widget_text(entry).strip()
+            if value:
+                setattr(project, key, value)
+    if not hasattr(page, "building_config_var"):
+        return
+    try:
+        project.building_config = page.building_config_var.get().strip()
+    except (AttributeError, RuntimeError, ValueError):
+        pass
+    height_entry = getattr(page, "height_entry", None)
+    if height_entry is not None and widget_is_alive(height_entry):
+        try:
+            project.building_height_m = float(safe_widget_text(height_entry) or 0)
+        except ValueError:
+            pass
+    wings_entry = getattr(page, "wings_entry", None)
+    if wings_entry is not None and widget_is_alive(wings_entry):
+        try:
+            project.num_wings = max(1, int(safe_widget_text(wings_entry) or 1))
+        except ValueError:
+            pass
+    building_type_var = getattr(page, "building_type_var", None)
+    if building_type_var is not None:
+        try:
+            project.building_type = building_type_var.get()
+        except (AttributeError, RuntimeError, ValueError):
+            pass
+
+
 def sync_pages_to_state(app: Any) -> None:
     """Pull current UI page inputs into AppState (called before live calc)."""
     state = app.app_state
     res_page = app.pages.get("Residential")
-    if res_page and hasattr(res_page, "rows"):
+    if res_page is not None and widget_is_alive(res_page) and hasattr(res_page, "rows"):
         state.residential = wings_from_ui_rows(res_page.rows, state.project.plot_mode)
 
     com_page = app.pages.get("Commercial")
-    if com_page and hasattr(com_page, "rows"):
+    if com_page is not None and widget_is_alive(com_page) and hasattr(com_page, "rows"):
         state.commercial = commercial_from_ui_rows(com_page.rows, state.project.plot_mode)
 
-    if hasattr(app, "_le"):
+    proj_page = app.pages.get("Project")
+    if proj_page is not None and widget_is_alive(proj_page):
+        sync_project_page_to_state(app, proj_page)
+
+    if hasattr(app, "_le") and isinstance(app._le, dict):
         sync_landscape(state.other, app._le)
-    if hasattr(app, "_he"):
+    if hasattr(app, "_he") and isinstance(app._he, dict):
         sync_hvac(state.other, app._he)
     if hasattr(app, "_pe") and hasattr(app, "_pool_status"):
         sync_swimming_pool(state.other, app._pe, app._pool_status)

@@ -23,6 +23,28 @@ class ScrollablePage(PageLifecycleMixin, ctk.CTkScrollableFrame):
         super().__init__(master, **kwargs)
         self._init_page_lifecycle()
         self._auto_calc_after_id: str | None = None
+        self._replace_configure_binding()
+
+    def _replace_configure_binding(self) -> None:
+        """Replace CTk's default Configure handler with a destroy-safe version."""
+        try:
+            self.unbind("<Configure>")
+        except (tk.TclError, AttributeError, RuntimeError, ValueError):
+            pass
+        self.bind("<Configure>", self._on_configure_safe, add="+")
+
+    def _on_configure_safe(self, event=None) -> None:
+        if not widget_is_alive(self):
+            return
+        parent_canvas = getattr(self, "_parent_canvas", None)
+        if not widget_is_alive(parent_canvas):
+            return
+        try:
+            bbox = parent_canvas.bbox("all")
+            if bbox is not None:
+                parent_canvas.configure(scrollregion=bbox)
+        except tk.TclError:
+            return
 
     def cancel_pending_callbacks(self) -> None:
         self.prepare_for_destroy()
@@ -75,6 +97,8 @@ class ScrollablePage(PageLifecycleMixin, ctk.CTkScrollableFrame):
         def _run() -> None:
             self._auto_calc_after_id = None
             if not widget_is_alive(self):
+                return
+            if hasattr(self, "_is_active_page") and not self._is_active_page():
                 return
             state.auto_calculate()
             if callback:

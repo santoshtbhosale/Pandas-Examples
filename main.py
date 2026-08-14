@@ -3101,22 +3101,22 @@ def wings_from_ui_rows(rows: List[dict], plot_mode: str) -> List[ResidentialWing
     wings: List[ResidentialWing] = []
     for idx, row in enumerate(rows):
         try:
-            wing_name = (row["wing"].get() or "").strip()
+            wing_name = safe_widget_text(row["wing"]).strip()
             if not wing_name:
                 continue
             wings.append(
                 ResidentialWing(
-                    plot=ui_plot_label(row["plot"].get(), plot_mode),
+                    plot=ui_plot_label(safe_widget_text(row["plot"]), plot_mode),
                     wing=wing_name,
-                    building_config=row["config"].get(),
-                    building_type=row["btype"].get(),
-                    building_height_m=float(row["height"].get() or 0),
-                    num_wings=max(1, int(row["num_wings"].get() or 1)),
-                    flats_1bhk=max(0, int(row["b1"].get() or 0)),
-                    flats_2bhk=max(0, int(row["b2"].get() or 0)),
-                    flats_3bhk=max(0, int(row["b3"].get() or 0)),
-                    flats_4bhk=max(0, int(row["b4"].get() or 0)),
-                    flats_penthouse=max(0, int(row["ph"].get() or 0)),
+                    building_config=safe_widget_text(row["config"]),
+                    building_type=safe_widget_text(row["btype"]),
+                    building_height_m=float(safe_widget_text(row["height"]) or 0),
+                    num_wings=max(1, int(safe_widget_text(row["num_wings"]) or 1)),
+                    flats_1bhk=max(0, int(safe_widget_text(row["b1"]) or 0)),
+                    flats_2bhk=max(0, int(safe_widget_text(row["b2"]) or 0)),
+                    flats_3bhk=max(0, int(safe_widget_text(row["b3"]) or 0)),
+                    flats_4bhk=max(0, int(safe_widget_text(row["b4"]) or 0)),
+                    flats_penthouse=max(0, int(safe_widget_text(row["ph"]) or 0)),
                     sort_order=idx,
                 )
             )
@@ -3130,18 +3130,18 @@ def commercial_from_ui_rows(rows: List[dict], plot_mode: str) -> List[Commercial
     units: List[CommercialUnit] = []
     for idx, row in enumerate(rows):
         try:
-            area = float(row["area"].get() or 0)
+            area = float(safe_widget_text(row["area"]) or 0)
             if area <= 0:
                 continue
-            block = (row["block"].get() or "").strip()
+            block = safe_widget_text(row["block"]).strip()
             if not block:
                 continue
             units.append(
                 CommercialUnit(
-                    plot=ui_plot_label(row["plot"].get(), plot_mode),
+                    plot=ui_plot_label(safe_widget_text(row["plot"]), plot_mode),
                     block=block,
-                    comm_type=row["type"].get(),
-                    floor_label=(row["floor"].get() or "").strip(),
+                    comm_type=safe_widget_text(row["type"]),
+                    floor_label=safe_widget_text(row["floor"]).strip(),
                     area_sqm=area,
                     sort_order=idx,
                 )
@@ -3154,7 +3154,7 @@ def commercial_from_ui_rows(rows: List[dict], plot_mode: str) -> List[Commercial
 def sync_landscape(other: OtherDetails, entries: Dict[str, Any]) -> None:
     for plot, entry in entries.items():
         try:
-            other.landscape_area[plot] = float(entry.get() or 0)
+            other.landscape_area[plot] = float(safe_widget_text(entry) or 0)
         except (ValueError, TypeError):
             other.landscape_area[plot] = 0.0
 
@@ -3162,7 +3162,7 @@ def sync_landscape(other: OtherDetails, entries: Dict[str, Any]) -> None:
 def sync_hvac(other: OtherDetails, entries: Dict[str, Any]) -> None:
     for plot, entry in entries.items():
         try:
-            other.hvac_water[plot] = float(entry.get() or 0)
+            other.hvac_water[plot] = float(safe_widget_text(entry) or 0)
         except (ValueError, TypeError):
             other.hvac_water[plot] = 0.0
 
@@ -3173,14 +3173,17 @@ def sync_swimming_pool(
     status_vars: Dict[str, Any],
 ) -> None:
     for plot, status_var in status_vars.items():
-        status = POOL_STATUS_LABELS.get(status_var.get(), POOL_NOT_APPLICABLE)
+        try:
+            status = POOL_STATUS_LABELS.get(status_var.get(), POOL_NOT_APPLICABLE)
+        except (AttributeError, RuntimeError, ValueError):
+            status = POOL_NOT_APPLICABLE
         other.swimming_pool_status[plot] = status
         other.swimming_pool_na[plot] = status == POOL_NOT_APPLICABLE
         if status == POOL_NOT_APPLICABLE:
             other.swimming_pool[plot] = 0.0
         else:
             try:
-                other.swimming_pool[plot] = float(volume_entries[plot].get() or 0)
+                other.swimming_pool[plot] = float(safe_widget_text(volume_entries[plot]) or 0)
             except (ValueError, TypeError, KeyError):
                 other.swimming_pool[plot] = 0.0
 
@@ -3224,20 +3227,62 @@ def prepare_live_calculation(state: AppState) -> None:
     apply_fire_tanks(state)
 
 
+def sync_project_page_to_state(app: Any, page: Any) -> None:
+    """Pull Project Details inputs into AppState when the page is still alive."""
+    if not widget_is_alive(page):
+        return
+    project = app.app_state.project
+    entries = getattr(page, "entries", None) or {}
+    for key in ("project_name", "client_name"):
+        entry = entries.get(key)
+        if entry is not None and widget_is_alive(entry):
+            value = safe_widget_text(entry).strip()
+            if value:
+                setattr(project, key, value)
+    if not hasattr(page, "building_config_var"):
+        return
+    try:
+        project.building_config = page.building_config_var.get().strip()
+    except (AttributeError, RuntimeError, ValueError):
+        pass
+    height_entry = getattr(page, "height_entry", None)
+    if height_entry is not None and widget_is_alive(height_entry):
+        try:
+            project.building_height_m = float(safe_widget_text(height_entry) or 0)
+        except ValueError:
+            pass
+    wings_entry = getattr(page, "wings_entry", None)
+    if wings_entry is not None and widget_is_alive(wings_entry):
+        try:
+            project.num_wings = max(1, int(safe_widget_text(wings_entry) or 1))
+        except ValueError:
+            pass
+    building_type_var = getattr(page, "building_type_var", None)
+    if building_type_var is not None:
+        try:
+            project.building_type = building_type_var.get()
+        except (AttributeError, RuntimeError, ValueError):
+            pass
+
+
 def sync_pages_to_state(app: Any) -> None:
     """Pull current UI page inputs into AppState (called before live calc)."""
     state = app.app_state
     res_page = app.pages.get("Residential")
-    if res_page and hasattr(res_page, "rows"):
+    if res_page is not None and widget_is_alive(res_page) and hasattr(res_page, "rows"):
         state.residential = wings_from_ui_rows(res_page.rows, state.project.plot_mode)
 
     com_page = app.pages.get("Commercial")
-    if com_page and hasattr(com_page, "rows"):
+    if com_page is not None and widget_is_alive(com_page) and hasattr(com_page, "rows"):
         state.commercial = commercial_from_ui_rows(com_page.rows, state.project.plot_mode)
 
-    if hasattr(app, "_le"):
+    proj_page = app.pages.get("Project")
+    if proj_page is not None and widget_is_alive(proj_page):
+        sync_project_page_to_state(app, proj_page)
+
+    if hasattr(app, "_le") and isinstance(app._le, dict):
         sync_landscape(state.other, app._le)
-    if hasattr(app, "_he"):
+    if hasattr(app, "_he") and isinstance(app._he, dict):
         sync_hvac(state.other, app._he)
     if hasattr(app, "_pe") and hasattr(app, "_pool_status"):
         sync_swimming_pool(state.other, app._pe, app._pool_status)
@@ -5940,13 +5985,18 @@ def safe_widget_callback(widget: Any, callback: Callable[[], None]) -> Callable[
     return wrapper
 
 
-def safe_entry_text(entry: Any) -> str:
-    if not widget_is_alive(entry):
+def safe_widget_text(widget: Any) -> str:
+    """Read text/value from an entry, combo, or similar widget."""
+    if not widget_is_alive(widget):
         return ""
     try:
-        return entry.get()
+        return str(widget.get() or "")
     except tk.TclError:
         return ""
+
+
+def safe_entry_text(entry: Any) -> str:
+    return safe_widget_text(entry)
 
 
 def safe_set_entry_text(entry: Any, value: str) -> None:
@@ -6094,6 +6144,28 @@ class ScrollablePage(PageLifecycleMixin, ctk.CTkScrollableFrame):
         super().__init__(master, **kwargs)
         self._init_page_lifecycle()
         self._auto_calc_after_id: str | None = None
+        self._replace_configure_binding()
+
+    def _replace_configure_binding(self) -> None:
+        """Replace CTk's default Configure handler with a destroy-safe version."""
+        try:
+            self.unbind("<Configure>")
+        except (tk.TclError, AttributeError, RuntimeError, ValueError):
+            pass
+        self.bind("<Configure>", self._on_configure_safe, add="+")
+
+    def _on_configure_safe(self, event=None) -> None:
+        if not widget_is_alive(self):
+            return
+        parent_canvas = getattr(self, "_parent_canvas", None)
+        if not widget_is_alive(parent_canvas):
+            return
+        try:
+            bbox = parent_canvas.bbox("all")
+            if bbox is not None:
+                parent_canvas.configure(scrollregion=bbox)
+        except tk.TclError:
+            return
 
     def cancel_pending_callbacks(self) -> None:
         self.prepare_for_destroy()
@@ -6146,6 +6218,8 @@ class ScrollablePage(PageLifecycleMixin, ctk.CTkScrollableFrame):
         def _run() -> None:
             self._auto_calc_after_id = None
             if not widget_is_alive(self):
+                return
+            if hasattr(self, "_is_active_page") and not self._is_active_page():
                 return
             state.auto_calculate()
             if callback:
@@ -7493,7 +7567,31 @@ class ProjectPage(ScrollablePage):
         self._deferred_sync_job = None
         self._tooltips: list = []
         self._bound_combos: list = []
+        self._bound_entries: list = []
+        self._navigation_epoch = 0
         self._build()
+
+    def attach_navigation_epoch(self, epoch: int) -> None:
+        self._navigation_epoch = epoch
+
+    def _is_active_page(self) -> bool:
+        if not widget_is_alive(self):
+            return False
+        workspace = self._find_workspace()
+        if workspace is None:
+            return True
+        return getattr(self, "_navigation_epoch", -1) == getattr(workspace, "_navigation_epoch", -2)
+
+    def _find_workspace(self):
+        current = self
+        while current is not None:
+            if current.__class__.__name__ == "ProjectWorkspace":
+                return current
+            try:
+                current = current.master
+            except (AttributeError, RuntimeError, ValueError):
+                break
+        return None
 
     def cancel_pending_callbacks(self) -> None:
         self.prepare_for_destroy()
@@ -7516,6 +7614,28 @@ class ProjectPage(ScrollablePage):
             except Exception:
                 pass
         self._tooltips.clear()
+        for entry in list(self._bound_entries):
+            if widget_is_alive(entry):
+                try:
+                    entry.unbind("<KeyRelease>")
+                except (tk.TclError, AttributeError, RuntimeError, ValueError):
+                    pass
+        self._bound_entries.clear()
+
+    def _bind_entry_auto_calc(self, entry) -> None:
+        entry.bind(
+            "<KeyRelease>",
+            lambda *_: self._on_entry_changed(),
+            add="+",
+        )
+        self._bound_entries.append(entry)
+
+    def _on_entry_changed(self) -> None:
+        if not self._is_active_page():
+            return
+        if self.on_dirty:
+            self.on_dirty()
+        self.schedule_auto_calculate(self.state)
 
     def _add_section_header(self, parent, row: int, text: str) -> None:
         label = ctk.CTkLabel(parent, text=text, font=("Arial", 13, "bold"), text_color=COLOR_PRIMARY, anchor="w")
@@ -7549,8 +7669,15 @@ class ProjectPage(ScrollablePage):
         if key in FIELD_HELP:
             self._tooltips.append(attach_tooltip(ent, FIELD_HELP[key]))
         if self.on_dirty:
-            ent.bind("<KeyRelease>", lambda *_: self.on_dirty(), add="+")
+            ent.bind("<KeyRelease>", lambda *_: self._on_dirty_only(), add="+")
+            self._bound_entries.append(ent)
         return ent
+
+    def _on_dirty_only(self) -> None:
+        if not self._is_active_page():
+            return
+        if self.on_dirty:
+            self.on_dirty()
 
     def _build(self) -> None:
         step, total = wizard_step_index("Project", self.state.project.project_type)
@@ -7636,7 +7763,7 @@ class ProjectPage(ScrollablePage):
         self.height_entry = ctk.CTkEntry(self.form, width=SMALL_FIELD_WIDTH, height=34)
         self.height_entry.insert(0, str(self.state.project.building_height_m or ""))
         self.height_entry.grid(row=row, column=1, padx=FORM_PAD_X, pady=FORM_ROW_PAD_Y, sticky="w")
-        self.height_entry.bind("<KeyRelease>", lambda *_: self.schedule_auto_calculate(self.state))
+        self._bind_entry_auto_calc(self.height_entry)
         self._engineering_widgets.extend([self.form.grid_slaves(row=row, column=0)[0], self.height_entry])
         row += 1
 
@@ -7799,7 +7926,7 @@ class ProjectPage(ScrollablePage):
         self._update_workflow_hint()
 
     def _sync_building_height(self) -> None:
-        if not self._details_visible or not widget_is_alive(self):
+        if not self._details_visible or not self._is_active_page():
             return
         if not widget_is_alive(getattr(self, "height_entry", None)):
             return
@@ -7884,7 +8011,7 @@ class ProjectPage(ScrollablePage):
 
     def _deferred_post_navigation_sync(self) -> None:
         self._deferred_sync_job = None
-        if not widget_is_alive(self):
+        if not self._is_active_page():
             return
         try:
             self.state.sync_building_defaults()
@@ -7896,7 +8023,7 @@ class ProjectPage(ScrollablePage):
             pass
 
     def refresh(self) -> None:
-        if not widget_is_alive(self):
+        if not self._is_active_page():
             return
         project = self.state.project
 
@@ -9035,7 +9162,21 @@ class ProjectWorkspace(ctk.CTkFrame):
         self._calc_dirty = True
         self._edit_dirty = False
         self._workspace_after_jobs: list = []
+        self._navigation_epoch = 0
         self._project_list_cache: list | None = None
+
+    def _bump_navigation_epoch(self) -> int:
+        self._navigation_epoch += 1
+        return self._navigation_epoch
+
+    def _clear_stale_form_bindings(self) -> None:
+        """Drop references to widgets that belonged to destroyed form pages."""
+        for attr in ("_le", "_he", "_pe", "_pool_status", "_ugt_labels"):
+            if hasattr(self, attr):
+                try:
+                    delattr(self, attr)
+                except Exception:
+                    setattr(self, attr, {})
 
     def _schedule_workspace_after(self, delay_ms: int, callback) -> str | None:
         if not widget_is_alive(self):
@@ -9111,10 +9252,17 @@ class ProjectWorkspace(ctk.CTkFrame):
 
     def _teardown_pages(self) -> None:
         """Destroy all workflow pages and flush pending Tk events."""
+        self._bump_navigation_epoch()
         self.suspend_pending_work()
         for page in list(self.pages.values()):
             _destroy_page(page)
         self.pages.clear()
+        self._clear_stale_form_bindings()
+        if widget_is_alive(self):
+            try:
+                self.update_idletasks()
+            except Exception:
+                pass
 
     def reset_for_new_type(self) -> None:
         """Drop cached workflow pages before a new project/type is shown."""
@@ -9133,9 +9281,10 @@ class ProjectWorkspace(ctk.CTkFrame):
         self._rebuild_sidebar()
         self.show("Project")
         if widget_is_alive(self):
+            epoch = self._navigation_epoch
             self._calc_job = self._schedule_workspace_after(
                 80,
-                safe_widget_callback(self, self._run_scheduled_calc),
+                safe_widget_callback(self, lambda: self._run_scheduled_calc(epoch)),
             )
         if self.on_header_update:
             self.on_header_update()
@@ -9298,7 +9447,7 @@ class ProjectWorkspace(ctk.CTkFrame):
     def _build_pages(self) -> None:
         """Build only the lightweight Project Details page initially."""
         if "Project" not in self.pages:
-            self.pages["Project"] = ProjectPage(
+            page = ProjectPage(
                 self.container,
                 self.app_state,
                 on_next=self._next_from_project,
@@ -9306,6 +9455,8 @@ class ProjectWorkspace(ctk.CTkFrame):
                 on_back=self._project_details_back,
                 on_dirty=self.mark_dirty,
             )
+            page.attach_navigation_epoch(self._navigation_epoch)
+            self.pages["Project"] = page
         page = self.pages.get("Project")
         if page is not None:
             try:
@@ -9421,7 +9572,9 @@ class ProjectWorkspace(ctk.CTkFrame):
         if self._current_page not in visible:
             self.show("Project")
         if "Project" in self.pages and hasattr(self.pages["Project"], "refresh"):
-            self.pages["Project"].refresh()
+            page = self.pages["Project"]
+            if widget_is_alive(page):
+                page.refresh()
 
     def _wizard_show_previous(self, current: str) -> None:
         project_type = self.app_state.project.project_type
@@ -9534,7 +9687,10 @@ class ProjectWorkspace(ctk.CTkFrame):
 
             self._schedule_workspace_after(
                 150,
-                safe_widget_callback(self, lambda: self._schedule_calc(50)),
+                safe_widget_callback(
+                    self,
+                    lambda epoch=self._navigation_epoch: self._schedule_calc(50, epoch),
+                ),
             )
 
         except Exception as exc:
@@ -9705,10 +9861,18 @@ class ProjectWorkspace(ctk.CTkFrame):
         ).pack(anchor="w", padx=20, pady=5)
 
     def _refresh_ugt(self) -> None:
-        for plot, lbl in getattr(self, "_ugt_labels", {}).items():
+        labels = getattr(self, "_ugt_labels", None)
+        if not isinstance(labels, dict):
+            return
+        for plot, lbl in labels.items():
+            if not widget_is_alive(lbl):
+                continue
             auto_val = self._auto_fire_tank(plot)
             self.app_state.other.fire_tank[plot] = float(auto_val)
-            lbl.configure(text=f"{auto_val:,} (auto — NBC Table 7)")
+            try:
+                lbl.configure(text=f"{auto_val:,} (auto — NBC Table 7)")
+            except Exception:
+                pass
 
     def _result_page(self, title: str, subtitle: str, table_attr: str, page_key: str):
         frame = ScrollablePage(self.container)
@@ -9995,7 +10159,8 @@ class ProjectWorkspace(ctk.CTkFrame):
 
         _raise_page(page)
         if name == "Project" and hasattr(page, "refresh") and widget_is_alive(page):
-            page.refresh()
+            if not hasattr(page, "_is_active_page") or page._is_active_page():
+                page.refresh()
         if name == "STP":
             self._refresh_stp()
         elif name == "Sewage":
@@ -10015,7 +10180,7 @@ class ProjectWorkspace(ctk.CTkFrame):
         for key, btn in self.nav_btns.items():
             btn.configure(fg_color=BRAND_ORANGE if key == name else "transparent")
 
-    def _schedule_calc(self, delay_ms: int = 300) -> None:
+    def _schedule_calc(self, delay_ms: int = 300, navigation_epoch: int | None = None) -> None:
         self._calc_dirty = True
         cancel_after(self, self._calc_job)
         if self._calc_job in self._workspace_after_jobs:
@@ -10025,14 +10190,17 @@ class ProjectWorkspace(ctk.CTkFrame):
                 pass
         self._calc_job = None
         if widget_is_alive(self):
+            epoch = navigation_epoch if navigation_epoch is not None else self._navigation_epoch
             self._calc_job = self._schedule_workspace_after(
                 delay_ms,
-                safe_widget_callback(self, self._run_scheduled_calc),
+                safe_widget_callback(self, lambda: self._run_scheduled_calc(epoch)),
             )
 
-    def _run_scheduled_calc(self) -> None:
+    def _run_scheduled_calc(self, navigation_epoch: int | None = None) -> None:
         self._calc_job = None
         if not widget_is_alive(self):
+            return
+        if navigation_epoch is not None and navigation_epoch != self._navigation_epoch:
             return
         self._calc()
 

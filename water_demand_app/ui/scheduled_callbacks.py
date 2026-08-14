@@ -118,13 +118,18 @@ def safe_widget_callback(widget: Any, callback: Callable[[], None]) -> Callable[
     return wrapper
 
 
-def safe_entry_text(entry: Any) -> str:
-    if not widget_is_alive(entry):
+def safe_widget_text(widget: Any) -> str:
+    """Read text/value from an entry, combo, or similar widget."""
+    if not widget_is_alive(widget):
         return ""
     try:
-        return entry.get()
+        return str(widget.get() or "")
     except tk.TclError:
         return ""
+
+
+def safe_entry_text(entry: Any) -> str:
+    return safe_widget_text(entry)
 
 
 def safe_set_entry_text(entry: Any, value: str) -> None:

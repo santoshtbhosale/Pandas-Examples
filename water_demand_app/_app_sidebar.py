@@ -176,7 +176,21 @@ class ProjectWorkspace(ctk.CTkFrame):
         self._calc_dirty = True
         self._edit_dirty = False
         self._workspace_after_jobs: list = []
+        self._navigation_epoch = 0
         self._project_list_cache: list | None = None
+
+    def _bump_navigation_epoch(self) -> int:
+        self._navigation_epoch += 1
+        return self._navigation_epoch
+
+    def _clear_stale_form_bindings(self) -> None:
+        """Drop references to widgets that belonged to destroyed form pages."""
+        for attr in ("_le", "_he", "_pe", "_pool_status", "_ugt_labels"):
+            if hasattr(self, attr):
+                try:
+                    delattr(self, attr)
+                except Exception:
+                    setattr(self, attr, {})
 
     def _schedule_workspace_after(self, delay_ms: int, callback) -> str | None:
         if not widget_is_alive(self):
@@ -252,10 +266,17 @@ class ProjectWorkspace(ctk.CTkFrame):
 
     def _teardown_pages(self) -> None:
         """Destroy all workflow pages and flush pending Tk events."""
+        self._bump_navigation_epoch()
         self.suspend_pending_work()
         for page in list(self.pages.values()):
             _destroy_page(page)
         self.pages.clear()
+        self._clear_stale_form_bindings()
+        if widget_is_alive(self):
+            try:
+                self.update_idletasks()
+            except Exception:
+                pass
 
     def reset_for_new_type(self) -> None:
         """Drop cached workflow pages before a new project/type is shown."""
@@ -274,9 +295,10 @@ class ProjectWorkspace(ctk.CTkFrame):
         self._rebuild_sidebar()
         self.show("Project")
         if widget_is_alive(self):
+            epoch = self._navigation_epoch
             self._calc_job = self._schedule_workspace_after(
                 80,
-                safe_widget_callback(self, self._run_scheduled_calc),
+                safe_widget_callback(self, lambda: self._run_scheduled_calc(epoch)),
             )
         if self.on_header_update:
             self.on_header_update()
@@ -440,7 +462,7 @@ class ProjectWorkspace(ctk.CTkFrame):
     def _build_pages(self) -> None:
         """Build only the lightweight Project Details page initially."""
         if "Project" not in self.pages:
-            self.pages["Project"] = ProjectPage(
+            page = ProjectPage(
                 self.container,
                 self.app_state,
                 on_next=self._next_from_project,
@@ -448,6 +470,8 @@ class ProjectWorkspace(ctk.CTkFrame):
                 on_back=self._project_details_back,
                 on_dirty=self.mark_dirty,
             )
+            page.attach_navigation_epoch(self._navigation_epoch)
+            self.pages["Project"] = page
         page = self.pages.get("Project")
         if page is not None:
             try:
@@ -563,7 +587,9 @@ class ProjectWorkspace(ctk.CTkFrame):
         if self._current_page not in visible:
             self.show("Project")
         if "Project" in self.pages and hasattr(self.pages["Project"], "refresh"):
-            self.pages["Project"].refresh()
+            page = self.pages["Project"]
+            if widget_is_alive(page):
+                page.refresh()
 
     def _wizard_show_previous(self, current: str) -> None:
         project_type = self.app_state.project.project_type
@@ -676,7 +702,10 @@ class ProjectWorkspace(ctk.CTkFrame):
 
             self._schedule_workspace_after(
                 150,
-                safe_widget_callback(self, lambda: self._schedule_calc(50)),
+                safe_widget_callback(
+                    self,
+                    lambda epoch=self._navigation_epoch: self._schedule_calc(50, epoch),
+                ),
             )
 
         except Exception as exc:
@@ -847,10 +876,18 @@ class ProjectWorkspace(ctk.CTkFrame):
         ).pack(anchor="w", padx=20, pady=5)
 
     def _refresh_ugt(self) -> None:
-        for plot, lbl in getattr(self, "_ugt_labels", {}).items():
+        labels = getattr(self, "_ugt_labels", None)
+        if not isinstance(labels, dict):
+            return
+        for plot, lbl in labels.items():
+            if not widget_is_alive(lbl):
+                continue
             auto_val = self._auto_fire_tank(plot)
             self.app_state.other.fire_tank[plot] = float(auto_val)
-            lbl.configure(text=f"{auto_val:,} (auto — NBC Table 7)")
+            try:
+                lbl.configure(text=f"{auto_val:,} (auto — NBC Table 7)")
+            except Exception:
+                pass
 
     def _result_page(self, title: str, subtitle: str, table_attr: str, page_key: str):
         frame = ScrollablePage(self.container)
@@ -1137,7 +1174,8 @@ class ProjectWorkspace(ctk.CTkFrame):
 
         _raise_page(page)
         if name == "Project" and hasattr(page, "refresh") and widget_is_alive(page):
-            page.refresh()
+            if not hasattr(page, "_is_active_page") or page._is_active_page():
+                page.refresh()
         if name == "STP":
             self._refresh_stp()
         elif name == "Sewage":
@@ -1157,7 +1195,7 @@ class ProjectWorkspace(ctk.CTkFrame):
         for key, btn in self.nav_btns.items():
             btn.configure(fg_color=BRAND_ORANGE if key == name else "transparent")
 
-    def _schedule_calc(self, delay_ms: int = 300) -> None:
+    def _schedule_calc(self, delay_ms: int = 300, navigation_epoch: int | None = None) -> None:
         self._calc_dirty = True
         cancel_after(self, self._calc_job)
         if self._calc_job in self._workspace_after_jobs:
@@ -1167,14 +1205,17 @@ class ProjectWorkspace(ctk.CTkFrame):
                 pass
         self._calc_job = None
         if widget_is_alive(self):
+            epoch = navigation_epoch if navigation_epoch is not None else self._navigation_epoch
             self._calc_job = self._schedule_workspace_after(
                 delay_ms,
-                safe_widget_callback(self, self._run_scheduled_calc),
+                safe_widget_callback(self, lambda: self._run_scheduled_calc(epoch)),
             )
 
-    def _run_scheduled_calc(self) -> None:
+    def _run_scheduled_calc(self, navigation_epoch: int | None = None) -> None:
         self._calc_job = None
         if not widget_is_alive(self):
+            return
+        if navigation_epoch is not None and navigation_epoch != self._navigation_epoch:
             return
         self._calc()
 
