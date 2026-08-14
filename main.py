@@ -1770,6 +1770,16 @@ def _migrate_projects_table(cursor: sqlite3.Cursor) -> None:
         )
         """
     )
+    for index_sql in (
+        "CREATE INDEX IF NOT EXISTS idx_projects_project_id ON projects(project_id)",
+        "CREATE INDEX IF NOT EXISTS idx_projects_project_name ON projects(project_name)",
+        "CREATE INDEX IF NOT EXISTS idx_projects_client_name ON projects(client_name)",
+        "CREATE INDEX IF NOT EXISTS idx_projects_engineer_name ON projects(engineer_name)",
+        "CREATE INDEX IF NOT EXISTS idx_projects_project_type ON projects(project_type)",
+        "CREATE INDEX IF NOT EXISTS idx_projects_created_at ON projects(created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_projects_workflow_status ON projects(workflow_status)",
+    ):
+        cursor.execute(index_sql)
 
 
 def project_exists(project_id: str, db_path: str = DB_PATH) -> bool:
@@ -2438,6 +2448,16 @@ def format_duration_or_dash(seconds: Optional[int]) -> str:
     return format_duration(seconds)
 
 
+def format_duration_clock(seconds: Optional[int]) -> str:
+    """Format seconds as HH:MM:SS for project history display."""
+    if seconds is None or seconds < 0:
+        return "—"
+    total = int(seconds)
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
 def _now() -> datetime:
     return datetime.now()
 
@@ -2544,7 +2564,7 @@ def enrich_dashboard_row(row: Dict[str, Any], *, now: Optional[datetime] = None)
         "status": status,
         "status_label": STATUS_LABELS.get(status, status.title()),
         "time_taken_seconds": elapsed,
-        "time_taken_display": format_duration_or_dash(elapsed),
+        "time_taken_display": format_duration_clock(elapsed),
         "expected_seconds": expected,
         "expected_display": format_duration_or_dash(expected),
         "performance_title": perf_title,
@@ -2574,8 +2594,11 @@ def compute_statistics(rows: List[Dict[str, Any]], *, now: Optional[datetime] = 
     now = now or _now()
     stats = {
         "total": 0,
-        "in_progress": 0,
+        "active": 0,
         "completed": 0,
+        "this_month": 0,
+        # legacy keys used by older UI/tests
+        "in_progress": 0,
         "pending": 0,
         "delayed": 0,
         "today": 0,
@@ -2584,14 +2607,18 @@ def compute_statistics(rows: List[Dict[str, Any]], *, now: Optional[datetime] = 
         row = enrich_dashboard_row(raw, now=now)
         stats["total"] += 1
         status = row["status"]
+        if status == STATUS_COMPLETED:
+            stats["completed"] += 1
+        elif status != STATUS_CANCELLED:
+            stats["active"] += 1
         if status == STATUS_IN_PROGRESS:
             stats["in_progress"] += 1
-        elif status == STATUS_COMPLETED:
-            stats["completed"] += 1
         elif status == STATUS_PENDING:
             stats["pending"] += 1
         elif status == STATUS_DELAYED:
             stats["delayed"] += 1
+        if is_this_month(raw.get("created_at"), now=now) or is_this_month(raw.get("project_opened_at"), now=now):
+            stats["this_month"] += 1
         if is_today(raw.get("created_at"), now=now) or is_today(raw.get("project_opened_at"), now=now):
             stats["today"] += 1
     return stats
@@ -2658,6 +2685,8 @@ def filter_rows(
     engineer: str = "All Engineers",
     status_label: str = "All Status",
     search: str = "",
+    from_date: Optional[datetime] = None,
+    to_date: Optional[datetime] = None,
     now: Optional[datetime] = None,
 ) -> List[Dict[str, Any]]:
     now = now or _now()
@@ -2687,8 +2716,43 @@ def filter_rows(
             ).lower()
             if search_key not in haystack:
                 continue
+        project_dt = _project_date(row)
+        if from_date and project_dt and project_dt.date() < from_date.date():
+            continue
+        if to_date and project_dt and project_dt.date() > to_date.date():
+            continue
         filtered.append(row)
+    filtered.sort(key=lambda r: _project_date(r) or datetime.min, reverse=True)
     return filtered
+
+
+def _project_date(row: Dict[str, Any]) -> Optional[datetime]:
+    for key in ("created_at", "date", "updated_at", "project_opened_at"):
+        dt = _parse_iso(row.get(key))
+        if dt:
+            return dt
+    return None
+
+
+def parse_filter_date(text: str) -> Optional[datetime]:
+    """Parse DD-MM-YYYY filter date."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def is_this_month(value: Optional[str], *, now: Optional[datetime] = None) -> bool:
+    now = now or _now()
+    dt = _parse_iso(value)
+    if not dt:
+        return False
+    return dt.year == now.year and dt.month == now.month
 
 
 def rows_for_stats(
@@ -2800,7 +2864,7 @@ def load_project_state(project_id: str, db_path: str = DB_PATH) -> AppState:
 
 def persist_project_state(state: AppState, db_path: str = DB_PATH) -> bool:
     """Save project; returns True if updated existing, False if new."""
-    return save_project(
+    result = save_project(
         state.project,
         state.residential,
         state.commercial,
@@ -2808,6 +2872,8 @@ def persist_project_state(state: AppState, db_path: str = DB_PATH) -> bool:
         state.results.to_dict() if state.results else None,
         db_path=db_path,
     )
+    invalidate_dashboard_cache()
+    return result
 
 
 def find_projects(query: str = "", limit: int = 50, db_path: str = DB_PATH):
@@ -2819,6 +2885,28 @@ def find_projects(query: str = "", limit: int = 50, db_path: str = DB_PATH):
 
 def list_dashboard_projects(db_path: str = DB_PATH):
     return get_dashboard_projects(db_path=db_path)
+
+
+_dashboard_cache: dict = {"rows": None, "mtime": 0.0}
+
+
+def list_dashboard_projects_cached(db_path: str = DB_PATH):
+    """Return dashboard rows, using a lightweight file-mtime cache."""
+    try:
+        mtime = os.path.getmtime(db_path) if os.path.exists(db_path) else 0.0
+    except OSError:
+        mtime = 0.0
+    if _dashboard_cache["rows"] is not None and _dashboard_cache["mtime"] == mtime:
+        return _dashboard_cache["rows"]
+    rows = get_dashboard_projects(db_path=db_path)
+    _dashboard_cache["rows"] = rows
+    _dashboard_cache["mtime"] = mtime
+    return rows
+
+
+def invalidate_dashboard_cache() -> None:
+    _dashboard_cache["rows"] = None
+    _dashboard_cache["mtime"] = 0.0
 
 
 def mark_project_opened(project_id: str, db_path: str = DB_PATH) -> None:
@@ -2839,7 +2927,10 @@ def mark_project_completed(project_id: str, db_path: str = DB_PATH) -> None:
 
 
 def remove_project(project_id: str, *, username: str = "", db_path: str = DB_PATH) -> bool:
-    return delete_project(project_id, username=username, db_path=db_path)
+    result = delete_project(project_id, username=username, db_path=db_path)
+    if result:
+        invalidate_dashboard_cache()
+    return result
 
 # ==================== services/app_logging.py ====================
 """Application logging to logs/application.log."""
@@ -3699,13 +3790,37 @@ class PDFExporter:
                 build_solid_waste_table_sections(self.project, environmental),
             )
         )
-        doc.build(story, onFirstPage=self._footer, onLaterPages=self._footer)
+        doc.build(story, onFirstPage=self._page_template, onLaterPages=self._page_template)
 
-    def _footer(self, canvas, doc) -> None:
+    def _page_template(self, canvas, doc) -> None:
+        """Draw header logo (right) and footer on every page."""
         canvas.saveState()
+        if self.logo_path and os.path.exists(self.logo_path):
+            try:
+                img = ImageReader(self.logo_path)
+                iw, ih = img.getSize()
+                max_w, max_h = 90, 36
+                scale = min(max_w / max(iw, 1), max_h / max(ih, 1))
+                w, h = iw * scale, ih * scale
+                canvas.drawImage(
+                    img,
+                    letter[0] - w - 30,
+                    letter[1] - h - 28,
+                    width=w,
+                    height=h,
+                    preserveAspectRatio=True,
+                    mask="auto",
+                )
+            except Exception:
+                pass
+        canvas.setFont("Helvetica-Bold", 8)
+        canvas.drawString(30, letter[1] - 30, COMPANY_NAME)
         canvas.setFont("Helvetica", 6)
         canvas.drawCentredString(letter[0] / 2, 15, COMPANY_FOOTER)
         canvas.restoreState()
+
+    def _footer(self, canvas, doc) -> None:
+        self._page_template(canvas, doc)
 
     def _p(self, text: str, style_name: str = "Normal", **kwargs) -> Paragraph:
         style = ParagraphStyle(style_name, parent=self.styles["Normal"], **kwargs)
@@ -5808,32 +5923,15 @@ def build_page_header(parent, title: str, subtitle: str = "", step: int = 0, tot
     return wrapper
 
 # ==================== ui/components/type_selector.py ====================
-"""Visual project type selection cards."""
+"""Visual project type selection cards — compact grid, no scrolling."""
 
 
 
 
-
-
-TYPE_DESCRIPTIONS = {
-    "Residential": "Apartments, villas and housing projects.",
-    "Commercial": "Offices, shops and business developments.",
-    "Mixed Use": "Residential and commercial combined.",
-    "Township": "Large multi-component developments.",
-    "Hotel": "Hotels and hospitality projects.",
-    "Hospital": "Hospitals and healthcare facilities.",
-    "School": "Schools and educational campuses.",
-    "College": "Colleges and higher-education campuses.",
-    "Shopping Mall": "Malls and retail developments.",
-    "Mall": "Malls and retail developments.",
-    "IT Park": "IT parks and technology campuses.",
-    "Industrial": "Industrial and manufacturing projects.",
-    "Warehouse": "Warehouses and storage facilities.",
-}
 
 
 class ProjectTypeSelector(ctk.CTkFrame):
-    """Grid of selectable project type cards."""
+    """Compact grid of selectable project type cards (fits one screen)."""
 
     def __init__(
         self,
@@ -5858,52 +5956,42 @@ class ProjectTypeSelector(ctk.CTkFrame):
 
     def _build(self) -> None:
         labels = sorted(set(PROJECT_TYPE_LABELS.keys()))
-        cols = 3
+        cols = 4
         for i, label in enumerate(labels):
             row, col = divmod(i, cols)
             card = self._make_card(label)
-            card.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
-            for c in range(cols):
-                self.grid_columnconfigure(c, weight=1)
+            card.grid(row=row, column=col, padx=4, pady=4, sticky="nsew")
+        for c in range(cols):
+            self.grid_columnconfigure(c, weight=1)
 
     def _make_card(self, label: str) -> ctk.CTkFrame:
         icon = PROJECT_TYPE_ICONS.get(label, "📋")
         frame = ctk.CTkFrame(
             self,
             fg_color=COLOR_CARD,
-            corner_radius=10,
+            corner_radius=8,
             border_width=2,
             border_color=COLOR_BORDER,
-            width=200,
-            height=88,
+            height=52,
             cursor="hand2",
         )
         frame.grid_propagate(False)
         self._cards[label] = frame
 
         inner = ctk.CTkFrame(frame, fg_color="transparent")
-        inner.pack(fill="both", expand=True, padx=10, pady=8)
-        title_row = ctk.CTkFrame(inner, fg_color="transparent")
-        title_row.pack(fill="x")
-        check = ctk.CTkLabel(title_row, text="", font=FONT_SECTION, text_color=COLOR_ACCENT, width=16)
+        inner.pack(fill="both", expand=True, padx=8, pady=6)
+        row = ctk.CTkFrame(inner, fg_color="transparent")
+        row.pack(fill="x")
+        check = ctk.CTkLabel(row, text="", font=FONT_SECTION, text_color=COLOR_ACCENT, width=14)
         check.pack(side="right")
         frame._check_label = check  # type: ignore[attr-defined]
         ctk.CTkLabel(
-            title_row,
-            text=f"{icon}  {label}",
-            font=FONT_SECTION,
+            row,
+            text=f"{icon} {label}",
+            font=("Arial", 11, "bold"),
             text_color=COLOR_PRIMARY,
             anchor="w",
         ).pack(side="left", fill="x", expand=True)
-        ctk.CTkLabel(
-            inner,
-            text=TYPE_DESCRIPTIONS.get(label, ""),
-            font=("Arial", 9),
-            text_color=COLOR_TEXT_SECONDARY,
-            anchor="w",
-            wraplength=170,
-            justify="left",
-        ).pack(anchor="w", pady=(4, 0))
 
         def select(_event=None, lbl=label):
             self._selected.set(lbl)
@@ -6301,16 +6389,10 @@ class MainDashboard(ctk.CTkFrame):
 
         left = ctk.CTkFrame(hero, fg_color="transparent")
         left.grid(row=0, column=0, sticky="w", padx=(18, 12), pady=14)
+        ctk.CTkLabel(left, text="Project Home", font=FONT_TITLE, text_color=COLOR_PRIMARY, anchor="w").pack(anchor="w")
         ctk.CTkLabel(
             left,
-            text="Project Home",
-            font=FONT_TITLE,
-            text_color=COLOR_PRIMARY,
-            anchor="w",
-        ).pack(anchor="w")
-        ctk.CTkLabel(
-            left,
-            text="Manage and monitor your engineering projects.",
+            text="Create, open and manage engineering projects.",
             font=FONT_SUBTITLE,
             text_color=COLOR_TEXT_SECONDARY,
             anchor="w",
@@ -6336,16 +6418,14 @@ class MainDashboard(ctk.CTkFrame):
 
         stats_row = ctk.CTkFrame(self, fg_color="transparent")
         stats_row.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 8))
-        for i in range(6):
+        for i in range(4):
             stats_row.grid_columnconfigure(i, weight=1)
 
         for column, (key, title) in enumerate([
             ("total", "TOTAL PROJECTS"),
-            ("in_progress", "IN PROGRESS"),
-            ("completed", "COMPLETED"),
-            ("pending", "PENDING"),
-            ("delayed", "DELAYED"),
-            ("today", "TODAY"),
+            ("active", "ACTIVE PROJECTS"),
+            ("completed", "COMPLETED PROJECTS"),
+            ("this_month", "THIS MONTH"),
         ]):
             self._stat_labels[key] = self._make_stat_card(stats_row, column, title, "0")
 
@@ -6367,12 +6447,7 @@ class MainDashboard(ctk.CTkFrame):
             border_color=COLOR_BORDER,
             height=58,
         )
-        card.grid(
-            row=0,
-            column=column,
-            sticky="ew",
-            padx=(0 if column == 0 else 3, 3 if column < 5 else 0),
-        )
+        card.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 4, 4 if column < 3 else 0))
         card.grid_propagate(False)
         ctk.CTkLabel(card, text=title, font=FONT_STAT_LABEL, text_color=COLOR_TEXT_SECONDARY).pack(
             anchor="w", padx=10, pady=(6, 0)
@@ -6384,11 +6459,9 @@ class MainDashboard(ctk.CTkFrame):
     def _update_stats(self, stats: dict) -> None:
         mapping = {
             "total": stats.get("total", 0),
-            "in_progress": stats.get("in_progress", 0),
+            "active": stats.get("active", 0),
             "completed": stats.get("completed", 0),
-            "pending": stats.get("pending", 0),
-            "delayed": stats.get("delayed", 0),
-            "today": stats.get("today", 0),
+            "this_month": stats.get("this_month", 0),
         }
         for key, value in mapping.items():
             label = self._stat_labels.get(key)
@@ -6440,14 +6513,14 @@ class ProjectHub(PageLifecycleMixin, ctk.CTkFrame):
 
         filters = ctk.CTkFrame(self, fg_color="#F8FAFB", corner_radius=8)
         filters.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 6))
-        filters.grid_columnconfigure(5, weight=1)
+        filters.grid_columnconfigure(4, weight=1)
 
-        ctk.CTkLabel(filters, text="FILTERS", font=("Arial", 10, "bold"), text_color=BRAND_NAVY).grid(
-            row=0, column=0, columnspan=6, sticky="w", padx=10, pady=(8, 4)
+        ctk.CTkLabel(filters, text="PROJECT FILTERS", font=("Arial", 10, "bold"), text_color=BRAND_NAVY).grid(
+            row=0, column=0, columnspan=8, sticky="w", padx=10, pady=(8, 4)
         )
 
         ctk.CTkLabel(filters, text="Engineer:", font=("Arial", 10, "bold")).grid(
-            row=1, column=0, padx=(10, 4), pady=(0, 8), sticky="w"
+            row=1, column=0, padx=(10, 4), pady=(0, 4), sticky="w"
         )
         self.engineer_var = ctk.StringVar(value="All Engineers")
         self.engineer_combo = ctk.CTkComboBox(
@@ -6455,13 +6528,13 @@ class ProjectHub(PageLifecycleMixin, ctk.CTkFrame):
             values=["All Engineers"],
             variable=self.engineer_var,
             command=self._on_filter_change,
-            width=150,
-            height=30,
+            width=140,
+            height=28,
         )
-        self.engineer_combo.grid(row=1, column=1, padx=(0, 12), pady=(0, 8), sticky="w")
+        self.engineer_combo.grid(row=1, column=1, padx=(0, 10), pady=(0, 4), sticky="w")
 
         ctk.CTkLabel(filters, text="Status:", font=("Arial", 10, "bold")).grid(
-            row=1, column=2, padx=(0, 4), pady=(0, 8), sticky="w"
+            row=1, column=2, padx=(0, 4), pady=(0, 4), sticky="w"
         )
         self.status_var = ctk.StringVar(value="All Status")
         self.status_combo = ctk.CTkComboBox(
@@ -6469,34 +6542,49 @@ class ProjectHub(PageLifecycleMixin, ctk.CTkFrame):
             values=STATUS_FILTER_OPTIONS,
             variable=self.status_var,
             command=self._on_filter_change,
-            width=140,
-            height=30,
+            width=120,
+            height=28,
         )
-        self.status_combo.grid(row=1, column=3, padx=(0, 12), pady=(0, 8), sticky="w")
+        self.status_combo.grid(row=1, column=3, padx=(0, 10), pady=(0, 4), sticky="w")
 
         ctk.CTkLabel(filters, text="Search:", font=("Arial", 10, "bold")).grid(
-            row=1, column=4, padx=(0, 4), pady=(0, 8), sticky="w"
+            row=1, column=4, padx=(0, 4), pady=(0, 4), sticky="w"
         )
         self.search_var = ctk.StringVar()
-        self.register_trace(self.search_var, "write", lambda *_: self._schedule_search())
         self.search_entry = ctk.CTkEntry(
             filters,
             textvariable=self.search_var,
-            placeholder_text="Search by name, client, engineer or ID...",
-            height=30,
+            placeholder_text="Project Name / Client / Project ID",
+            height=28,
         )
-        self.search_entry.grid(row=1, column=5, sticky="ew", padx=(0, 6), pady=(0, 8))
+        self.search_entry.grid(row=1, column=5, sticky="ew", padx=(0, 6), pady=(0, 4))
+        self.search_entry.bind("<Return>", lambda _e: self._apply_filters())
+
+        ctk.CTkLabel(filters, text="From:", font=("Arial", 10, "bold")).grid(
+            row=2, column=0, padx=(10, 4), pady=(0, 8), sticky="w"
+        )
+        self.from_date_var = ctk.StringVar()
+        self.from_date_entry = ctk.CTkEntry(filters, textvariable=self.from_date_var, placeholder_text="DD-MM-YYYY", width=110, height=28)
+        self.from_date_entry.grid(row=2, column=1, padx=(0, 10), pady=(0, 8), sticky="w")
+
+        ctk.CTkLabel(filters, text="To:", font=("Arial", 10, "bold")).grid(
+            row=2, column=2, padx=(0, 4), pady=(0, 8), sticky="w"
+        )
+        self.to_date_var = ctk.StringVar()
+        self.to_date_entry = ctk.CTkEntry(filters, textvariable=self.to_date_var, placeholder_text="DD-MM-YYYY", width=110, height=28)
+        self.to_date_entry.grid(row=2, column=3, padx=(0, 10), pady=(0, 8), sticky="w")
+
+        btn_row = ctk.CTkFrame(filters, fg_color="transparent")
+        btn_row.grid(row=2, column=4, columnspan=2, sticky="w", pady=(0, 8))
         ctk.CTkButton(
-            filters,
-            text="Clear",
-            width=60,
-            height=30,
-            font=("Arial", 9),
-            fg_color="#E8ECF0",
-            hover_color=COLOR_BORDER,
-            text_color=COLOR_PRIMARY,
-            command=self._clear_search,
-        ).grid(row=1, column=6, padx=(0, 10), pady=(0, 8), sticky="w")
+            btn_row, text="Search", width=70, height=28, fg_color=BRAND_ORANGE,
+            command=safe_command(self._apply_filters, parent=self),
+        ).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(
+            btn_row, text="Clear Filters", width=90, height=28,
+            fg_color="#E8ECF0", hover_color=COLOR_BORDER, text_color=COLOR_PRIMARY,
+            command=safe_command(self._clear_filters, parent=self),
+        ).pack(side="left")
 
         header_row = ctk.CTkFrame(self, fg_color="transparent")
         header_row.grid(row=1, column=0, sticky="ew", padx=14, pady=(2, 4))
@@ -6537,15 +6625,16 @@ class ProjectHub(PageLifecycleMixin, ctk.CTkFrame):
         self.table_wrap.grid_columnconfigure(0, weight=1)
 
         self._header_columns = [
-            ("Project ID", 96),
-            ("Project Name", 120),
-            ("Client", 100),
-            ("Type", 76),
-            ("Engineer", 76),
-            ("Status", 100),
-            ("Time", 68),
-            ("Performance", 108),
-            ("Actions", 56),
+            ("Project ID", 88),
+            ("Date", 72),
+            ("Project Name", 110),
+            ("Client", 88),
+            ("Engineer", 72),
+            ("Type", 72),
+            ("Status", 92),
+            ("Time Taken", 72),
+            ("Updated", 72),
+            ("Actions", 48),
         ]
         self._table_header = ctk.CTkFrame(self.table_wrap, fg_color="#E8ECF0", corner_radius=4)
         self._table_header.pack(fill="x", pady=(0, 2))
@@ -6562,42 +6651,48 @@ class ProjectHub(PageLifecycleMixin, ctk.CTkFrame):
         self.search_entry.focus_set()
         self.search_entry.icursor("end")
 
-    def _clear_search(self) -> None:
+    def _clear_filters(self) -> None:
+        self.engineer_var.set("All Engineers")
+        self.status_var.set("All Status")
         self.search_var.set("")
-        self._apply_filters()
-
-    def _schedule_search(self) -> None:
-        cancel_after(self, self._search_job)
-        self._search_job = self.schedule_after(180, self._apply_filters)
-
-    def _on_filter_change(self, *_args) -> None:
+        self.from_date_var.set("")
+        self.to_date_var.set("")
         self._apply_filters()
 
     def refresh(self) -> None:
-        self._all_rows = list_dashboard_projects()
+        self._all_rows = list_dashboard_projects_cached()
         engineers = list_engineer_options(self._all_rows)
         self.engineer_combo.configure(values=engineers)
         if self.engineer_var.get() not in engineers:
             self.engineer_var.set("All Engineers")
         self._apply_filters()
 
+    def _on_filter_change(self, *_args) -> None:
+        self._apply_filters()
+
     def _apply_filters(self) -> None:
         engineer = self.engineer_var.get()
         status = self.status_var.get()
         search = self.search_var.get()
+        from_dt = parse_filter_date(self.from_date_var.get())
+        to_dt = parse_filter_date(self.to_date_var.get())
         self._filtered_rows = filter_rows(
             self._all_rows,
             engineer=engineer,
             status_label=status,
             search=search,
+            from_date=from_dt,
+            to_date=to_dt,
         )
         self._last_stats_rows = rows_for_stats(self._all_rows, engineer=engineer, status_label=status)
         stats = compute_statistics(self._last_stats_rows)
         if self.on_stats_changed:
             self.on_stats_changed(stats)
         self._render_table()
+        eng_label = engineer if engineer != "All Engineers" else "All Engineers"
+        count_text = f"{eng_label} — {len(self._filtered_rows)} project(s)"
         self.status_label.configure(
-            text=f"Showing {len(self._filtered_rows)} of {len(self._all_rows)} project(s)"
+            text=f"Showing {len(self._filtered_rows)} of {len(self._all_rows)} projects  |  {count_text}"
         )
 
     def _render_table(self) -> None:
@@ -6611,14 +6706,14 @@ class ProjectHub(PageLifecycleMixin, ctk.CTkFrame):
             query = self.search_var.get().strip()
             if query:
                 msg = "No matching projects found."
-                btn_text = "Clear Search"
-                cmd = self._clear_search
+                btn_text = "Clear Filters"
+                cmd = self._clear_filters
             elif not self._all_rows:
                 msg = "No projects found.\nCreate your first engineering project to get started."
                 btn_text = "+ New Project"
                 cmd = self.on_new_project
             else:
-                msg = "No projects match the current filters."
+                msg = "No projects found for the selected filters."
                 btn_text = "Clear Filters"
                 cmd = self._clear_filters
             ctk.CTkLabel(
@@ -6648,12 +6743,6 @@ class ProjectHub(PageLifecycleMixin, ctk.CTkFrame):
             return f"{title} ({detail})"
         return title or detail or "—"
 
-    def _clear_filters(self) -> None:
-        self.engineer_var.set("All Engineers")
-        self.status_var.set("All Status")
-        self.search_var.set("")
-        self._apply_filters()
-
     def _status_badge(self, label: str) -> str:
         return STATUS_BADGES.get(label, label)
 
@@ -6665,13 +6754,14 @@ class ProjectHub(PageLifecycleMixin, ctk.CTkFrame):
 
         values = [
             pid,
+            row.get("created_display", row.get("date", "—"))[:10],
             row.get("project_name", ""),
             row.get("client_name", "") or "—",
-            row.get("project_type_label", "—"),
             row.get("engineer_name", "") or "—",
+            row.get("project_type_label", "—"),
             self._status_badge(row.get("status_label", "")),
             row.get("time_taken_display", "—"),
-            self._format_performance(row),
+            row.get("updated_display", "—")[:10],
         ]
         widths = [w for _, w in self._header_columns[:-1]]
         for i, (value, width) in enumerate(zip(values, widths)):
@@ -6752,15 +6842,16 @@ class ProjectHub(PageLifecycleMixin, ctk.CTkFrame):
 
         body = ctk.CTkFrame(dialog, fg_color="white")
         body.pack(fill="both", expand=True, padx=18, pady=18)
-        ctk.CTkLabel(body, text="Delete Project Permanently?", font=("Arial", 18, "bold"), text_color=BRAND_NAVY).pack(
+        ctk.CTkLabel(body, text="Are you sure you want to delete this project?", font=("Arial", 18, "bold"), text_color=BRAND_NAVY).pack(
             anchor="w", pady=(0, 8)
         )
         ctk.CTkLabel(
             body,
             text=(
-                f"Project:\n{row.get('project_name', '')}\n\n"
-                f"Client:\n{row.get('client_name', '') or '—'}\n\n"
-                f"Engineer:\n{row.get('engineer_name', '') or '—'}"
+                f"Project ID: {project_id}\n"
+                f"Project: {row.get('project_name', '')}\n"
+                f"Client: {row.get('client_name', '') or '—'}\n"
+                f"Engineer: {row.get('engineer_name', '') or '—'}"
             ),
             font=("Arial", 11),
             justify="left",
@@ -6795,7 +6886,7 @@ class ProjectHub(PageLifecycleMixin, ctk.CTkFrame):
         ctk.CTkButton(buttons, text="Cancel", width=120, fg_color="#95A5A6", command=_cancel).pack(
             side="left", padx=(0, 8)
         )
-        ctk.CTkButton(buttons, text="Delete Permanently", width=160, fg_color="#C0392B", command=_confirm).pack(
+        ctk.CTkButton(buttons, text="Delete", width=100, fg_color="#C0392B", command=_confirm).pack(
             side="right"
         )
 
@@ -6937,9 +7028,9 @@ class ProjectEditDialog(ctk.CTkToplevel):
 FORM_PAD_X = 16
 FORM_ROW_PAD_Y = 6
 SECTION_PAD_Y = (14, 4)
-FIELD_WIDTH = 480
-COMBO_WIDTH = 320
-SMALL_FIELD_WIDTH = 120
+FIELD_WIDTH = 420
+COMBO_WIDTH = 280
+SMALL_FIELD_WIDTH = 90
 
 
 def build_professional_page_header(parent, title: str, subtitle: str = "", step: str = ""):
@@ -9820,6 +9911,9 @@ class Application(ctk.CTk):
         if self._workspace is None:
             self._start_new_project()
             return
+        reset = getattr(self._workspace, "reset_for_new_type", None)
+        if callable(reset):
+            reset()
         self._show_project_type_selector(self._workspace.app_state)
 
     def _show_project(self, state: AppState) -> None:
@@ -9888,7 +9982,6 @@ class Application(ctk.CTk):
             border_color="#DCE3EA",
         )
         card.grid(row=0, column=0, sticky="nsew", padx=24, pady=24)
-        card.grid_rowconfigure(3, weight=1)
         card.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
@@ -9925,12 +10018,12 @@ class Application(ctk.CTk):
             if label == PROJECT_TYPE_PLACEHOLDER:
                 help_text.set("Select a project type to continue.")
             else:
-                help_text.set(TYPE_DESCRIPTIONS.get(label, "The application will show relevant sections for this type."))
+                help_text.set(f"Selected: {label}. Click Continue to open the project workflow.")
 
-        selector_wrap = ctk.CTkScrollableFrame(card, fg_color="transparent", height=320, label_text="")
-        selector_wrap.grid(row=3, column=0, sticky="nsew", padx=30, pady=(0, 8))
+        selector_wrap = ctk.CTkFrame(card, fg_color="transparent")
+        selector_wrap.grid(row=3, column=0, sticky="ew", padx=30, pady=(0, 8))
         type_selector = ProjectTypeSelector(selector_wrap, initial_label=initial_label, on_selection_change=on_type_change)
-        type_selector.pack(fill="both", expand=True)
+        type_selector.pack(fill="x")
         if initial_label != PROJECT_TYPE_PLACEHOLDER:
             type_selector.set_selected(initial_label)
             on_type_change(initial_label)
@@ -9965,8 +10058,7 @@ class Application(ctk.CTk):
                 self._destroy_type_selector()
                 if self._workspace is not None:
                     self._workspace.app_state = state
-                    if is_project_type_set(old_type) and old_type != new_type:
-                        self._workspace.reset_for_new_type()
+                    self._workspace.reset_for_new_type()
                 self._show_project(state)
             except Exception as exc:
                 traceback.print_exc()

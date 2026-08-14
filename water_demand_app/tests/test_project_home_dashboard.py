@@ -252,13 +252,14 @@ class TestProjectHomeUI(unittest.TestCase):
         self.assertIn("+ New Project", source)
         self.assertIn("PROJECT OVERVIEW", source)
 
-    def test_dashboard_has_six_stat_cards_in_one_row(self) -> None:
+    def test_dashboard_has_four_overview_cards(self) -> None:
         page = self.MainDashboard(self.root, on_new_project=lambda: None, on_open_project=lambda _id: None, on_exit=lambda: None)
         page.update_idletasks()
-        self.assertEqual(len(page._stat_labels), 6)
+        self.assertEqual(len(page._stat_labels), 4)
         self.assertIn("total", page._stat_labels)
-        self.assertIn("delayed", page._stat_labels)
-        self.assertIn("today", page._stat_labels)
+        self.assertIn("active", page._stat_labels)
+        self.assertIn("completed", page._stat_labels)
+        self.assertIn("this_month", page._stat_labels)
 
     def test_dashboard_has_no_page_level_scroll(self) -> None:
         source = inspect.getsource(self.MainDashboard._build)
@@ -273,10 +274,12 @@ class TestProjectHomeUI(unittest.TestCase):
         self.assertTrue(hasattr(hub, "status_combo"))
         self.assertTrue(hasattr(hub, "search_entry"))
         self.assertTrue(hasattr(hub, "_show_performance_dialog"))
-        self.assertEqual(len(hub._header_columns), 9)
+        self.assertEqual(len(hub._header_columns), 10)
         column_names = [name for name, _width in hub._header_columns]
         self.assertIn("Client", column_names)
         self.assertIn("Project ID", column_names)
+        self.assertIn("Date", column_names)
+        self.assertIn("Updated", column_names)
         self.assertFalse(hasattr(hub, "performance_frame"))
 
 

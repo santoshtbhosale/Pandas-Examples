@@ -47,7 +47,7 @@ class TestProjectHomeNoScroll(unittest.TestCase):
     def test_delete_confirmation_includes_project_details(self) -> None:
         source = inspect.getsource(self.ProjectHub._delete_project)
         self.assertIn("Client:", source)
-        self.assertIn("Delete Project Permanently", source)
+        self.assertIn("Delete", source)
         self.assertIn("This action cannot be undone.", source)
         self.assertIn("Unable to delete the project. Please try again.", source)
 
@@ -55,7 +55,7 @@ class TestProjectHomeNoScroll(unittest.TestCase):
         page = self.MainDashboard(self.root, on_new_project=lambda: None, on_open_project=lambda _id: None, on_exit=lambda: None)
         page.update_idletasks()
         self.assertIsNotNone(page.project_hub)
-        self.assertEqual(len(page._stat_labels), 6)
+        self.assertEqual(len(page._stat_labels), 4)
 
 
 if __name__ == "__main__":

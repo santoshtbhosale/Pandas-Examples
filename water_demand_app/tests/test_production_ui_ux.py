@@ -47,8 +47,9 @@ class TestDashboardStructure(unittest.TestCase):
         from ui import dashboard
 
         source = inspect.getsource(dashboard.MainDashboard._build)
-        self.assertIn('"today"', source)
+        self.assertIn('"active"', source)
         self.assertIn("TOTAL PROJECTS", source)
+        self.assertIn("THIS MONTH", source)
 
     def test_dashboard_no_duplicate_company_name(self) -> None:
         from ui import dashboard
@@ -62,11 +63,11 @@ class TestDashboardStructure(unittest.TestCase):
         source = inspect.getsource(project_hub.ProjectHub._build)
         self.assertIn('"Client"', source)
 
-    def test_project_hub_has_clear_search(self) -> None:
+    def test_project_hub_has_clear_filters(self) -> None:
         from ui import project_hub
 
         source = inspect.getsource(project_hub.ProjectHub)
-        self.assertIn("_clear_search", source)
+        self.assertIn("_clear_filters", source)
 
 
 class TestTypeSelector(unittest.TestCase):
