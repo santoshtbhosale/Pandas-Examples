@@ -69,6 +69,16 @@ def format_duration_or_dash(seconds: Optional[int]) -> str:
     return format_duration(seconds)
 
 
+def format_duration_clock(seconds: Optional[int]) -> str:
+    """Format seconds as HH:MM:SS for project history display."""
+    if seconds is None or seconds < 0:
+        return "—"
+    total = int(seconds)
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
 def _now() -> datetime:
     return datetime.now()
 
@@ -175,7 +185,7 @@ def enrich_dashboard_row(row: Dict[str, Any], *, now: Optional[datetime] = None)
         "status": status,
         "status_label": STATUS_LABELS.get(status, status.title()),
         "time_taken_seconds": elapsed,
-        "time_taken_display": format_duration_or_dash(elapsed),
+        "time_taken_display": format_duration_clock(elapsed),
         "expected_seconds": expected,
         "expected_display": format_duration_or_dash(expected),
         "performance_title": perf_title,
@@ -205,8 +215,11 @@ def compute_statistics(rows: List[Dict[str, Any]], *, now: Optional[datetime] = 
     now = now or _now()
     stats = {
         "total": 0,
-        "in_progress": 0,
+        "active": 0,
         "completed": 0,
+        "this_month": 0,
+        # legacy keys used by older UI/tests
+        "in_progress": 0,
         "pending": 0,
         "delayed": 0,
         "today": 0,
@@ -215,14 +228,18 @@ def compute_statistics(rows: List[Dict[str, Any]], *, now: Optional[datetime] = 
         row = enrich_dashboard_row(raw, now=now)
         stats["total"] += 1
         status = row["status"]
+        if status == STATUS_COMPLETED:
+            stats["completed"] += 1
+        elif status != STATUS_CANCELLED:
+            stats["active"] += 1
         if status == STATUS_IN_PROGRESS:
             stats["in_progress"] += 1
-        elif status == STATUS_COMPLETED:
-            stats["completed"] += 1
         elif status == STATUS_PENDING:
             stats["pending"] += 1
         elif status == STATUS_DELAYED:
             stats["delayed"] += 1
+        if is_this_month(raw.get("created_at"), now=now) or is_this_month(raw.get("project_opened_at"), now=now):
+            stats["this_month"] += 1
         if is_today(raw.get("created_at"), now=now) or is_today(raw.get("project_opened_at"), now=now):
             stats["today"] += 1
     return stats
@@ -289,6 +306,8 @@ def filter_rows(
     engineer: str = "All Engineers",
     status_label: str = "All Status",
     search: str = "",
+    from_date: Optional[datetime] = None,
+    to_date: Optional[datetime] = None,
     now: Optional[datetime] = None,
 ) -> List[Dict[str, Any]]:
     now = now or _now()
@@ -318,8 +337,43 @@ def filter_rows(
             ).lower()
             if search_key not in haystack:
                 continue
+        project_dt = _project_date(row)
+        if from_date and project_dt and project_dt.date() < from_date.date():
+            continue
+        if to_date and project_dt and project_dt.date() > to_date.date():
+            continue
         filtered.append(row)
+    filtered.sort(key=lambda r: _project_date(r) or datetime.min, reverse=True)
     return filtered
+
+
+def _project_date(row: Dict[str, Any]) -> Optional[datetime]:
+    for key in ("created_at", "date", "updated_at", "project_opened_at"):
+        dt = _parse_iso(row.get(key))
+        if dt:
+            return dt
+    return None
+
+
+def parse_filter_date(text: str) -> Optional[datetime]:
+    """Parse DD-MM-YYYY filter date."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def is_this_month(value: Optional[str], *, now: Optional[datetime] = None) -> bool:
+    now = now or _now()
+    dt = _parse_iso(value)
+    if not dt:
+        return False
+    return dt.year == now.year and dt.month == now.month
 
 
 def rows_for_stats(

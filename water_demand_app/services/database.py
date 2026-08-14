@@ -133,6 +133,16 @@ def _migrate_projects_table(cursor: sqlite3.Cursor) -> None:
         )
         """
     )
+    for index_sql in (
+        "CREATE INDEX IF NOT EXISTS idx_projects_project_id ON projects(project_id)",
+        "CREATE INDEX IF NOT EXISTS idx_projects_project_name ON projects(project_name)",
+        "CREATE INDEX IF NOT EXISTS idx_projects_client_name ON projects(client_name)",
+        "CREATE INDEX IF NOT EXISTS idx_projects_engineer_name ON projects(engineer_name)",
+        "CREATE INDEX IF NOT EXISTS idx_projects_project_type ON projects(project_type)",
+        "CREATE INDEX IF NOT EXISTS idx_projects_created_at ON projects(created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_projects_workflow_status ON projects(workflow_status)",
+    ):
+        cursor.execute(index_sql)
 
 
 def project_exists(project_id: str, db_path: str = DB_PATH) -> bool:

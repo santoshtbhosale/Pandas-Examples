@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 
 from config.nbc_2026 import PROJECT_TYPE_UNSET
@@ -83,7 +84,7 @@ def load_project_state(project_id: str, db_path: str = DB_PATH) -> AppState:
 
 def persist_project_state(state: AppState, db_path: str = DB_PATH) -> bool:
     """Save project; returns True if updated existing, False if new."""
-    return save_project(
+    result = save_project(
         state.project,
         state.residential,
         state.commercial,
@@ -91,6 +92,8 @@ def persist_project_state(state: AppState, db_path: str = DB_PATH) -> bool:
         state.results.to_dict() if state.results else None,
         db_path=db_path,
     )
+    invalidate_dashboard_cache()
+    return result
 
 
 def find_projects(query: str = "", limit: int = 50, db_path: str = DB_PATH):
@@ -102,6 +105,28 @@ def find_projects(query: str = "", limit: int = 50, db_path: str = DB_PATH):
 
 def list_dashboard_projects(db_path: str = DB_PATH):
     return get_dashboard_projects(db_path=db_path)
+
+
+_dashboard_cache: dict = {"rows": None, "mtime": 0.0}
+
+
+def list_dashboard_projects_cached(db_path: str = DB_PATH):
+    """Return dashboard rows, using a lightweight file-mtime cache."""
+    try:
+        mtime = os.path.getmtime(db_path) if os.path.exists(db_path) else 0.0
+    except OSError:
+        mtime = 0.0
+    if _dashboard_cache["rows"] is not None and _dashboard_cache["mtime"] == mtime:
+        return _dashboard_cache["rows"]
+    rows = get_dashboard_projects(db_path=db_path)
+    _dashboard_cache["rows"] = rows
+    _dashboard_cache["mtime"] = mtime
+    return rows
+
+
+def invalidate_dashboard_cache() -> None:
+    _dashboard_cache["rows"] = None
+    _dashboard_cache["mtime"] = 0.0
 
 
 def mark_project_opened(project_id: str, db_path: str = DB_PATH) -> None:
@@ -122,4 +147,7 @@ def mark_project_completed(project_id: str, db_path: str = DB_PATH) -> None:
 
 
 def remove_project(project_id: str, *, username: str = "", db_path: str = DB_PATH) -> bool:
-    return delete_project(project_id, username=username, db_path=db_path)
+    result = delete_project(project_id, username=username, db_path=db_path)
+    if result:
+        invalidate_dashboard_cache()
+    return result
