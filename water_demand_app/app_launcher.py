@@ -311,9 +311,13 @@ class Application(ctk.CTk):
         if self._workspace is None:
             self._start_new_project()
             return
+        suspend = getattr(self._workspace, "suspend_pending_work", None)
+        if callable(suspend):
+            suspend()
         reset = getattr(self._workspace, "reset_for_new_type", None)
         if callable(reset):
             reset()
+        self.update_idletasks()
         self._show_project_type_selector(self._workspace.app_state)
 
     def _show_project(self, state: AppState) -> None:
@@ -372,6 +376,7 @@ class Application(ctk.CTk):
                     suspend()
                 self._workspace.app_state = state
                 self._workspace.reset_for_new_type()
+            self.update_idletasks()
             self._show_project(state)
         except Exception as exc:
             log_exception("Project type navigation failed", exc=exc, function="select_project_type")

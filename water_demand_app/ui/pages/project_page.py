@@ -25,7 +25,15 @@ from ui.app_state import AppState
 from ui.components.scrollable_frame import ScrollablePage
 from ui.components.validation import ValidationError, validate_positive_int, validate_required
 from ui.components.wizard import build_page_header, wizard_step_index
-from ui.scheduled_callbacks import cancel_after, safe_entry_text, safe_set_entry_text, safe_stringvar_set, safe_widget_callback, widget_is_alive
+from ui.scheduled_callbacks import (
+    cancel_after,
+    clear_combo_command,
+    safe_entry_text,
+    safe_set_entry_text,
+    safe_stringvar_set,
+    safe_widget_callback,
+    widget_is_alive,
+)
 from ui.theme import COLOR_BORDER, COLOR_CARD, COLOR_PRIMARY, COLOR_TEXT_SECONDARY
 
 FORM_PAD_X = 16
@@ -87,12 +95,31 @@ class ProjectPage(ScrollablePage):
         self._signoff_widgets: list = []
         self._details_visible = False
         self._deferred_sync_job = None
+        self._tooltips: list = []
+        self._bound_combos: list = []
         self._build()
 
     def cancel_pending_callbacks(self) -> None:
-        super().cancel_pending_callbacks()
+        self.prepare_for_destroy()
+
+    def _detach_page_bindings(self) -> None:
+        super()._detach_page_bindings()
         cancel_after(self, self._deferred_sync_job)
+        if self._deferred_sync_job in self._after_jobs:
+            try:
+                self._after_jobs.remove(self._deferred_sync_job)
+            except ValueError:
+                pass
         self._deferred_sync_job = None
+        for combo in list(self._bound_combos):
+            clear_combo_command(combo)
+        self._bound_combos.clear()
+        for tooltip in list(self._tooltips):
+            try:
+                tooltip.destroy()
+            except Exception:
+                pass
+        self._tooltips.clear()
 
     def _add_section_header(self, parent, row: int, text: str) -> None:
         label = ctk.CTkLabel(parent, text=text, font=("Arial", 13, "bold"), text_color=COLOR_PRIMARY, anchor="w")
@@ -126,7 +153,7 @@ class ProjectPage(ScrollablePage):
         ent.grid(row=row, column=1, padx=FORM_PAD_X, pady=FORM_ROW_PAD_Y, sticky="w")
         self.entries[key] = ent
         if key in FIELD_HELP:
-            attach_tooltip(ent, FIELD_HELP[key])
+            self._tooltips.append(attach_tooltip(ent, FIELD_HELP[key]))
         if self.on_dirty:
             ent.bind("<KeyRelease>", lambda *_: self.on_dirty(), add="+")
         return ent
@@ -207,6 +234,7 @@ class ProjectPage(ScrollablePage):
             height=34,
         )
         building_combo.grid(row=row, column=1, padx=FORM_PAD_X, pady=FORM_ROW_PAD_Y, sticky="w")
+        self._bound_combos.append(building_combo)
         self._engineering_widgets.extend([self.form.grid_slaves(row=row, column=0)[0], building_combo])
         row += 1
 
@@ -274,6 +302,7 @@ class ProjectPage(ScrollablePage):
                 height=34,
             )
             combo.grid(row=row, column=1, padx=FORM_PAD_X, pady=FORM_ROW_PAD_Y, sticky="w")
+            self._bound_combos.append(combo)
             self._signoff_widgets.extend([self.form.grid_slaves(row=row, column=0)[0], combo])
             row += 1
 
@@ -439,7 +468,12 @@ class ProjectPage(ScrollablePage):
             self.on_next()
 
             cancel_after(self, self._deferred_sync_job)
-            self._deferred_sync_job = self.after(
+            if self._deferred_sync_job in self._after_jobs:
+                try:
+                    self._after_jobs.remove(self._deferred_sync_job)
+                except ValueError:
+                    pass
+            self._deferred_sync_job = self.schedule_after(
                 100,
                 safe_widget_callback(self, self._deferred_post_navigation_sync),
             )

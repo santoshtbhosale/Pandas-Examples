@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Callable, Optional
 
 import customtkinter as ctk
+import tkinter as tk
 
 from ui.scheduled_callbacks import cancel_after, PageLifecycleMixin, safe_widget_callback, widget_is_alive
 
@@ -24,13 +25,31 @@ class ScrollablePage(PageLifecycleMixin, ctk.CTkScrollableFrame):
         self._auto_calc_after_id: str | None = None
 
     def cancel_pending_callbacks(self) -> None:
+        self.prepare_for_destroy()
+
+    def prepare_for_destroy(self) -> None:
+        if getattr(self, "_lifecycle_prepared", False):
+            return
+        self._lifecycle_prepared = True
         self.cancel_page_lifecycle()
         for attr in self._PENDING_JOB_ATTRS:
-            cancel_after(self, getattr(self, attr, None))
             setattr(self, attr, None)
+        self._detach_page_bindings()
+
+    def _detach_page_bindings(self) -> None:
+        try:
+            self.unbind("<Configure>")
+        except (tk.TclError, AttributeError, RuntimeError, ValueError):
+            pass
+        parent_canvas = getattr(self, "_parent_canvas", None)
+        if parent_canvas is not None and widget_is_alive(parent_canvas):
+            try:
+                parent_canvas.unbind("<Configure>")
+            except (tk.TclError, AttributeError, RuntimeError, ValueError):
+                pass
 
     def destroy(self) -> None:
-        self.cancel_pending_callbacks()
+        self.prepare_for_destroy()
         try:
             super().destroy()
         except Exception:
@@ -46,6 +65,12 @@ class ScrollablePage(PageLifecycleMixin, ctk.CTkScrollableFrame):
         if not widget_is_alive(self):
             return
         cancel_after(self, self._auto_calc_after_id)
+        if self._auto_calc_after_id in self._after_jobs:
+            try:
+                self._after_jobs.remove(self._auto_calc_after_id)
+            except ValueError:
+                pass
+        self._auto_calc_after_id = None
 
         def _run() -> None:
             self._auto_calc_after_id = None
@@ -55,4 +80,7 @@ class ScrollablePage(PageLifecycleMixin, ctk.CTkScrollableFrame):
             if callback:
                 callback()
 
-        self._auto_calc_after_id = self.after(delay_ms, safe_widget_callback(self, _run))
+        self._auto_calc_after_id = self.schedule_after(
+            delay_ms,
+            safe_widget_callback(self, _run),
+        )

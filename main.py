@@ -5542,25 +5542,42 @@ class ToolTip:
         self.delay_ms = delay_ms
         self._tip_window = None
         self._after_id = None
+        self._destroyed = False
         widget.bind("<Enter>", self._schedule_show, add="+")
         widget.bind("<Leave>", self._hide, add="+")
         widget.bind("<ButtonPress>", self._hide, add="+")
 
-    def _schedule_show(self, _event=None) -> None:
+    def destroy(self) -> None:
+        if self._destroyed:
+            return
+        self._destroyed = True
         self._cancel_schedule()
-        self._after_id = self.widget.after(self.delay_ms, self._show)
+        self._hide()
+        for sequence, handler in (
+            ("<Enter>", self._schedule_show),
+            ("<Leave>", self._hide),
+            ("<ButtonPress>", self._hide),
+        ):
+            if widget_is_alive(self.widget):
+                try:
+                    self.widget.unbind(sequence, handler)
+                except Exception:
+                    pass
+
+    def _schedule_show(self, _event=None) -> None:
+        if self._destroyed:
+            return
+        self._cancel_schedule()
+        if widget_is_alive(self.widget):
+            self._after_id = self.widget.after(self.delay_ms, self._show)
 
     def _cancel_schedule(self) -> None:
-        if self._after_id is not None:
-            try:
-                self.widget.after_cancel(self._after_id)
-            except Exception:
-                pass
-            self._after_id = None
+        cancel_after(self.widget, self._after_id)
+        self._after_id = None
 
     def _show(self) -> None:
         self._after_id = None
-        if self._tip_window is not None:
+        if self._destroyed or self._tip_window is not None:
             return
         try:
             x = self.widget.winfo_rootx() + 12
@@ -5821,14 +5838,35 @@ class PageLifecycleMixin:
     def _init_page_lifecycle(self) -> None:
         self._after_jobs: List[Any] = []
         self._trace_registrations: List[TraceRegistration] = []
+        self._lifecycle_prepared = False
 
     def schedule_after(self, delay_ms: int, callback: Callable[[], None]) -> Any:
-        job = self.after(delay_ms, callback)
+        holder: list[Any] = []
+
+        def wrapped() -> None:
+            try:
+                self._after_jobs.remove(holder[0])
+            except ValueError:
+                pass
+            callback()
+
+        job = self.after(delay_ms, wrapped)
+        holder.append(job)
         self._after_jobs.append(job)
         return job
 
     def schedule_after_idle(self, callback: Callable[[], None]) -> Any:
-        job = self.after_idle(callback)
+        holder: list[Any] = []
+
+        def wrapped() -> None:
+            try:
+                self._after_jobs.remove(holder[0])
+            except ValueError:
+                pass
+            callback()
+
+        job = self.after_idle(wrapped)
+        holder.append(job)
         self._after_jobs.append(job)
         return job
 
@@ -5848,6 +5886,17 @@ class PageLifecycleMixin:
                 pass
         self._trace_registrations.clear()
 
+    def prepare_for_destroy(self) -> None:
+        """Cancel scheduled work and detach callbacks before widget destruction."""
+        if getattr(self, "_lifecycle_prepared", False):
+            return
+        self._lifecycle_prepared = True
+        self.cancel_page_lifecycle()
+        self._detach_page_bindings()
+
+    def _detach_page_bindings(self) -> None:
+        """Hook for subclasses to clear widget-level callbacks before destroy."""
+
 
 def widget_is_alive(widget: Any) -> bool:
     """Return True when a Tk widget still exists and can be accessed."""
@@ -5864,6 +5913,15 @@ def cancel_after(widget: Any, job_id: Any) -> None:
         return
     try:
         widget.after_cancel(job_id)
+    except (tk.TclError, AttributeError, RuntimeError, ValueError):
+        pass
+
+
+def clear_combo_command(combo: Any) -> None:
+    if combo is None or not widget_is_alive(combo):
+        return
+    try:
+        combo.configure(command=None)
     except (tk.TclError, AttributeError, RuntimeError, ValueError):
         pass
 
@@ -6038,13 +6096,31 @@ class ScrollablePage(PageLifecycleMixin, ctk.CTkScrollableFrame):
         self._auto_calc_after_id: str | None = None
 
     def cancel_pending_callbacks(self) -> None:
+        self.prepare_for_destroy()
+
+    def prepare_for_destroy(self) -> None:
+        if getattr(self, "_lifecycle_prepared", False):
+            return
+        self._lifecycle_prepared = True
         self.cancel_page_lifecycle()
         for attr in self._PENDING_JOB_ATTRS:
-            cancel_after(self, getattr(self, attr, None))
             setattr(self, attr, None)
+        self._detach_page_bindings()
+
+    def _detach_page_bindings(self) -> None:
+        try:
+            self.unbind("<Configure>")
+        except (tk.TclError, AttributeError, RuntimeError, ValueError):
+            pass
+        parent_canvas = getattr(self, "_parent_canvas", None)
+        if parent_canvas is not None and widget_is_alive(parent_canvas):
+            try:
+                parent_canvas.unbind("<Configure>")
+            except (tk.TclError, AttributeError, RuntimeError, ValueError):
+                pass
 
     def destroy(self) -> None:
-        self.cancel_pending_callbacks()
+        self.prepare_for_destroy()
         try:
             super().destroy()
         except Exception:
@@ -6060,6 +6136,12 @@ class ScrollablePage(PageLifecycleMixin, ctk.CTkScrollableFrame):
         if not widget_is_alive(self):
             return
         cancel_after(self, self._auto_calc_after_id)
+        if self._auto_calc_after_id in self._after_jobs:
+            try:
+                self._after_jobs.remove(self._auto_calc_after_id)
+            except ValueError:
+                pass
+        self._auto_calc_after_id = None
 
         def _run() -> None:
             self._auto_calc_after_id = None
@@ -6069,7 +6151,10 @@ class ScrollablePage(PageLifecycleMixin, ctk.CTkScrollableFrame):
             if callback:
                 callback()
 
-        self._auto_calc_after_id = self.after(delay_ms, safe_widget_callback(self, _run))
+        self._auto_calc_after_id = self.schedule_after(
+            delay_ms,
+            safe_widget_callback(self, _run),
+        )
 
 # ==================== ui/components/wizard.py ====================
 """Shared wizard step indicator and navigation bar."""
@@ -7406,12 +7491,31 @@ class ProjectPage(ScrollablePage):
         self._signoff_widgets: list = []
         self._details_visible = False
         self._deferred_sync_job = None
+        self._tooltips: list = []
+        self._bound_combos: list = []
         self._build()
 
     def cancel_pending_callbacks(self) -> None:
-        super().cancel_pending_callbacks()
+        self.prepare_for_destroy()
+
+    def _detach_page_bindings(self) -> None:
+        super()._detach_page_bindings()
         cancel_after(self, self._deferred_sync_job)
+        if self._deferred_sync_job in self._after_jobs:
+            try:
+                self._after_jobs.remove(self._deferred_sync_job)
+            except ValueError:
+                pass
         self._deferred_sync_job = None
+        for combo in list(self._bound_combos):
+            clear_combo_command(combo)
+        self._bound_combos.clear()
+        for tooltip in list(self._tooltips):
+            try:
+                tooltip.destroy()
+            except Exception:
+                pass
+        self._tooltips.clear()
 
     def _add_section_header(self, parent, row: int, text: str) -> None:
         label = ctk.CTkLabel(parent, text=text, font=("Arial", 13, "bold"), text_color=COLOR_PRIMARY, anchor="w")
@@ -7443,7 +7547,7 @@ class ProjectPage(ScrollablePage):
         ent.grid(row=row, column=1, padx=FORM_PAD_X, pady=FORM_ROW_PAD_Y, sticky="w")
         self.entries[key] = ent
         if key in FIELD_HELP:
-            attach_tooltip(ent, FIELD_HELP[key])
+            self._tooltips.append(attach_tooltip(ent, FIELD_HELP[key]))
         if self.on_dirty:
             ent.bind("<KeyRelease>", lambda *_: self.on_dirty(), add="+")
         return ent
@@ -7524,6 +7628,7 @@ class ProjectPage(ScrollablePage):
             height=34,
         )
         building_combo.grid(row=row, column=1, padx=FORM_PAD_X, pady=FORM_ROW_PAD_Y, sticky="w")
+        self._bound_combos.append(building_combo)
         self._engineering_widgets.extend([self.form.grid_slaves(row=row, column=0)[0], building_combo])
         row += 1
 
@@ -7591,6 +7696,7 @@ class ProjectPage(ScrollablePage):
                 height=34,
             )
             combo.grid(row=row, column=1, padx=FORM_PAD_X, pady=FORM_ROW_PAD_Y, sticky="w")
+            self._bound_combos.append(combo)
             self._signoff_widgets.extend([self.form.grid_slaves(row=row, column=0)[0], combo])
             row += 1
 
@@ -7756,7 +7862,12 @@ class ProjectPage(ScrollablePage):
             self.on_next()
 
             cancel_after(self, self._deferred_sync_job)
-            self._deferred_sync_job = self.after(
+            if self._deferred_sync_job in self._after_jobs:
+                try:
+                    self._after_jobs.remove(self._deferred_sync_job)
+                except ValueError:
+                    pass
+            self._deferred_sync_job = self.schedule_after(
                 100,
                 safe_widget_callback(self, self._deferred_post_navigation_sync),
             )
@@ -8838,6 +8949,12 @@ def _destroy_page(page) -> None:
     """Cancel pending callbacks and destroy a workflow page safely."""
     if page is None:
         return
+    prepare = getattr(page, "prepare_for_destroy", None)
+    if callable(prepare):
+        try:
+            prepare()
+        except Exception:
+            pass
     cancel = getattr(page, "cancel_pending_callbacks", None)
     if callable(cancel):
         try:
@@ -8917,7 +9034,32 @@ class ProjectWorkspace(ctk.CTkFrame):
         self._calc_job = None
         self._calc_dirty = True
         self._edit_dirty = False
+        self._workspace_after_jobs: list = []
         self._project_list_cache: list | None = None
+
+    def _schedule_workspace_after(self, delay_ms: int, callback) -> str | None:
+        if not widget_is_alive(self):
+            return None
+        holder: list = []
+
+        def wrapped() -> None:
+            try:
+                self._workspace_after_jobs.remove(holder[0])
+            except ValueError:
+                pass
+            callback()
+
+        job = self.after(delay_ms, wrapped)
+        holder.append(job)
+        self._workspace_after_jobs.append(job)
+        return job
+
+    def _cancel_workspace_after_jobs(self) -> None:
+        cancel_after(self, self._calc_job)
+        self._calc_job = None
+        for job in list(self._workspace_after_jobs):
+            cancel_after(self, job)
+        self._workspace_after_jobs.clear()
 
     def mark_dirty(self) -> None:
         self._edit_dirty = True
@@ -8958,8 +9100,7 @@ class ProjectWorkspace(ctk.CTkFrame):
 
     def suspend_pending_work(self) -> None:
         """Cancel timers while the workspace is hidden (e.g. on the type selector)."""
-        cancel_after(self, self._calc_job)
-        self._calc_job = None
+        self._cancel_workspace_after_jobs()
         for page in self.pages.values():
             cancel = getattr(page, "cancel_pending_callbacks", None)
             if callable(cancel):
@@ -8992,7 +9133,10 @@ class ProjectWorkspace(ctk.CTkFrame):
         self._rebuild_sidebar()
         self.show("Project")
         if widget_is_alive(self):
-            self._calc_job = self.after(80, safe_widget_callback(self, self._run_scheduled_calc))
+            self._calc_job = self._schedule_workspace_after(
+                80,
+                safe_widget_callback(self, self._run_scheduled_calc),
+            )
         if self.on_header_update:
             self.on_header_update()
 
@@ -9388,7 +9532,10 @@ class ProjectWorkspace(ctk.CTkFrame):
             elif nxt == "Preview":
                 self._refresh_preview(silent=True)
 
-            self.after(150, safe_widget_callback(self, lambda: self._schedule_calc(50)))
+            self._schedule_workspace_after(
+                150,
+                safe_widget_callback(self, lambda: self._schedule_calc(50)),
+            )
 
         except Exception as exc:
             traceback.print_exc()
@@ -9871,8 +10018,17 @@ class ProjectWorkspace(ctk.CTkFrame):
     def _schedule_calc(self, delay_ms: int = 300) -> None:
         self._calc_dirty = True
         cancel_after(self, self._calc_job)
+        if self._calc_job in self._workspace_after_jobs:
+            try:
+                self._workspace_after_jobs.remove(self._calc_job)
+            except ValueError:
+                pass
+        self._calc_job = None
         if widget_is_alive(self):
-            self._calc_job = self.after(delay_ms, safe_widget_callback(self, self._run_scheduled_calc))
+            self._calc_job = self._schedule_workspace_after(
+                delay_ms,
+                safe_widget_callback(self, self._run_scheduled_calc),
+            )
 
     def _run_scheduled_calc(self) -> None:
         self._calc_job = None
@@ -10384,9 +10540,13 @@ class Application(ctk.CTk):
         if self._workspace is None:
             self._start_new_project()
             return
+        suspend = getattr(self._workspace, "suspend_pending_work", None)
+        if callable(suspend):
+            suspend()
         reset = getattr(self._workspace, "reset_for_new_type", None)
         if callable(reset):
             reset()
+        self.update_idletasks()
         self._show_project_type_selector(self._workspace.app_state)
 
     def _show_project(self, state: AppState) -> None:
@@ -10445,6 +10605,7 @@ class Application(ctk.CTk):
                     suspend()
                 self._workspace.app_state = state
                 self._workspace.reset_for_new_type()
+            self.update_idletasks()
             self._show_project(state)
         except Exception as exc:
             log_exception("Project type navigation failed", exc=exc, function="select_project_type")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import customtkinter as ctk
 
+from ui.scheduled_callbacks import cancel_after, widget_is_alive
 from ui.theme import COLOR_BORDER, COLOR_MUTED, COLOR_PRIMARY, FONT_CAPTION
 
 
@@ -16,25 +17,42 @@ class ToolTip:
         self.delay_ms = delay_ms
         self._tip_window = None
         self._after_id = None
+        self._destroyed = False
         widget.bind("<Enter>", self._schedule_show, add="+")
         widget.bind("<Leave>", self._hide, add="+")
         widget.bind("<ButtonPress>", self._hide, add="+")
 
-    def _schedule_show(self, _event=None) -> None:
+    def destroy(self) -> None:
+        if self._destroyed:
+            return
+        self._destroyed = True
         self._cancel_schedule()
-        self._after_id = self.widget.after(self.delay_ms, self._show)
+        self._hide()
+        for sequence, handler in (
+            ("<Enter>", self._schedule_show),
+            ("<Leave>", self._hide),
+            ("<ButtonPress>", self._hide),
+        ):
+            if widget_is_alive(self.widget):
+                try:
+                    self.widget.unbind(sequence, handler)
+                except Exception:
+                    pass
+
+    def _schedule_show(self, _event=None) -> None:
+        if self._destroyed:
+            return
+        self._cancel_schedule()
+        if widget_is_alive(self.widget):
+            self._after_id = self.widget.after(self.delay_ms, self._show)
 
     def _cancel_schedule(self) -> None:
-        if self._after_id is not None:
-            try:
-                self.widget.after_cancel(self._after_id)
-            except Exception:
-                pass
-            self._after_id = None
+        cancel_after(self.widget, self._after_id)
+        self._after_id = None
 
     def _show(self) -> None:
         self._after_id = None
-        if self._tip_window is not None:
+        if self._destroyed or self._tip_window is not None:
             return
         try:
             x = self.widget.winfo_rootx() + 12

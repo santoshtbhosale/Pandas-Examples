@@ -90,6 +90,12 @@ def _destroy_page(page) -> None:
     """Cancel pending callbacks and destroy a workflow page safely."""
     if page is None:
         return
+    prepare = getattr(page, "prepare_for_destroy", None)
+    if callable(prepare):
+        try:
+            prepare()
+        except Exception:
+            pass
     cancel = getattr(page, "cancel_pending_callbacks", None)
     if callable(cancel):
         try:
@@ -169,7 +175,32 @@ class ProjectWorkspace(ctk.CTkFrame):
         self._calc_job = None
         self._calc_dirty = True
         self._edit_dirty = False
+        self._workspace_after_jobs: list = []
         self._project_list_cache: list | None = None
+
+    def _schedule_workspace_after(self, delay_ms: int, callback) -> str | None:
+        if not widget_is_alive(self):
+            return None
+        holder: list = []
+
+        def wrapped() -> None:
+            try:
+                self._workspace_after_jobs.remove(holder[0])
+            except ValueError:
+                pass
+            callback()
+
+        job = self.after(delay_ms, wrapped)
+        holder.append(job)
+        self._workspace_after_jobs.append(job)
+        return job
+
+    def _cancel_workspace_after_jobs(self) -> None:
+        cancel_after(self, self._calc_job)
+        self._calc_job = None
+        for job in list(self._workspace_after_jobs):
+            cancel_after(self, job)
+        self._workspace_after_jobs.clear()
 
     def mark_dirty(self) -> None:
         self._edit_dirty = True
@@ -210,8 +241,7 @@ class ProjectWorkspace(ctk.CTkFrame):
 
     def suspend_pending_work(self) -> None:
         """Cancel timers while the workspace is hidden (e.g. on the type selector)."""
-        cancel_after(self, self._calc_job)
-        self._calc_job = None
+        self._cancel_workspace_after_jobs()
         for page in self.pages.values():
             cancel = getattr(page, "cancel_pending_callbacks", None)
             if callable(cancel):
@@ -244,7 +274,10 @@ class ProjectWorkspace(ctk.CTkFrame):
         self._rebuild_sidebar()
         self.show("Project")
         if widget_is_alive(self):
-            self._calc_job = self.after(80, safe_widget_callback(self, self._run_scheduled_calc))
+            self._calc_job = self._schedule_workspace_after(
+                80,
+                safe_widget_callback(self, self._run_scheduled_calc),
+            )
         if self.on_header_update:
             self.on_header_update()
 
@@ -641,7 +674,10 @@ class ProjectWorkspace(ctk.CTkFrame):
             elif nxt == "Preview":
                 self._refresh_preview(silent=True)
 
-            self.after(150, safe_widget_callback(self, lambda: self._schedule_calc(50)))
+            self._schedule_workspace_after(
+                150,
+                safe_widget_callback(self, lambda: self._schedule_calc(50)),
+            )
 
         except Exception as exc:
             traceback.print_exc()
@@ -1124,8 +1160,17 @@ class ProjectWorkspace(ctk.CTkFrame):
     def _schedule_calc(self, delay_ms: int = 300) -> None:
         self._calc_dirty = True
         cancel_after(self, self._calc_job)
+        if self._calc_job in self._workspace_after_jobs:
+            try:
+                self._workspace_after_jobs.remove(self._calc_job)
+            except ValueError:
+                pass
+        self._calc_job = None
         if widget_is_alive(self):
-            self._calc_job = self.after(delay_ms, safe_widget_callback(self, self._run_scheduled_calc))
+            self._calc_job = self._schedule_workspace_after(
+                delay_ms,
+                safe_widget_callback(self, self._run_scheduled_calc),
+            )
 
     def _run_scheduled_calc(self) -> None:
         self._calc_job = None

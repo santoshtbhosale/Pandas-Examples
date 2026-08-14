@@ -16,14 +16,35 @@ class PageLifecycleMixin:
     def _init_page_lifecycle(self) -> None:
         self._after_jobs: List[Any] = []
         self._trace_registrations: List[TraceRegistration] = []
+        self._lifecycle_prepared = False
 
     def schedule_after(self, delay_ms: int, callback: Callable[[], None]) -> Any:
-        job = self.after(delay_ms, callback)
+        holder: list[Any] = []
+
+        def wrapped() -> None:
+            try:
+                self._after_jobs.remove(holder[0])
+            except ValueError:
+                pass
+            callback()
+
+        job = self.after(delay_ms, wrapped)
+        holder.append(job)
         self._after_jobs.append(job)
         return job
 
     def schedule_after_idle(self, callback: Callable[[], None]) -> Any:
-        job = self.after_idle(callback)
+        holder: list[Any] = []
+
+        def wrapped() -> None:
+            try:
+                self._after_jobs.remove(holder[0])
+            except ValueError:
+                pass
+            callback()
+
+        job = self.after_idle(wrapped)
+        holder.append(job)
         self._after_jobs.append(job)
         return job
 
@@ -43,6 +64,17 @@ class PageLifecycleMixin:
                 pass
         self._trace_registrations.clear()
 
+    def prepare_for_destroy(self) -> None:
+        """Cancel scheduled work and detach callbacks before widget destruction."""
+        if getattr(self, "_lifecycle_prepared", False):
+            return
+        self._lifecycle_prepared = True
+        self.cancel_page_lifecycle()
+        self._detach_page_bindings()
+
+    def _detach_page_bindings(self) -> None:
+        """Hook for subclasses to clear widget-level callbacks before destroy."""
+
 
 def widget_is_alive(widget: Any) -> bool:
     """Return True when a Tk widget still exists and can be accessed."""
@@ -59,6 +91,15 @@ def cancel_after(widget: Any, job_id: Any) -> None:
         return
     try:
         widget.after_cancel(job_id)
+    except (tk.TclError, AttributeError, RuntimeError, ValueError):
+        pass
+
+
+def clear_combo_command(combo: Any) -> None:
+    if combo is None or not widget_is_alive(combo):
+        return
+    try:
+        combo.configure(command=None)
     except (tk.TclError, AttributeError, RuntimeError, ValueError):
         pass
 
