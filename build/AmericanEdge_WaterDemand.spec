@@ -1,12 +1,32 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
 
+ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
+MAIN = os.path.join(ROOT, "main.py")
+
+datas = []
+for src, dest in [
+    (os.path.join(ROOT, "logo.png"), "."),
+    (os.path.join(ROOT, "water_demand_app", "assets", "logo.png"), "assets"),
+    (os.path.join(ROOT, "templates", "WaterDemand_Template.xlsx"), "templates"),
+    (os.path.join(ROOT, "water_demand_app", "templates", "WaterDemand_Template.xlsx"), "templates"),
+]:
+    if os.path.isfile(src):
+        datas.append((src, dest))
 
 a = Analysis(
-    ['../main.py'],
-    pathex=[],
+    [MAIN],
+    pathex=[ROOT],
     binaries=[],
-    datas=[],
-    hiddenimports=[],
+    datas=datas,
+    hiddenimports=[
+        "PIL",
+        "PIL.Image",
+        "tkcalendar",
+        "openpyxl",
+        "reportlab",
+        "reportlab.lib.utils",
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

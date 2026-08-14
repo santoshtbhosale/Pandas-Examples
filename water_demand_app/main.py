@@ -657,6 +657,30 @@ def wizard_first_page_after_project(project_type: str) -> str:
             return key
     return "Preview"
 
+# ==================== config/field_help.py ====================
+"""User-friendly help text for engineering form fields."""
+
+
+FIELD_HELP = {
+    "project_name": "Enter the official project name as it should appear on the report.",
+    "client_name": "Name of the client or developer commissioning this report.",
+    "engineer_name": "Lead engineer responsible for preparing this water demand report.",
+    "project_location": "City or site location for the project.",
+    "building_height": "Maximum building height in metres (used for fire tank and UGT sizing).",
+    "num_wings": "Total number of residential wings or blocks in the project.",
+    "building_type": "Building classification used for NBC fire tank and demand rules.",
+    "building_config": "Floor configuration such as G+7 (ground plus seven upper floors).",
+    "prepared_by": "Person who prepared the report (appears in sign-off section).",
+    "checked_by": "Person who reviewed the calculations.",
+    "approved_by": "Person who approved the final report.",
+    "bhk_units": "Enter the number of flats for each BHK type. Population and water demand auto-calculate.",
+    "occupancy_type": "NBC occupancy category — determines per-capita water demand rates.",
+    "commercial_area": "Net usable floor area in square metres for this commercial unit.",
+    "landscape_area": "Landscape area in sq.m — NBC rate is 6 L/sq.m/day.",
+    "swimming_pool": "Pool volume in litres if applicable, or mark as Not Applicable.",
+    "hvac_water": "HVAC makeup water requirement in litres per day for this plot.",
+}
+
 # ==================== models/project.py ====================
 
 
@@ -2184,6 +2208,70 @@ def parse_project_snapshot(data: Dict[str, Any]) -> tuple:
     other = OtherDetails.from_dict(data.get("other", {}))
     calculated = data.get("calculated", {})
     return project, residential, commercial, other, calculated
+
+# ==================== services/database_backup.py ====================
+"""Automatic and manual SQLite database backups."""
+
+
+
+
+KEEP_DEFAULT = 10
+
+
+def _backup_dir(db_path: str = DB_PATH) -> str:
+    return os.path.join(os.path.dirname(db_path), "backups")
+
+
+def backup_database(db_path: str = DB_PATH, *, reason: str = "auto") -> str:
+    """Copy the database to a timestamped backup file. Returns backup path."""
+    if not os.path.isfile(db_path):
+        raise FileNotFoundError(f"Database not found: {db_path}")
+    backup_dir = _backup_dir(db_path)
+    os.makedirs(backup_dir, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dest = os.path.join(backup_dir, f"water_demand_{stamp}.db")
+    shutil.copy2(db_path, dest)
+    prune_backups(KEEP_DEFAULT, db_path)
+    try:
+        log_audit_event("db_backup", details=f"{reason}: {os.path.basename(dest)}", db_path=db_path)
+    except Exception:
+        pass
+    return dest
+
+
+def list_backups(db_path: str = DB_PATH) -> List[str]:
+    """Return backup file paths newest first."""
+    backup_dir = _backup_dir(db_path)
+    if not os.path.isdir(backup_dir):
+        return []
+    files = [
+        os.path.join(backup_dir, name)
+        for name in os.listdir(backup_dir)
+        if name.endswith(".db")
+    ]
+    files.sort(key=os.path.getmtime, reverse=True)
+    return files
+
+
+def prune_backups(keep: int = KEEP_DEFAULT, db_path: str = DB_PATH) -> None:
+    """Remove oldest backups beyond the keep limit."""
+    backups = list_backups(db_path)
+    for path in backups[keep:]:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def restore_database(backup_path: str, db_path: str = DB_PATH) -> None:
+    """Replace the active database with a backup copy."""
+    if not os.path.isfile(backup_path):
+        raise FileNotFoundError(f"Backup not found: {backup_path}")
+    shutil.copy2(backup_path, db_path)
+    try:
+        log_audit_event("db_restore", details=os.path.basename(backup_path), db_path=db_path)
+    except Exception:
+        pass
 
 # ==================== services/lookup_db.py ====================
 """Client and location lookup tables for autocomplete."""
@@ -5438,6 +5526,180 @@ def safe_execute(action: Callable, on_error: Callable[[str], None]) -> bool:
         on_error(str(exc))
         return False
 
+# ==================== ui/components/tooltip.py ====================
+"""Lightweight hover tooltips for form fields."""
+
+
+
+
+
+class ToolTip:
+    """Show help text when the pointer rests on a widget."""
+
+    def __init__(self, widget, text: str, *, delay_ms: int = 400) -> None:
+        self.widget = widget
+        self.text = text
+        self.delay_ms = delay_ms
+        self._tip_window = None
+        self._after_id = None
+        widget.bind("<Enter>", self._schedule_show, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def _schedule_show(self, _event=None) -> None:
+        self._cancel_schedule()
+        self._after_id = self.widget.after(self.delay_ms, self._show)
+
+    def _cancel_schedule(self) -> None:
+        if self._after_id is not None:
+            try:
+                self.widget.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+
+    def _show(self) -> None:
+        self._after_id = None
+        if self._tip_window is not None:
+            return
+        try:
+            x = self.widget.winfo_rootx() + 12
+            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        except Exception:
+            return
+        self._tip_window = tw = ctk.CTkToplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        tw.attributes("-topmost", True)
+        frame = ctk.CTkFrame(tw, fg_color="white", corner_radius=6, border_width=1, border_color=COLOR_BORDER)
+        frame.pack()
+        ctk.CTkLabel(
+            frame,
+            text=self.text,
+            font=FONT_CAPTION,
+            text_color=COLOR_PRIMARY,
+            justify="left",
+            wraplength=320,
+        ).pack(padx=10, pady=8)
+
+    def _hide(self, _event=None) -> None:
+        self._cancel_schedule()
+        if self._tip_window is not None:
+            try:
+                self._tip_window.destroy()
+            except Exception:
+                pass
+            self._tip_window = None
+
+
+def attach_tooltip(widget, text: str) -> ToolTip:
+    """Attach a tooltip and return the ToolTip instance."""
+    return ToolTip(widget, text)
+
+# ==================== ui/components/progress_dialog.py ====================
+"""Modal progress dialog for long-running export operations."""
+
+
+
+
+
+T = TypeVar("T")
+
+
+def run_with_progress(
+    parent,
+    title: str,
+    message: str,
+    func: Callable[[], T],
+    *,
+    on_success: Optional[Callable[[T], None]] = None,
+    on_error: Optional[Callable[[Exception], None]] = None,
+) -> Optional[T]:
+    """Run func in a background thread while showing a modal progress dialog."""
+    dialog = ctk.CTkToplevel(parent)
+    dialog.title(title)
+    dialog.geometry("420x160")
+    dialog.resizable(False, False)
+    dialog.transient(parent.winfo_toplevel())
+    dialog.grab_set()
+
+    body = ctk.CTkFrame(dialog, fg_color="white")
+    body.pack(fill="both", expand=True, padx=18, pady=18)
+    ctk.CTkLabel(body, text=title, font=("Arial", 15, "bold"), text_color=BRAND_NAVY).pack(anchor="w")
+    ctk.CTkLabel(body, text=message, font=("Arial", 11), text_color="#555555", wraplength=380).pack(
+        anchor="w", pady=(8, 12)
+    )
+    bar = ctk.CTkProgressBar(body, mode="indeterminate", width=360)
+    bar.pack(fill="x")
+    bar.start()
+
+    result: dict = {"value": None, "error": None}
+
+    def finish() -> None:
+        if not dialog.winfo_exists():
+            return
+        try:
+            bar.stop()
+            dialog.grab_release()
+            dialog.destroy()
+        except Exception:
+            pass
+        if result["error"] is not None:
+            if on_error:
+                on_error(result["error"])
+            else:
+                messagebox.showerror(title, f"Operation failed:\n\n{result['error']}")
+        elif on_success is not None:
+            on_success(result["value"])
+
+    def worker() -> None:
+        try:
+            result["value"] = func()
+        except Exception as exc:
+            result["error"] = exc
+            traceback.print_exc()
+        finally:
+            try:
+                parent.after(0, finish)
+            except Exception:
+                pass
+
+    threading.Thread(target=worker, daemon=True).start()
+    dialog.wait_window()
+    return result["value"]
+
+# ==================== ui/components/unsaved_changes.py ====================
+"""Unsaved-changes confirmation helpers."""
+
+
+
+
+def confirm_unsaved_changes(action: str) -> str:
+    """
+    Ask the user how to handle unsaved changes.
+
+    Returns:
+        "save" — save then proceed
+        "discard" — proceed without saving
+        "cancel" — do not proceed
+    """
+    choice = messagebox.askyesnocancel(
+        "Unsaved Changes",
+        (
+            f"You have unsaved changes.\n\n"
+            f"Save your work before you {action}?\n\n"
+            "Yes — Save and continue\n"
+            "No — Continue without saving\n"
+            "Cancel — Stay on this page"
+        ),
+        icon=messagebox.WARNING,
+    )
+    if choice is None:
+        return "cancel"
+    if choice:
+        return "save"
+    return "discard"
+
 # ==================== ui/gui_safe.py ====================
 """Safe GUI callback wrappers — user-friendly errors and application logging."""
 
@@ -6088,9 +6350,9 @@ class ResultTableView(ctk.CTkFrame):
 
         table = ctk.CTkFrame(wrapper, fg_color="white", corner_radius=6, border_width=1, border_color=_BORDER)
         table.pack(fill="x", expand=True, padx=0, pady=0)
-        table.grid_columnconfigure(0, weight=13, uniform="result_cols")
-        table.grid_columnconfigure(1, weight=4, uniform="result_cols")
-        table.grid_columnconfigure(2, weight=3, uniform="result_cols")
+        table.grid_columnconfigure(0, weight=13, uniform="result_cols", minsize=180)
+        table.grid_columnconfigure(1, weight=4, uniform="result_cols", minsize=80)
+        table.grid_columnconfigure(2, weight=3, uniform="result_cols", minsize=60)
 
         headers = ("Description", "Value", "Unit")
         for col, label in enumerate(headers):
@@ -6125,7 +6387,7 @@ class ResultTableView(ctk.CTkFrame):
                     font=font,
                     text_color=fg,
                     anchor=anchor,
-                    wraplength=900 if col == 0 else 0,
+                    wraplength=680 if col == 0 else 0,
                 ).pack(fill="x", padx=10, pady=5)
 
 # ==================== ui/components/preview_dialog.py ====================
@@ -7072,12 +7334,13 @@ def show_project_engineering_configuration(project_type: str) -> bool:
 
 
 class ProjectPage(ScrollablePage):
-    def __init__(self, master, state: AppState, on_next, on_type_change=None, on_back=None) -> None:
+    def __init__(self, master, state: AppState, on_next, on_type_change=None, on_back=None, on_dirty=None) -> None:
         super().__init__(master)
         self.state = state
         self.on_next = on_next
         self.on_type_change = on_type_change
         self.on_back = on_back
+        self.on_dirty = on_dirty
         self.entries: dict = {}
         self._engineering_widgets: list = []
         self._signoff_widgets: list = []
@@ -7110,6 +7373,7 @@ class ProjectPage(ScrollablePage):
         return label
 
     def _add_entry_row(self, parent, row: int, label: str, key: str, default: str = "") -> ctk.CTkEntry:
+
         self._add_label(parent, row, label, bold=True)
         value = getattr(self.state.project, key, "") or ""
         if key == "project_name" and not value:
@@ -7118,6 +7382,10 @@ class ProjectPage(ScrollablePage):
         ent.insert(0, value)
         ent.grid(row=row, column=1, padx=FORM_PAD_X, pady=FORM_ROW_PAD_Y, sticky="w")
         self.entries[key] = ent
+        if key in FIELD_HELP:
+            attach_tooltip(ent, FIELD_HELP[key])
+        if self.on_dirty:
+            ent.bind("<KeyRelease>", lambda *_: self.on_dirty(), add="+")
         return ent
 
     def _build(self) -> None:
@@ -7500,37 +7768,41 @@ class ProjectPage(ScrollablePage):
 
 
 class ResidentialPage(ScrollablePage):
-    def __init__(self, master, state: AppState, on_next, on_back) -> None:
+    def __init__(self, master, state: AppState, on_next, on_back, on_dirty=None, page_key: str = "Residential") -> None:
         super().__init__(master)
         self.state = state
         self.on_next = on_next
         self.on_back = on_back
+        self.on_dirty = on_dirty
+        self.page_key = page_key
         self.rows: list = []
         self.table_frame = ctk.CTkFrame(self)
         self.subtotal_labels: dict = {}
         self._build()
 
+    def _mark_dirty(self) -> None:
+        if self.on_dirty:
+            self.on_dirty()
+        self.schedule_auto_calculate(self.state)
+
     def _plot_values(self) -> list[str]:
         return plot_dropdown_choices(self.state.project.plot_mode)
 
     def _build(self) -> None:
-        header = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=8)
-        header.pack(fill="x", padx=10, pady=(5, 10))
+        step, total = wizard_step_index(self.page_key, self.state.project.project_type)
         plot_text = "Single Plot" if self.state.project.plot_mode == PLOT_MODE_SINGLE else "Plot A + B"
-        ctk.CTkLabel(
-            header,
-            text=f"Residential / Building Details ({plot_text})",
-            font=("Arial", 20, "bold"),
-            text_color="white",
-        ).pack(pady=12)
-        ctk.CTkLabel(
-            header,
-            text="Enter BHK units only — Population, Domestic, Flushing & Kitchen auto-calculate per NBC",
-            font=("Arial", 11),
-            text_color="#ECF0F1",
-        ).pack(pady=(0, 10))
+        build_page_header(
+            self,
+            f"Residential / Building Details ({plot_text})",
+            "Enter BHK units only — Population, Domestic, Flushing & Kitchen auto-calculate per NBC.",
+            step=step,
+            total=total,
+        )
 
-        self.table_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        scroll_wrap = ctk.CTkScrollableFrame(self, orientation="horizontal", fg_color="transparent", height=300)
+        scroll_wrap.pack(fill="both", expand=True, padx=10, pady=10)
+        self.table_frame = ctk.CTkFrame(scroll_wrap, fg_color="transparent")
+        self.table_frame.pack(fill="both", expand=True)
         headers = [
             "Plot", "Wing", "Config", "Bldg Type", "Ht(m)", "Wings",
             "1BHK", "2BHK", "3BHK", "4BHK", "PH",
@@ -7554,20 +7826,19 @@ class ResidentialPage(ScrollablePage):
 
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=10)
-        ctk.CTkButton(btn_frame, text="+ Add Wing", command=lambda: self._add_row(), fg_color="#2980B9").grid(
-            row=0, column=0, padx=10
+        ctk.CTkButton(btn_frame, text="+ Add Wing", command=lambda: self._add_row(), fg_color="#2980B9").pack(
+            side="left", padx=10
         )
-        ctk.CTkButton(btn_frame, text="+ Add Bungalow", command=self._add_bungalow, fg_color="#2980B9").grid(
-            row=0, column=1, padx=10
+        ctk.CTkButton(btn_frame, text="+ Add Bungalow", command=self._add_bungalow, fg_color="#2980B9").pack(
+            side="left", padx=10
         )
-        ctk.CTkButton(btn_frame, text="<- Back", command=self.on_back, fg_color="gray").grid(row=0, column=2, padx=10)
-        ctk.CTkButton(
-            btn_frame,
-            text="Save & Next ->",
-            command=self._save_and_next,
-            fg_color=BRAND_ORANGE,
-            hover_color="#D06018",
-        ).grid(row=0, column=3, padx=10)
+        WizardNavBar(
+            self,
+            on_back=self.on_back,
+            on_next=self._save_and_next,
+            back_text="← Back",
+            next_text="Save & Next →",
+        ).pack(fill="x", padx=16, pady=12)
 
         self._update_subtotals()
 
@@ -7598,6 +7869,7 @@ class ResidentialPage(ScrollablePage):
 
     def _add_row(self, wing: ResidentialWing | None = None) -> None:
         r = len(self.rows) + 1
+        row_state = {"loading": True}
         config_values = list(BUILDING_CONFIG_EXAMPLES)
         plot_var = ctk.StringVar(
             value=ui_plot_label(wing.plot, self.state.project.plot_mode) if wing else self._plot_values()[0]
@@ -7663,7 +7935,8 @@ class ResidentialPage(ScrollablePage):
                 tot_lbl.configure(text="0")
                 kit_lbl.configure(text="0")
             self._update_subtotals()
-            self._sync_and_calculate()
+            if not row_state["loading"]:
+                self._sync_and_calculate()
 
         for ent in (ht_ent, wings_ent, b1_ent, b2_ent, b3_ent, b4_ent, ph_ent):
             ent.bind("<KeyRelease>", update)
@@ -7705,6 +7978,7 @@ class ResidentialPage(ScrollablePage):
             "pop_lbl": pop_lbl,
             "widgets": widgets + [rm_btn],
         })
+        row_state["loading"] = False
         update()
 
     def _regrid(self) -> None:
@@ -7734,7 +8008,7 @@ class ResidentialPage(ScrollablePage):
 
     def _sync_and_calculate(self) -> None:
         self.state.residential = wings_from_ui_rows(self.rows, self.state.project.plot_mode)
-        self.schedule_auto_calculate(self.state)
+        self._mark_dirty()
 
     def _save_and_next(self) -> None:
         wings: list = []
@@ -7781,36 +8055,40 @@ class ResidentialPage(ScrollablePage):
 
 
 class CommercialPage(ScrollablePage):
-    def __init__(self, master, state: AppState, on_next, on_back) -> None:
+    def __init__(self, master, state: AppState, on_next, on_back, on_dirty=None, page_key: str = "Commercial") -> None:
         super().__init__(master)
         self.state = state
         self.on_next = on_next
         self.on_back = on_back
+        self.on_dirty = on_dirty
+        self.page_key = page_key
         self.rows: list = []
         self.table_frame = ctk.CTkFrame(self)
         self._build()
+
+    def _mark_dirty(self) -> None:
+        if self.on_dirty:
+            self.on_dirty()
+        self.schedule_auto_calculate(self.state)
 
     def _plot_values(self) -> list[str]:
         return plot_dropdown_choices(self.state.project.plot_mode)
 
     def _build(self) -> None:
-        header = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=8)
-        header.pack(fill="x", padx=10, pady=(5, 10))
+        step, total = wizard_step_index(self.page_key, self.state.project.project_type)
         plot_text = "Single Plot" if self.state.project.plot_mode == PLOT_MODE_SINGLE else "Plot A + B"
-        ctk.CTkLabel(
-            header,
-            text=f"Commercial Details ({plot_text})",
-            font=("Arial", 20, "bold"),
-            text_color="white",
-        ).pack(pady=12)
-        ctk.CTkLabel(
-            header,
-            text="Select Occupancy Type and Area — Population & demand auto-calculate per NBC",
-            font=("Arial", 11),
-            text_color="#ECF0F1",
-        ).pack(pady=(0, 10))
+        build_page_header(
+            self,
+            f"Commercial Details ({plot_text})",
+            "Select Occupancy Type and Area — Population & demand auto-calculate per NBC.",
+            step=step,
+            total=total,
+        )
 
-        self.table_frame.pack(fill="both", expand=True, padx=15, pady=10)
+        scroll_wrap = ctk.CTkScrollableFrame(self, orientation="horizontal", fg_color="transparent", height=280)
+        scroll_wrap.pack(fill="both", expand=True, padx=15, pady=10)
+        self.table_frame = ctk.CTkFrame(scroll_wrap, fg_color="transparent")
+        self.table_frame.pack(fill="both", expand=True)
         headers = [
             "Plot", "Block", "Occupancy Type", "Floor", "Area (sq.m)",
             "Pop", "Dom", "Flush", "Total", "",
@@ -7828,17 +8106,16 @@ class CommercialPage(ScrollablePage):
 
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=10)
-        ctk.CTkButton(btn_frame, text="+ Add Commercial", command=lambda: self._add_row(), fg_color="#2980B9").grid(
-            row=0, column=0, padx=10
+        ctk.CTkButton(btn_frame, text="+ Add Commercial", command=lambda: self._add_row(), fg_color="#2980B9").pack(
+            side="left", padx=10
         )
-        ctk.CTkButton(btn_frame, text="<- Back", command=self.on_back, fg_color="gray").grid(row=0, column=1, padx=10)
-        ctk.CTkButton(
-            btn_frame,
-            text="Save & Next ->",
-            command=self._save_and_next,
-            fg_color=BRAND_ORANGE,
-            hover_color="#D06018",
-        ).grid(row=0, column=2, padx=10)
+        WizardNavBar(
+            self,
+            on_back=self.on_back,
+            on_next=self._save_and_next,
+            back_text="← Back",
+            next_text="Save & Next →",
+        ).pack(fill="x", padx=16, pady=12)
 
     def _add_default_row(self) -> None:
         self._add_row(CommercialUnit(
@@ -7851,6 +8128,7 @@ class CommercialPage(ScrollablePage):
 
     def _add_row(self, unit: CommercialUnit | None = None) -> None:
         r = len(self.rows) + 1
+        row_state = {"loading": True}
         type_values = list(COMMERCIAL_OCCUPANCY_TYPES)
         default_type = unit.comm_type if unit else "Office"
         if default_type not in type_values:
@@ -7893,10 +8171,12 @@ class CommercialPage(ScrollablePage):
                 dom_lbl.configure(text="0")
                 flu_lbl.configure(text="0")
                 tot_lbl.configure(text="0")
-            self._sync_and_calculate()
+            if not row_state["loading"]:
+                self._sync_and_calculate()
 
         area_ent.bind("<KeyRelease>", update)
         type_var.trace_add("write", update)
+        row_state["loading"] = False
         update()
 
         plot_cb.grid(row=r, column=0, padx=3, pady=5)
@@ -7941,7 +8221,7 @@ class CommercialPage(ScrollablePage):
 
     def _sync_and_calculate(self) -> None:
         self.state.commercial = commercial_from_ui_rows(self.rows, self.state.project.plot_mode)
-        self.schedule_auto_calculate(self.state)
+        self._mark_dirty()
 
     def _save_and_next(self) -> None:
         units: list = []
@@ -8264,25 +8544,26 @@ class FinalPage(ScrollablePage):
         state: AppState,
         on_back,
         on_generate_all: Optional[Callable[[], None]] = None,
+        page_key: str = "Report",
     ) -> None:
         super().__init__(master)
         self.state = state
         self.on_back = on_back
         self.on_generate_all = on_generate_all
+        self.page_key = page_key
         self.summary_label = None
         self.detail_text = None
         self._build()
 
     def _build(self) -> None:
-        header = ctk.CTkFrame(self, fg_color=BRAND_NAVY, corner_radius=8)
-        header.pack(fill="x", padx=10, pady=(5, 10))
-        ctk.CTkLabel(header, text="Generate Report", font=("Arial", 22, "bold"), text_color="white").pack(pady=12)
-        ctk.CTkLabel(
-            header,
-            text="Calculate, validate, export PDF & Excel, save project, and open preview",
-            font=("Arial", 11),
-            text_color="#DDDDDD",
-        ).pack(pady=(0, 10))
+        step, total = wizard_step_index(self.page_key, self.state.project.project_type)
+        build_page_header(
+            self,
+            "Generate Report",
+            "Calculate, validate, export PDF & Excel, save project, and open preview.",
+            step=step,
+            total=total,
+        )
 
         if self.on_generate_all:
             ctk.CTkButton(
@@ -8308,7 +8589,13 @@ class FinalPage(ScrollablePage):
         ctk.CTkButton(act_frame, text="Export Excel", command=self._export_excel, fg_color="#27AE60", width=130).grid(row=0, column=2, padx=8)
         ctk.CTkButton(act_frame, text="Save JSON", command=self._save_json, fg_color="#2980B9", width=110).grid(row=0, column=3, padx=8)
         ctk.CTkButton(act_frame, text="Save to Database", command=self._save_db, fg_color="#16A085", width=140).grid(row=0, column=4, padx=8)
-        ctk.CTkButton(act_frame, text="<- Back to Edit", command=self.on_back, fg_color="gray", width=120).grid(row=0, column=5, padx=8)
+
+        WizardNavBar(
+            self,
+            on_back=self.on_back,
+            back_text="← Back to Preview",
+            show_back=True,
+        ).pack(pady=(4, 14))
 
     def refresh(self) -> None:
         if not self.state.results:
@@ -8359,6 +8646,10 @@ class FinalPage(ScrollablePage):
             return
         PreviewDialog(self.winfo_toplevel(), self.state.project, self.state.results, on_export_pdf=self._export_pdf)
 
+    def _logo_path(self) -> Optional[str]:
+        logo = os.path.join(APP_DIR, "assets", "logo.png")
+        return logo if os.path.exists(logo) else None
+
     def _export_pdf(self) -> None:
         if not self._ensure_results():
             return
@@ -8369,13 +8660,22 @@ class FinalPage(ScrollablePage):
         )
         if not file_path:
             return
+        logo = self._logo_path()
 
         def do_export():
-            logo = os.path.join(APP_DIR, "assets", "logo.png")
-            export_pdf(file_path, self.state.project, self.state.results, logo if os.path.exists(logo) else None)
+            export_pdf(file_path, self.state.project, self.state.results, logo)
 
-        if safe_execute(do_export, lambda msg: messagebox.showerror("PDF Error", msg)):
+        def on_success(_result=None) -> None:
             messagebox.showinfo("Success", "8-Page Professional PDF Exported Successfully!")
+
+        run_with_progress(
+            self,
+            "Export PDF",
+            "Generating your 8-page water demand PDF report. Please wait...",
+            do_export,
+            on_success=on_success,
+            on_error=lambda msg: messagebox.showerror("PDF Error", str(msg)),
+        )
 
     def _export_excel(self) -> None:
         if not self._ensure_results():
@@ -8391,8 +8691,17 @@ class FinalPage(ScrollablePage):
         def do_export():
             export_excel(file_path, self.state.project, self.state.results)
 
-        if safe_execute(do_export, lambda msg: messagebox.showerror("Excel Error", msg)):
+        def on_success(_result=None) -> None:
             messagebox.showinfo("Success", "Excel Exported Successfully with Plot Tabs!")
+
+        run_with_progress(
+            self,
+            "Export Excel",
+            "Generating your Excel workbook. Please wait...",
+            do_export,
+            on_success=on_success,
+            on_error=lambda msg: messagebox.showerror("Excel Error", str(msg)),
+        )
 
     def _save_json(self) -> None:
         file_path = filedialog.asksaveasfilename(
@@ -8547,7 +8856,38 @@ class ProjectWorkspace(ctk.CTkFrame):
         self._current_page = "Project"
         self._calc_job = None
         self._calc_dirty = True
+        self._edit_dirty = False
         self._project_list_cache: list | None = None
+
+    def mark_dirty(self) -> None:
+        self._edit_dirty = True
+
+    def clear_dirty(self) -> None:
+        self._edit_dirty = False
+
+    def has_unsaved_changes(self) -> bool:
+        return self._edit_dirty
+
+    def confirm_leave(self, action: str) -> bool:
+        """Return True if navigation may proceed."""
+        if not self._edit_dirty:
+            return True
+        choice = confirm_unsaved_changes(action)
+        if choice == "cancel":
+            return False
+        if choice == "save":
+            try:
+                self._calc()
+                persist_project_state(self.app_state, db_path=DB_PATH)
+                self.clear_dirty()
+                if self.on_autosave:
+                    self.on_autosave()
+                return True
+            except Exception as exc:
+                messagebox.showerror("Save Error", str(exc))
+                return False
+        self.clear_dirty()
+        return True
 
     def ensure_pages_built(self) -> None:
         if self._pages_built:
@@ -8587,6 +8927,7 @@ class ProjectWorkspace(ctk.CTkFrame):
         self.app_state = state
         self._current_page = "Project"
         self._calc_dirty = True
+        self.clear_dirty()
         self._build_pages()
         self._rebuild_sidebar()
         self.show("Project")
@@ -8599,8 +8940,13 @@ class ProjectWorkspace(ctk.CTkFrame):
         try:
             self._calc()
             persist_project_state(self.app_state, db_path=DB_PATH)
+            self.clear_dirty()
         except Exception:
             pass
+
+    def _build_wizard_header(self, parent, title: str, subtitle: str = "", *, page_key: str) -> ctk.CTkFrame:
+        step, total = wizard_step_index(page_key, self.app_state.project.project_type)
+        return build_page_header(parent, title, subtitle, step=step, total=total)
 
     def _schedule_autosave(self) -> None:
         if self._autosave_job is not None:
@@ -8754,6 +9100,7 @@ class ProjectWorkspace(ctk.CTkFrame):
                 on_next=self._next_from_project,
                 on_type_change=self._on_project_type_changed,
                 on_back=self._project_details_back,
+                on_dirty=self.mark_dirty,
             )
         page = self.pages.get("Project")
         if page is not None:
@@ -8774,13 +9121,17 @@ class ProjectWorkspace(ctk.CTkFrame):
                 self.container, self.app_state,
                 on_next=self._next_from_residential,
                 on_back=lambda: self.show("Project"),
+                on_dirty=self.mark_dirty,
             )
+            self.clear_dirty()
         elif key == "Commercial":
             self.pages[key] = CommercialPage(
                 self.container, self.app_state,
                 on_next=lambda: self._wizard_show_next("Commercial"),
                 on_back=self._back_from_commercial,
+                on_dirty=self.mark_dirty,
             )
+            self.clear_dirty()
         elif key == "Hospital":
             self.pages[key] = self._placeholder_page(
                 "Hospital Details",
@@ -8833,19 +9184,15 @@ class ProjectWorkspace(ctk.CTkFrame):
 
     def _placeholder_page(self, title: str, body: str, on_next, page_key: str):
         frame = ScrollablePage(self.container)
-        header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
-        header.pack(fill="x", padx=5, pady=5)
-        ctk.CTkLabel(header, text=title, font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
+        self._build_wizard_header(frame, title, "", page_key=page_key)
         ctk.CTkLabel(frame, text=body, font=("Arial", 12), justify="left", wraplength=900).pack(
             anchor="w", padx=20, pady=20
         )
-        nav = ctk.CTkFrame(frame, fg_color="transparent")
-        nav.pack(fill="x", padx=16, pady=12)
-        ctk.CTkButton(
-            nav, text="← Back", width=120, fg_color="#7F8C8D",
-            command=lambda pk=page_key: self._wizard_show_previous(pk),
-        ).pack(side="left")
-        ctk.CTkButton(nav, text="Next →", width=140, fg_color=BRAND_ORANGE, command=on_next).pack(side="right")
+        WizardNavBar(
+            frame,
+            on_back=lambda pk=page_key: self._wizard_show_previous(pk),
+            on_next=on_next,
+        ).pack(fill="x", padx=16, pady=12)
         return frame
 
     def _discard_inapplicable_pages(self) -> None:
@@ -8990,19 +9337,10 @@ class ProjectWorkspace(ctk.CTkFrame):
                 f"Unable to open the next section. Please check the project information and try again.\n\n{exc}",
             )
 
-    def _form_page(self, title, builder, page_key):
+    def _form_page(self, title, builder, page_key, subtitle: str = ""):
         frame = ScrollablePage(self.container)
-        header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
-        header.pack(fill="x", padx=5, pady=5)
-        ctk.CTkLabel(header, text=title, font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
+        self._build_wizard_header(frame, title, subtitle, page_key=page_key)
         builder(frame)
-
-        nav = ctk.CTkFrame(frame, fg_color="transparent")
-        nav.pack(fill="x", padx=16, pady=(4, 14))
-        ctk.CTkButton(
-            nav, text="← Back", width=120, fg_color="#7F8C8D",
-            command=lambda pk=page_key: self._wizard_show_previous(pk),
-        ).pack(side="left")
 
         next_commands = {
             "Landscape": self._save_landscape,
@@ -9011,7 +9349,11 @@ class ProjectWorkspace(ctk.CTkFrame):
             "UGT": lambda: self._wizard_show_next("UGT"),
         }
         next_command = next_commands.get(page_key, lambda pk=page_key: self._wizard_show_next(pk))
-        ctk.CTkButton(nav, text="Next →", width=140, fg_color=BRAND_ORANGE, command=next_command).pack(side="right")
+        WizardNavBar(
+            frame,
+            on_back=lambda pk=page_key: self._wizard_show_previous(pk),
+            on_next=next_command,
+        ).pack(fill="x", padx=16, pady=(4, 14))
         return frame
 
     def _landscape_ui(self, parent):
@@ -9025,7 +9367,7 @@ class ProjectWorkspace(ctk.CTkFrame):
             entry = ctk.CTkEntry(form, width=220)
             entry.insert(0, str(self.app_state.other.landscape_area.get(plot, 765 if plot == "Plot-A" else 762)))
             entry.grid(row=i, column=1, padx=10, pady=8, sticky="w")
-            entry.bind("<KeyRelease>", lambda *_: (self._sync_landscape_live(), self._schedule_calc()))
+            entry.bind("<KeyRelease>", lambda *_: (self.mark_dirty(), self._sync_landscape_live(), self._schedule_calc()))
             self._le[plot] = entry
         ctk.CTkLabel(parent, text="Auto: 6 L/sq.m/day per NBC-2026 (live)", font=("Arial", 11, "italic")).pack(anchor="w", padx=20)
 
@@ -9066,7 +9408,7 @@ class ProjectWorkspace(ctk.CTkFrame):
             entry = ctk.CTkEntry(form, width=180)
             entry.insert(0, str(int(self.app_state.other.swimming_pool.get(plot, 0))))
             entry.grid(row=i, column=2, padx=10, pady=8, sticky="w")
-            entry.bind("<KeyRelease>", lambda *_: (self._sync_pool_live(), self._schedule_calc()))
+            entry.bind("<KeyRelease>", lambda *_: (self.mark_dirty(), self._sync_pool_live(), self._schedule_calc()))
             self._pe[plot] = entry
 
     def _sync_pool_live(self) -> None:
@@ -9095,7 +9437,7 @@ class ProjectWorkspace(ctk.CTkFrame):
             entry = ctk.CTkEntry(form, width=220)
             entry.insert(0, str(int(self.app_state.other.hvac_water.get(plot, 0))))
             entry.grid(row=i, column=1, padx=10, pady=8, sticky="w")
-            entry.bind("<KeyRelease>", lambda *_: (self._sync_hvac_live(), self._schedule_calc()))
+            entry.bind("<KeyRelease>", lambda *_: (self.mark_dirty(), self._sync_hvac_live(), self._schedule_calc()))
             self._he[plot] = entry
 
     def _sync_hvac_live(self) -> None:
@@ -9164,34 +9506,32 @@ class ProjectWorkspace(ctk.CTkFrame):
     def _result_page(self, title: str, subtitle: str, table_attr: str, page_key: str):
         frame = ScrollablePage(self.container)
         frame.grid_rowconfigure(1, weight=1)
-        header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
-        header.pack(fill="x", padx=5, pady=5)
-        ctk.CTkLabel(header, text=title, font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
-        ctk.CTkLabel(
-            frame,
-            text=subtitle,
-            font=("Arial", 11, "italic"),
-            text_color="#555555",
-        ).pack(anchor="w", padx=16, pady=(0, 4))
-        table = ResultTableView(frame, embedded=True)
-        table.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        frame.grid_columnconfigure(0, weight=1)
+
+        header_wrap = ctk.CTkFrame(frame, fg_color="transparent")
+        header_wrap.grid(row=0, column=0, sticky="ew")
+        self._build_wizard_header(header_wrap, title, subtitle, page_key=page_key)
+
+        table_host = ctk.CTkFrame(frame, fg_color="transparent")
+        table_host.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 4))
+        table_host.grid_rowconfigure(0, weight=1)
+        table_host.grid_columnconfigure(0, weight=1)
+        table = ResultTableView(table_host, embedded=True)
+        table.grid(row=0, column=0, sticky="nsew")
         setattr(self, table_attr, table)
+
         ctk.CTkLabel(
             frame,
             text="Updates automatically as you enter data on other pages.",
             font=("Arial", 10, "italic"),
             text_color="#666666",
-        ).pack(pady=(0, 6))
-        nav = ctk.CTkFrame(frame, fg_color="transparent")
-        nav.pack(fill="x", padx=16, pady=(2, 12))
-        ctk.CTkButton(
-            nav, text="← Back", width=120, fg_color="#7F8C8D",
-            command=lambda pk=page_key: self._wizard_show_previous(pk),
-        ).pack(side="left")
-        ctk.CTkButton(
-            nav, text="Next →", width=140, fg_color=BRAND_ORANGE,
-            command=lambda pk=page_key: self._wizard_show_next(pk),
-        ).pack(side="right")
+        ).grid(row=2, column=0, pady=(0, 4))
+
+        WizardNavBar(
+            frame,
+            on_back=lambda pk=page_key: self._wizard_show_previous(pk),
+            on_next=lambda pk=page_key: self._wizard_show_next(pk),
+        ).grid(row=3, column=0, sticky="ew", padx=16, pady=(2, 12))
         return frame
 
     def _sewage_page(self):
@@ -9320,9 +9660,7 @@ class ProjectWorkspace(ctk.CTkFrame):
 
     def _settings_page(self):
         frame = ScrollablePage(self.container)
-        header = ctk.CTkFrame(frame, fg_color=BRAND_NAVY, corner_radius=8)
-        header.pack(fill="x", padx=5, pady=5)
-        ctk.CTkLabel(header, text="Settings", font=("Arial", 18, "bold"), text_color="white").pack(pady=10)
+        self._build_wizard_header(frame, "Settings", "Database, backups, and application information.", page_key="Settings")
         ctk.CTkLabel(
             frame,
             text=(
@@ -9338,11 +9676,49 @@ class ProjectWorkspace(ctk.CTkFrame):
             anchor="w",
             wraplength=900,
         ).pack(fill="x", anchor="w", padx=20, pady=10)
+
+        backup_row = ctk.CTkFrame(frame, fg_color="transparent")
+        backup_row.pack(fill="x", padx=20, pady=8)
+
+        def backup_now() -> None:
+            try:
+                path = backup_database(DB_PATH, reason="manual")
+                messagebox.showinfo("Backup", f"Database backed up to:\n{path}")
+            except Exception as exc:
+                messagebox.showerror("Backup", str(exc))
+
+        def restore_backup() -> None:
+            backups = list_backups()
+            if not backups:
+                messagebox.showinfo("Restore Backup", "No backups found yet.")
+                return
+            path = filedialog.askopenfilename(
+                title="Select Backup File",
+                initialdir=os.path.dirname(backups[0]),
+                filetypes=[("SQLite database", "*.db")],
+            )
+            if not path:
+                return
+            if not messagebox.askyesno(
+                "Restore Backup",
+                "Restore this backup? Current data will be replaced.",
+            ):
+                return
+            try:
+                restore_database(path, DB_PATH)
+                messagebox.showinfo("Restore Backup", "Database restored. Please reopen your project.")
+            except Exception as exc:
+                messagebox.showerror("Restore Backup", str(exc))
+
+        ctk.CTkButton(backup_row, text="Backup Now", fg_color="#27AE60", command=backup_now).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(backup_row, text="Restore from Backup", fg_color="#C0392B", command=restore_backup).pack(side="left")
+
         ctk.CTkButton(frame, text="Export JSON", fg_color="#2980B9", command=self._exp_json).pack(pady=8)
         ctk.CTkButton(frame, text="Import JSON", fg_color="#2980B9", command=self._imp_json).pack(pady=8)
-        ctk.CTkButton(
-            frame, text="← Back", width=120, fg_color="#7F8C8D",
-            command=lambda: self._wizard_show_previous("Settings"),
+        WizardNavBar(
+            frame,
+            on_back=lambda: self._wizard_show_previous("Settings"),
+            show_back=True,
         ).pack(pady=(8, 14))
         return frame
 
@@ -9507,34 +9883,50 @@ class ProjectWorkspace(ctk.CTkFrame):
         safe_name = re.sub(r"[^\w\-]+", "_", project.project_name or "Water_Demand")[:50].strip("_") or "Water_Demand"
         pdf_path = os.path.join(reports_dir, f"{safe_name}_Water_Demand.pdf")
         xlsx_path = os.path.join(reports_dir, f"{safe_name}_Water_Demand.xlsx")
+        logo = LOGO_PATH if os.path.exists(LOGO_PATH) else None
+        state = self.app_state
 
-        try:
-            persist_project_state(self.app_state, db_path=DB_PATH)
-            logo = LOGO_PATH if os.path.exists(LOGO_PATH) else None
-            export_pdf(pdf_path, self.app_state.project, self.app_state.results, logo)
-            export_excel(xlsx_path, self.app_state.project, self.app_state.results)
+        def do_generate() -> None:
+            persist_project_state(state, db_path=DB_PATH)
+            export_pdf(pdf_path, state.project, state.results, logo)
+            export_excel(xlsx_path, state.project, state.results)
             mark_project_completed(project.project_id, db_path=DB_PATH)
-        except Exception as exc:
-            messagebox.showerror("Generate Report", str(exc))
-            return
 
-        messagebox.showinfo(
-            "Generate Report",
-            f"Report generated successfully.\n\nPDF: {pdf_path}\nExcel: {xlsx_path}\n\nProject saved to database.",
-        )
-        self.show("Preview")
-        PreviewDialog(
+        def on_success(_result=None) -> None:
+            self.clear_dirty()
+            if self.on_autosave:
+                self.on_autosave()
+            messagebox.showinfo(
+                "Generate Report",
+                f"Report generated successfully.\n\nPDF: {pdf_path}\nExcel: {xlsx_path}\n\nProject saved to database.",
+            )
+            self.show("Preview")
+            PreviewDialog(
+                self,
+                self.app_state.project,
+                self.app_state.results,
+                on_export_pdf=lambda: self.pages["Report"]._export_pdf(),
+            )
+
+        def on_error(exc: Exception) -> None:
+            messagebox.showerror("Generate Report", str(exc))
+
+        run_with_progress(
             self,
-            self.app_state.project,
-            self.app_state.results,
-            on_export_pdf=lambda: self.pages["Report"]._export_pdf(),
+            "Generate Report",
+            "Calculating, exporting PDF and Excel, and saving your project. Please wait...",
+            do_generate,
+            on_success=on_success,
+            on_error=on_error,
         )
 
     def _new(self):
-        if not messagebox.askyesno("New Project", "Start a new project? Unsaved changes will be auto-saved first."):
+        if not self.confirm_leave("start a new project"):
+            return
+        if not messagebox.askyesno("New Project", "Start a new project?"):
             return
         try:
-            self._autosave_before_close()
+            self.autosave_before_close()
         except Exception:
             pass
         self.app_state = create_new_project_state(db_path=DB_PATH)
@@ -9544,6 +9936,7 @@ class ProjectWorkspace(ctk.CTkFrame):
         try:
             self._calc()
             is_update = persist_project_state(self.app_state, self.current_user, DB_PATH)
+            self.clear_dirty()
             if self.on_header_update:
                 self.on_header_update()
             action = "updated" if is_update else "saved"
@@ -9554,6 +9947,8 @@ class ProjectWorkspace(ctk.CTkFrame):
             messagebox.showerror("Error", str(exc))
 
     def _open_db(self):
+        if not self.confirm_leave("open another project"):
+            return
         projs = find_projects()
         if not projs:
             messagebox.showinfo("Open Project", "No saved projects.")
@@ -9798,6 +10193,19 @@ class Application(ctk.CTk):
         self.save_status_label.pack(side="right", padx=12, pady=4)
 
         self._bind_shortcuts()
+        self.protocol("WM_DELETE_WINDOW", safe_command(self._on_close_request, parent=self))
+
+    def _confirm_workspace_leave(self, action: str) -> bool:
+        if self._workspace is None:
+            return True
+        confirm = getattr(self._workspace, "confirm_leave", None)
+        if callable(confirm):
+            return confirm(action)
+        return True
+
+    def _on_close_request(self) -> None:
+        if self._confirm_workspace_leave("close the application"):
+            self._exit_application()
 
     def _bind_shortcuts(self) -> None:
         self.bind_all("<Control-n>", lambda _e: self._shortcut_new())
@@ -9868,6 +10276,8 @@ class Application(ctk.CTk):
         self._update_status()
 
     def _show_dashboard(self) -> None:
+        if not self._confirm_workspace_leave("return to Project Home"):
+            return
         self._mode = "dashboard"
         self._clear_body()
         if self._workspace is not None:
@@ -9908,6 +10318,8 @@ class Application(ctk.CTk):
 
     def _back_to_project_type_selector(self) -> None:
         """Return to Step 1 while keeping the current draft project state."""
+        if not self._confirm_workspace_leave("return to project type selection"):
+            return
         if self._workspace is None:
             self._start_new_project()
             return
@@ -9948,6 +10360,8 @@ class Application(ctk.CTk):
         self._update_status()
 
     def _start_new_project(self) -> None:
+        if self._mode == "project" and not self._confirm_workspace_leave("start a new project"):
+            return
         state = create_new_project_state(DB_PATH)
         self._show_project_type_selector(state)
 
@@ -10040,6 +10454,8 @@ class Application(ctk.CTk):
         buttons.grid(row=5, column=0, pady=(0, 20))
 
         def cancel():
+            if not self._confirm_workspace_leave("return to Project Home"):
+                return
             self._destroy_type_selector()
             self._show_dashboard()
 
@@ -10092,6 +10508,8 @@ class Application(ctk.CTk):
         self._update_status()
 
     def _open_project(self, project_id: str) -> None:
+        if not self._confirm_workspace_leave("open another project"):
+            return
         try:
             state = load_project_state(project_id, DB_PATH)
         except ValueError as exc:
@@ -10105,6 +10523,11 @@ class Application(ctk.CTk):
                 self._workspace.autosave_before_close()
             except Exception:
                 pass
+        try:
+
+            backup_database(DB_PATH, reason="exit")
+        except Exception:
+            pass
         self.destroy()
 
     def _on_workspace_header_update(self) -> None:
