@@ -14,11 +14,12 @@ if APP_ROOT not in sys.path:
 
 
 class TestOneClickTypeSelection(unittest.TestCase):
-    def test_type_selector_has_three_column_grid(self) -> None:
+    def test_type_selector_has_four_column_grid(self) -> None:
         from ui import components
 
         source = inspect.getsource(components.type_selector.ProjectTypeSelector._build)
-        self.assertIn("cols = 3", source)
+        self.assertIn("GRID_COLUMNS", source)
+        self.assertEqual(components.type_selector.GRID_COLUMNS, 4)
 
     def test_type_selector_one_click_callback(self) -> None:
         from ui.components import type_selector

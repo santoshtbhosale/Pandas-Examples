@@ -412,31 +412,31 @@ class Application(ctk.CTk):
             border_width=1,
             border_color="#DCE3EA",
         )
-        card.grid(row=0, column=0, sticky="nsew", padx=24, pady=24)
+        card.grid(row=0, column=0, sticky="nsew", padx=16, pady=12)
         card.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
             card,
             text="STEP 1 — SELECT PROJECT TYPE",
-            font=("Arial", 10, "bold"),
+            font=("Arial", 9, "bold"),
             text_color=BRAND_ORANGE,
             fg_color="#FFF1E8",
-            corner_radius=12,
-            padx=12,
-            pady=6,
-        ).grid(row=0, column=0, pady=(20, 8))
+            corner_radius=10,
+            padx=10,
+            pady=4,
+        ).grid(row=0, column=0, pady=(12, 4))
         ctk.CTkLabel(
             card,
             text="Create a New Project",
-            font=("Arial", 24, "bold"),
+            font=("Arial", 20, "bold"),
             text_color=BRAND_NAVY,
-        ).grid(row=1, column=0, pady=(0, 4))
+        ).grid(row=1, column=0, pady=(0, 2))
         ctk.CTkLabel(
             card,
             text="Select a project type to continue.",
-            font=("Arial", 12),
+            font=("Arial", 11),
             text_color="#64748B",
-        ).grid(row=2, column=0, pady=(0, 12))
+        ).grid(row=2, column=0, pady=(0, 6))
 
         initial_label = (
             project_type_label(state.project.project_type)
@@ -445,7 +445,7 @@ class Application(ctk.CTk):
         )
 
         selector_wrap = ctk.CTkFrame(card, fg_color="transparent")
-        selector_wrap.grid(row=3, column=0, sticky="ew", padx=30, pady=(0, 8))
+        selector_wrap.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 4))
         type_selector = ProjectTypeSelector(
             selector_wrap,
             initial_label=initial_label,
@@ -456,7 +456,7 @@ class Application(ctk.CTk):
             type_selector.set_selected(initial_label)
 
         buttons = ctk.CTkFrame(card, fg_color="transparent")
-        buttons.grid(row=4, column=0, pady=(8, 20))
+        buttons.grid(row=4, column=0, pady=(4, 12))
 
         def cancel():
             if not self._confirm_workspace_leave("return to Project Home"):
@@ -467,8 +467,8 @@ class Application(ctk.CTk):
         ctk.CTkButton(
             buttons,
             text="← Back to Project Home",
-            width=220,
-            height=42,
+            width=200,
+            height=36,
             fg_color="#8A969C",
             hover_color="#6F7A80",
             font=("Arial", 11, "bold"),

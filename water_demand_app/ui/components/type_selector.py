@@ -1,4 +1,4 @@
-"""Visual project type selection cards — one-click, 3-column grid, no scrolling."""
+"""Visual project type selection cards — one-click, 4-column grid, no scrolling."""
 
 from __future__ import annotations
 
@@ -32,6 +32,9 @@ TYPE_DESCRIPTIONS = {
     "Township": "Township developments",
 }
 
+GRID_COLUMNS = 4
+CARD_HEIGHT = 46
+
 
 def _bind_recursive(widget, sequence: str, handler) -> None:
     """Bind an event on a widget and every descendant."""
@@ -44,7 +47,7 @@ def _bind_recursive(widget, sequence: str, handler) -> None:
 
 
 class ProjectTypeSelector(ctk.CTkFrame):
-    """Compact 3-column grid; one click selects type and opens the workflow."""
+    """Compact 4-column grid; one click selects type and opens the workflow."""
 
     def __init__(
         self,
@@ -76,53 +79,44 @@ class ProjectTypeSelector(ctk.CTkFrame):
 
     def _build(self) -> None:
         labels = sorted(set(PROJECT_TYPE_LABELS.keys()))
-        cols = 3
+        cols = GRID_COLUMNS
         for i, label in enumerate(labels):
             row, col = divmod(i, cols)
             card = self._make_card(label)
-            card.grid(row=row, column=col, padx=5, pady=5, sticky="nsew")
+            card.grid(row=row, column=col, padx=3, pady=3, sticky="nsew")
         for c in range(cols):
-            self.grid_columnconfigure(c, weight=1)
+            self.grid_columnconfigure(c, weight=1, uniform="type_cols")
 
     def _make_card(self, label: str) -> ctk.CTkFrame:
         icon = PROJECT_TYPE_ICONS.get(label, "📋")
-        description = TYPE_DESCRIPTIONS.get(label, "Water demand report")
 
         frame = ctk.CTkFrame(
             self,
             fg_color=COLOR_CARD,
-            corner_radius=10,
+            corner_radius=8,
             border_width=2,
             border_color=COLOR_BORDER,
-            height=72,
+            height=CARD_HEIGHT,
             cursor="hand2",
         )
         frame.grid_propagate(False)
         self._cards[label] = frame
 
         inner = ctk.CTkFrame(frame, fg_color="transparent")
-        inner.pack(fill="both", expand=True, padx=10, pady=8)
+        inner.pack(fill="both", expand=True, padx=8, pady=5)
 
         title_row = ctk.CTkFrame(inner, fg_color="transparent")
-        title_row.pack(fill="x")
-        check = ctk.CTkLabel(title_row, text="", font=FONT_CAPTION, text_color=COLOR_ACCENT, width=16)
+        title_row.pack(fill="both", expand=True)
+        check = ctk.CTkLabel(title_row, text="", font=FONT_CAPTION, text_color=COLOR_ACCENT, width=14)
         check.pack(side="right")
         frame._check_label = check  # type: ignore[attr-defined]
         ctk.CTkLabel(
             title_row,
             text=f"{icon}  {label}",
-            font=("Arial", 12, "bold"),
+            font=("Arial", 11, "bold"),
             text_color=COLOR_PRIMARY,
             anchor="w",
         ).pack(side="left", fill="x", expand=True)
-
-        ctk.CTkLabel(
-            inner,
-            text=description,
-            font=FONT_CAPTION,
-            text_color="#687684",
-            anchor="w",
-        ).pack(anchor="w", pady=(2, 0))
 
         def select(_event=None, lbl=label):
             self._on_project_type_selected(lbl)

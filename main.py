@@ -6185,7 +6185,7 @@ def build_page_header(parent, title: str, subtitle: str = "", step: int = 0, tot
     return wrapper
 
 # ==================== ui/components/type_selector.py ====================
-"""Visual project type selection cards — one-click, 3-column grid, no scrolling."""
+"""Visual project type selection cards — one-click, 4-column grid, no scrolling."""
 
 
 
@@ -6207,6 +6207,9 @@ TYPE_DESCRIPTIONS = {
     "Township": "Township developments",
 }
 
+GRID_COLUMNS = 4
+CARD_HEIGHT = 46
+
 
 def _bind_recursive(widget, sequence: str, handler) -> None:
     """Bind an event on a widget and every descendant."""
@@ -6219,7 +6222,7 @@ def _bind_recursive(widget, sequence: str, handler) -> None:
 
 
 class ProjectTypeSelector(ctk.CTkFrame):
-    """Compact 3-column grid; one click selects type and opens the workflow."""
+    """Compact 4-column grid; one click selects type and opens the workflow."""
 
     def __init__(
         self,
@@ -6251,53 +6254,44 @@ class ProjectTypeSelector(ctk.CTkFrame):
 
     def _build(self) -> None:
         labels = sorted(set(PROJECT_TYPE_LABELS.keys()))
-        cols = 3
+        cols = GRID_COLUMNS
         for i, label in enumerate(labels):
             row, col = divmod(i, cols)
             card = self._make_card(label)
-            card.grid(row=row, column=col, padx=5, pady=5, sticky="nsew")
+            card.grid(row=row, column=col, padx=3, pady=3, sticky="nsew")
         for c in range(cols):
-            self.grid_columnconfigure(c, weight=1)
+            self.grid_columnconfigure(c, weight=1, uniform="type_cols")
 
     def _make_card(self, label: str) -> ctk.CTkFrame:
         icon = PROJECT_TYPE_ICONS.get(label, "📋")
-        description = TYPE_DESCRIPTIONS.get(label, "Water demand report")
 
         frame = ctk.CTkFrame(
             self,
             fg_color=COLOR_CARD,
-            corner_radius=10,
+            corner_radius=8,
             border_width=2,
             border_color=COLOR_BORDER,
-            height=72,
+            height=CARD_HEIGHT,
             cursor="hand2",
         )
         frame.grid_propagate(False)
         self._cards[label] = frame
 
         inner = ctk.CTkFrame(frame, fg_color="transparent")
-        inner.pack(fill="both", expand=True, padx=10, pady=8)
+        inner.pack(fill="both", expand=True, padx=8, pady=5)
 
         title_row = ctk.CTkFrame(inner, fg_color="transparent")
-        title_row.pack(fill="x")
-        check = ctk.CTkLabel(title_row, text="", font=FONT_CAPTION, text_color=COLOR_ACCENT, width=16)
+        title_row.pack(fill="both", expand=True)
+        check = ctk.CTkLabel(title_row, text="", font=FONT_CAPTION, text_color=COLOR_ACCENT, width=14)
         check.pack(side="right")
         frame._check_label = check  # type: ignore[attr-defined]
         ctk.CTkLabel(
             title_row,
             text=f"{icon}  {label}",
-            font=("Arial", 12, "bold"),
+            font=("Arial", 11, "bold"),
             text_color=COLOR_PRIMARY,
             anchor="w",
         ).pack(side="left", fill="x", expand=True)
-
-        ctk.CTkLabel(
-            inner,
-            text=description,
-            font=FONT_CAPTION,
-            text_color="#687684",
-            anchor="w",
-        ).pack(anchor="w", pady=(2, 0))
 
         def select(_event=None, lbl=label):
             self._on_project_type_selected(lbl)
@@ -10491,31 +10485,31 @@ class Application(ctk.CTk):
             border_width=1,
             border_color="#DCE3EA",
         )
-        card.grid(row=0, column=0, sticky="nsew", padx=24, pady=24)
+        card.grid(row=0, column=0, sticky="nsew", padx=16, pady=12)
         card.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
             card,
             text="STEP 1 — SELECT PROJECT TYPE",
-            font=("Arial", 10, "bold"),
+            font=("Arial", 9, "bold"),
             text_color=BRAND_ORANGE,
             fg_color="#FFF1E8",
-            corner_radius=12,
-            padx=12,
-            pady=6,
-        ).grid(row=0, column=0, pady=(20, 8))
+            corner_radius=10,
+            padx=10,
+            pady=4,
+        ).grid(row=0, column=0, pady=(12, 4))
         ctk.CTkLabel(
             card,
             text="Create a New Project",
-            font=("Arial", 24, "bold"),
+            font=("Arial", 20, "bold"),
             text_color=BRAND_NAVY,
-        ).grid(row=1, column=0, pady=(0, 4))
+        ).grid(row=1, column=0, pady=(0, 2))
         ctk.CTkLabel(
             card,
             text="Select a project type to continue.",
-            font=("Arial", 12),
+            font=("Arial", 11),
             text_color="#64748B",
-        ).grid(row=2, column=0, pady=(0, 12))
+        ).grid(row=2, column=0, pady=(0, 6))
 
         initial_label = (
             project_type_label(state.project.project_type)
@@ -10524,7 +10518,7 @@ class Application(ctk.CTk):
         )
 
         selector_wrap = ctk.CTkFrame(card, fg_color="transparent")
-        selector_wrap.grid(row=3, column=0, sticky="ew", padx=30, pady=(0, 8))
+        selector_wrap.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 4))
         type_selector = ProjectTypeSelector(
             selector_wrap,
             initial_label=initial_label,
@@ -10535,7 +10529,7 @@ class Application(ctk.CTk):
             type_selector.set_selected(initial_label)
 
         buttons = ctk.CTkFrame(card, fg_color="transparent")
-        buttons.grid(row=4, column=0, pady=(8, 20))
+        buttons.grid(row=4, column=0, pady=(4, 12))
 
         def cancel():
             if not self._confirm_workspace_leave("return to Project Home"):
@@ -10546,8 +10540,8 @@ class Application(ctk.CTk):
         ctk.CTkButton(
             buttons,
             text="← Back to Project Home",
-            width=220,
-            height=42,
+            width=200,
+            height=36,
             fg_color="#8A969C",
             hover_color="#6F7A80",
             font=("Arial", 11, "bold"),
