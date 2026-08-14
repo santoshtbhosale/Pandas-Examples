@@ -102,13 +102,38 @@ class PDFExporter:
                 build_solid_waste_table_sections(self.project, environmental),
             )
         )
-        doc.build(story, onFirstPage=self._footer, onLaterPages=self._footer)
+        doc.build(story, onFirstPage=self._page_template, onLaterPages=self._page_template)
 
-    def _footer(self, canvas, doc) -> None:
+    def _page_template(self, canvas, doc) -> None:
+        """Draw header logo (right) and footer on every page."""
         canvas.saveState()
+        if self.logo_path and os.path.exists(self.logo_path):
+            try:
+                from reportlab.lib.utils import ImageReader
+                img = ImageReader(self.logo_path)
+                iw, ih = img.getSize()
+                max_w, max_h = 90, 36
+                scale = min(max_w / max(iw, 1), max_h / max(ih, 1))
+                w, h = iw * scale, ih * scale
+                canvas.drawImage(
+                    img,
+                    letter[0] - w - 30,
+                    letter[1] - h - 28,
+                    width=w,
+                    height=h,
+                    preserveAspectRatio=True,
+                    mask="auto",
+                )
+            except Exception:
+                pass
+        canvas.setFont("Helvetica-Bold", 8)
+        canvas.drawString(30, letter[1] - 30, COMPANY_NAME)
         canvas.setFont("Helvetica", 6)
         canvas.drawCentredString(letter[0] / 2, 15, COMPANY_FOOTER)
         canvas.restoreState()
+
+    def _footer(self, canvas, doc) -> None:
+        self._page_template(canvas, doc)
 
     def _p(self, text: str, style_name: str = "Normal", **kwargs) -> Paragraph:
         style = ParagraphStyle(style_name, parent=self.styles["Normal"], **kwargs)

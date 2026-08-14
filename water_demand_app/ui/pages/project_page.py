@@ -31,9 +31,9 @@ from ui.theme import COLOR_BORDER, COLOR_CARD, COLOR_PRIMARY, COLOR_TEXT_SECONDA
 FORM_PAD_X = 16
 FORM_ROW_PAD_Y = 6
 SECTION_PAD_Y = (14, 4)
-FIELD_WIDTH = 480
-COMBO_WIDTH = 320
-SMALL_FIELD_WIDTH = 120
+FIELD_WIDTH = 420
+COMBO_WIDTH = 280
+SMALL_FIELD_WIDTH = 90
 
 
 def build_professional_page_header(parent, title: str, subtitle: str = "", step: str = ""):

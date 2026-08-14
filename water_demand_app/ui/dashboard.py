@@ -7,7 +7,6 @@ import customtkinter as ctk
 from ui.gui_safe import safe_command
 from ui.project_hub import ProjectHub
 from ui.theme import (
-    COLOR_ACCENT,
     COLOR_BACKGROUND,
     COLOR_BORDER,
     COLOR_CARD,
@@ -49,16 +48,10 @@ class MainDashboard(ctk.CTkFrame):
 
         left = ctk.CTkFrame(hero, fg_color="transparent")
         left.grid(row=0, column=0, sticky="w", padx=(18, 12), pady=14)
+        ctk.CTkLabel(left, text="Project Home", font=FONT_TITLE, text_color=COLOR_PRIMARY, anchor="w").pack(anchor="w")
         ctk.CTkLabel(
             left,
-            text="Project Home",
-            font=FONT_TITLE,
-            text_color=COLOR_PRIMARY,
-            anchor="w",
-        ).pack(anchor="w")
-        ctk.CTkLabel(
-            left,
-            text="Manage and monitor your engineering projects.",
+            text="Create, open and manage engineering projects.",
             font=FONT_SUBTITLE,
             text_color=COLOR_TEXT_SECONDARY,
             anchor="w",
@@ -84,16 +77,14 @@ class MainDashboard(ctk.CTkFrame):
 
         stats_row = ctk.CTkFrame(self, fg_color="transparent")
         stats_row.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 8))
-        for i in range(6):
+        for i in range(4):
             stats_row.grid_columnconfigure(i, weight=1)
 
         for column, (key, title) in enumerate([
             ("total", "TOTAL PROJECTS"),
-            ("in_progress", "IN PROGRESS"),
-            ("completed", "COMPLETED"),
-            ("pending", "PENDING"),
-            ("delayed", "DELAYED"),
-            ("today", "TODAY"),
+            ("active", "ACTIVE PROJECTS"),
+            ("completed", "COMPLETED PROJECTS"),
+            ("this_month", "THIS MONTH"),
         ]):
             self._stat_labels[key] = self._make_stat_card(stats_row, column, title, "0")
 
@@ -115,12 +106,7 @@ class MainDashboard(ctk.CTkFrame):
             border_color=COLOR_BORDER,
             height=58,
         )
-        card.grid(
-            row=0,
-            column=column,
-            sticky="ew",
-            padx=(0 if column == 0 else 3, 3 if column < 5 else 0),
-        )
+        card.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 4, 4 if column < 3 else 0))
         card.grid_propagate(False)
         ctk.CTkLabel(card, text=title, font=FONT_STAT_LABEL, text_color=COLOR_TEXT_SECONDARY).pack(
             anchor="w", padx=10, pady=(6, 0)
@@ -132,11 +118,9 @@ class MainDashboard(ctk.CTkFrame):
     def _update_stats(self, stats: dict) -> None:
         mapping = {
             "total": stats.get("total", 0),
-            "in_progress": stats.get("in_progress", 0),
+            "active": stats.get("active", 0),
             "completed": stats.get("completed", 0),
-            "pending": stats.get("pending", 0),
-            "delayed": stats.get("delayed", 0),
-            "today": stats.get("today", 0),
+            "this_month": stats.get("this_month", 0),
         }
         for key, value in mapping.items():
             label = self._stat_labels.get(key)

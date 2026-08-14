@@ -292,6 +292,9 @@ class Application(ctk.CTk):
         if self._workspace is None:
             self._start_new_project()
             return
+        reset = getattr(self._workspace, "reset_for_new_type", None)
+        if callable(reset):
+            reset()
         self._show_project_type_selector(self._workspace.app_state)
 
     def _show_project(self, state: AppState) -> None:
@@ -360,7 +363,6 @@ class Application(ctk.CTk):
             border_color="#DCE3EA",
         )
         card.grid(row=0, column=0, sticky="nsew", padx=24, pady=24)
-        card.grid_rowconfigure(3, weight=1)
         card.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
@@ -397,13 +399,12 @@ class Application(ctk.CTk):
             if label == PROJECT_TYPE_PLACEHOLDER:
                 help_text.set("Select a project type to continue.")
             else:
-                from ui.components.type_selector import TYPE_DESCRIPTIONS
-                help_text.set(TYPE_DESCRIPTIONS.get(label, "The application will show relevant sections for this type."))
+                help_text.set(f"Selected: {label}. Click Continue to open the project workflow.")
 
-        selector_wrap = ctk.CTkScrollableFrame(card, fg_color="transparent", height=320, label_text="")
-        selector_wrap.grid(row=3, column=0, sticky="nsew", padx=30, pady=(0, 8))
+        selector_wrap = ctk.CTkFrame(card, fg_color="transparent")
+        selector_wrap.grid(row=3, column=0, sticky="ew", padx=30, pady=(0, 8))
         type_selector = ProjectTypeSelector(selector_wrap, initial_label=initial_label, on_selection_change=on_type_change)
-        type_selector.pack(fill="both", expand=True)
+        type_selector.pack(fill="x")
         if initial_label != PROJECT_TYPE_PLACEHOLDER:
             type_selector.set_selected(initial_label)
             on_type_change(initial_label)
@@ -438,8 +439,7 @@ class Application(ctk.CTk):
                 self._destroy_type_selector()
                 if self._workspace is not None:
                     self._workspace.app_state = state
-                    if is_project_type_set(old_type) and old_type != new_type:
-                        self._workspace.reset_for_new_type()
+                    self._workspace.reset_for_new_type()
                 self._show_project(state)
             except Exception as exc:
                 traceback.print_exc()

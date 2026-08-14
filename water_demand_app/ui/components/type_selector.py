@@ -1,4 +1,4 @@
-"""Visual project type selection cards."""
+"""Visual project type selection cards — compact grid, no scrolling."""
 
 from __future__ import annotations
 
@@ -11,34 +11,14 @@ from ui.theme import (
     COLOR_ACCENT,
     COLOR_BORDER,
     COLOR_CARD,
-    COLOR_MUTED,
     COLOR_PRIMARY,
-    COLOR_TEXT_SECONDARY,
-    FONT_BODY,
     FONT_SECTION,
     PROJECT_TYPE_ICONS,
 )
 
 
-TYPE_DESCRIPTIONS = {
-    "Residential": "Apartments, villas and housing projects.",
-    "Commercial": "Offices, shops and business developments.",
-    "Mixed Use": "Residential and commercial combined.",
-    "Township": "Large multi-component developments.",
-    "Hotel": "Hotels and hospitality projects.",
-    "Hospital": "Hospitals and healthcare facilities.",
-    "School": "Schools and educational campuses.",
-    "College": "Colleges and higher-education campuses.",
-    "Shopping Mall": "Malls and retail developments.",
-    "Mall": "Malls and retail developments.",
-    "IT Park": "IT parks and technology campuses.",
-    "Industrial": "Industrial and manufacturing projects.",
-    "Warehouse": "Warehouses and storage facilities.",
-}
-
-
 class ProjectTypeSelector(ctk.CTkFrame):
-    """Grid of selectable project type cards."""
+    """Compact grid of selectable project type cards (fits one screen)."""
 
     def __init__(
         self,
@@ -63,52 +43,42 @@ class ProjectTypeSelector(ctk.CTkFrame):
 
     def _build(self) -> None:
         labels = sorted(set(PROJECT_TYPE_LABELS.keys()))
-        cols = 3
+        cols = 4
         for i, label in enumerate(labels):
             row, col = divmod(i, cols)
             card = self._make_card(label)
-            card.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
-            for c in range(cols):
-                self.grid_columnconfigure(c, weight=1)
+            card.grid(row=row, column=col, padx=4, pady=4, sticky="nsew")
+        for c in range(cols):
+            self.grid_columnconfigure(c, weight=1)
 
     def _make_card(self, label: str) -> ctk.CTkFrame:
         icon = PROJECT_TYPE_ICONS.get(label, "📋")
         frame = ctk.CTkFrame(
             self,
             fg_color=COLOR_CARD,
-            corner_radius=10,
+            corner_radius=8,
             border_width=2,
             border_color=COLOR_BORDER,
-            width=200,
-            height=88,
+            height=52,
             cursor="hand2",
         )
         frame.grid_propagate(False)
         self._cards[label] = frame
 
         inner = ctk.CTkFrame(frame, fg_color="transparent")
-        inner.pack(fill="both", expand=True, padx=10, pady=8)
-        title_row = ctk.CTkFrame(inner, fg_color="transparent")
-        title_row.pack(fill="x")
-        check = ctk.CTkLabel(title_row, text="", font=FONT_SECTION, text_color=COLOR_ACCENT, width=16)
+        inner.pack(fill="both", expand=True, padx=8, pady=6)
+        row = ctk.CTkFrame(inner, fg_color="transparent")
+        row.pack(fill="x")
+        check = ctk.CTkLabel(row, text="", font=FONT_SECTION, text_color=COLOR_ACCENT, width=14)
         check.pack(side="right")
         frame._check_label = check  # type: ignore[attr-defined]
         ctk.CTkLabel(
-            title_row,
-            text=f"{icon}  {label}",
-            font=FONT_SECTION,
+            row,
+            text=f"{icon} {label}",
+            font=("Arial", 11, "bold"),
             text_color=COLOR_PRIMARY,
             anchor="w",
         ).pack(side="left", fill="x", expand=True)
-        ctk.CTkLabel(
-            inner,
-            text=TYPE_DESCRIPTIONS.get(label, ""),
-            font=("Arial", 9),
-            text_color=COLOR_TEXT_SECONDARY,
-            anchor="w",
-            wraplength=170,
-            justify="left",
-        ).pack(anchor="w", pady=(4, 0))
 
         def select(_event=None, lbl=label):
             self._selected.set(lbl)

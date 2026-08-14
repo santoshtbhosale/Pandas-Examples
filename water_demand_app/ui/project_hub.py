@@ -6,13 +6,14 @@ import customtkinter as ctk
 from tkinter import messagebox
 
 from config.nbc_2026 import BRAND_NAVY, BRAND_ORANGE
-from services.project_service import list_dashboard_projects, mark_project_opened, remove_project
+from services.project_service import list_dashboard_projects_cached, mark_project_opened, remove_project
 from services.project_workflow import (
     STATUS_FILTER_OPTIONS,
     compute_engineer_performance,
     compute_statistics,
     filter_rows,
     list_engineer_options,
+    parse_filter_date,
     rows_for_stats,
 )
 from ui.gui_safe import safe_command
@@ -52,14 +53,14 @@ class ProjectHub(PageLifecycleMixin, ctk.CTkFrame):
 
         filters = ctk.CTkFrame(self, fg_color="#F8FAFB", corner_radius=8)
         filters.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 6))
-        filters.grid_columnconfigure(5, weight=1)
+        filters.grid_columnconfigure(4, weight=1)
 
-        ctk.CTkLabel(filters, text="FILTERS", font=("Arial", 10, "bold"), text_color=BRAND_NAVY).grid(
-            row=0, column=0, columnspan=6, sticky="w", padx=10, pady=(8, 4)
+        ctk.CTkLabel(filters, text="PROJECT FILTERS", font=("Arial", 10, "bold"), text_color=BRAND_NAVY).grid(
+            row=0, column=0, columnspan=8, sticky="w", padx=10, pady=(8, 4)
         )
 
         ctk.CTkLabel(filters, text="Engineer:", font=("Arial", 10, "bold")).grid(
-            row=1, column=0, padx=(10, 4), pady=(0, 8), sticky="w"
+            row=1, column=0, padx=(10, 4), pady=(0, 4), sticky="w"
         )
         self.engineer_var = ctk.StringVar(value="All Engineers")
         self.engineer_combo = ctk.CTkComboBox(
@@ -67,13 +68,13 @@ class ProjectHub(PageLifecycleMixin, ctk.CTkFrame):
             values=["All Engineers"],
             variable=self.engineer_var,
             command=self._on_filter_change,
-            width=150,
-            height=30,
+            width=140,
+            height=28,
         )
-        self.engineer_combo.grid(row=1, column=1, padx=(0, 12), pady=(0, 8), sticky="w")
+        self.engineer_combo.grid(row=1, column=1, padx=(0, 10), pady=(0, 4), sticky="w")
 
         ctk.CTkLabel(filters, text="Status:", font=("Arial", 10, "bold")).grid(
-            row=1, column=2, padx=(0, 4), pady=(0, 8), sticky="w"
+            row=1, column=2, padx=(0, 4), pady=(0, 4), sticky="w"
         )
         self.status_var = ctk.StringVar(value="All Status")
         self.status_combo = ctk.CTkComboBox(
@@ -81,34 +82,49 @@ class ProjectHub(PageLifecycleMixin, ctk.CTkFrame):
             values=STATUS_FILTER_OPTIONS,
             variable=self.status_var,
             command=self._on_filter_change,
-            width=140,
-            height=30,
+            width=120,
+            height=28,
         )
-        self.status_combo.grid(row=1, column=3, padx=(0, 12), pady=(0, 8), sticky="w")
+        self.status_combo.grid(row=1, column=3, padx=(0, 10), pady=(0, 4), sticky="w")
 
         ctk.CTkLabel(filters, text="Search:", font=("Arial", 10, "bold")).grid(
-            row=1, column=4, padx=(0, 4), pady=(0, 8), sticky="w"
+            row=1, column=4, padx=(0, 4), pady=(0, 4), sticky="w"
         )
         self.search_var = ctk.StringVar()
-        self.register_trace(self.search_var, "write", lambda *_: self._schedule_search())
         self.search_entry = ctk.CTkEntry(
             filters,
             textvariable=self.search_var,
-            placeholder_text="Search by name, client, engineer or ID...",
-            height=30,
+            placeholder_text="Project Name / Client / Project ID",
+            height=28,
         )
-        self.search_entry.grid(row=1, column=5, sticky="ew", padx=(0, 6), pady=(0, 8))
+        self.search_entry.grid(row=1, column=5, sticky="ew", padx=(0, 6), pady=(0, 4))
+        self.search_entry.bind("<Return>", lambda _e: self._apply_filters())
+
+        ctk.CTkLabel(filters, text="From:", font=("Arial", 10, "bold")).grid(
+            row=2, column=0, padx=(10, 4), pady=(0, 8), sticky="w"
+        )
+        self.from_date_var = ctk.StringVar()
+        self.from_date_entry = ctk.CTkEntry(filters, textvariable=self.from_date_var, placeholder_text="DD-MM-YYYY", width=110, height=28)
+        self.from_date_entry.grid(row=2, column=1, padx=(0, 10), pady=(0, 8), sticky="w")
+
+        ctk.CTkLabel(filters, text="To:", font=("Arial", 10, "bold")).grid(
+            row=2, column=2, padx=(0, 4), pady=(0, 8), sticky="w"
+        )
+        self.to_date_var = ctk.StringVar()
+        self.to_date_entry = ctk.CTkEntry(filters, textvariable=self.to_date_var, placeholder_text="DD-MM-YYYY", width=110, height=28)
+        self.to_date_entry.grid(row=2, column=3, padx=(0, 10), pady=(0, 8), sticky="w")
+
+        btn_row = ctk.CTkFrame(filters, fg_color="transparent")
+        btn_row.grid(row=2, column=4, columnspan=2, sticky="w", pady=(0, 8))
         ctk.CTkButton(
-            filters,
-            text="Clear",
-            width=60,
-            height=30,
-            font=("Arial", 9),
-            fg_color="#E8ECF0",
-            hover_color=COLOR_BORDER,
-            text_color=COLOR_PRIMARY,
-            command=self._clear_search,
-        ).grid(row=1, column=6, padx=(0, 10), pady=(0, 8), sticky="w")
+            btn_row, text="Search", width=70, height=28, fg_color=BRAND_ORANGE,
+            command=safe_command(self._apply_filters, parent=self),
+        ).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(
+            btn_row, text="Clear Filters", width=90, height=28,
+            fg_color="#E8ECF0", hover_color=COLOR_BORDER, text_color=COLOR_PRIMARY,
+            command=safe_command(self._clear_filters, parent=self),
+        ).pack(side="left")
 
         header_row = ctk.CTkFrame(self, fg_color="transparent")
         header_row.grid(row=1, column=0, sticky="ew", padx=14, pady=(2, 4))
@@ -149,15 +165,16 @@ class ProjectHub(PageLifecycleMixin, ctk.CTkFrame):
         self.table_wrap.grid_columnconfigure(0, weight=1)
 
         self._header_columns = [
-            ("Project ID", 96),
-            ("Project Name", 120),
-            ("Client", 100),
-            ("Type", 76),
-            ("Engineer", 76),
-            ("Status", 100),
-            ("Time", 68),
-            ("Performance", 108),
-            ("Actions", 56),
+            ("Project ID", 88),
+            ("Date", 72),
+            ("Project Name", 110),
+            ("Client", 88),
+            ("Engineer", 72),
+            ("Type", 72),
+            ("Status", 92),
+            ("Time Taken", 72),
+            ("Updated", 72),
+            ("Actions", 48),
         ]
         self._table_header = ctk.CTkFrame(self.table_wrap, fg_color="#E8ECF0", corner_radius=4)
         self._table_header.pack(fill="x", pady=(0, 2))
@@ -174,42 +191,48 @@ class ProjectHub(PageLifecycleMixin, ctk.CTkFrame):
         self.search_entry.focus_set()
         self.search_entry.icursor("end")
 
-    def _clear_search(self) -> None:
+    def _clear_filters(self) -> None:
+        self.engineer_var.set("All Engineers")
+        self.status_var.set("All Status")
         self.search_var.set("")
-        self._apply_filters()
-
-    def _schedule_search(self) -> None:
-        cancel_after(self, self._search_job)
-        self._search_job = self.schedule_after(180, self._apply_filters)
-
-    def _on_filter_change(self, *_args) -> None:
+        self.from_date_var.set("")
+        self.to_date_var.set("")
         self._apply_filters()
 
     def refresh(self) -> None:
-        self._all_rows = list_dashboard_projects()
+        self._all_rows = list_dashboard_projects_cached()
         engineers = list_engineer_options(self._all_rows)
         self.engineer_combo.configure(values=engineers)
         if self.engineer_var.get() not in engineers:
             self.engineer_var.set("All Engineers")
         self._apply_filters()
 
+    def _on_filter_change(self, *_args) -> None:
+        self._apply_filters()
+
     def _apply_filters(self) -> None:
         engineer = self.engineer_var.get()
         status = self.status_var.get()
         search = self.search_var.get()
+        from_dt = parse_filter_date(self.from_date_var.get())
+        to_dt = parse_filter_date(self.to_date_var.get())
         self._filtered_rows = filter_rows(
             self._all_rows,
             engineer=engineer,
             status_label=status,
             search=search,
+            from_date=from_dt,
+            to_date=to_dt,
         )
         self._last_stats_rows = rows_for_stats(self._all_rows, engineer=engineer, status_label=status)
         stats = compute_statistics(self._last_stats_rows)
         if self.on_stats_changed:
             self.on_stats_changed(stats)
         self._render_table()
+        eng_label = engineer if engineer != "All Engineers" else "All Engineers"
+        count_text = f"{eng_label} — {len(self._filtered_rows)} project(s)"
         self.status_label.configure(
-            text=f"Showing {len(self._filtered_rows)} of {len(self._all_rows)} project(s)"
+            text=f"Showing {len(self._filtered_rows)} of {len(self._all_rows)} projects  |  {count_text}"
         )
 
     def _render_table(self) -> None:
@@ -223,14 +246,14 @@ class ProjectHub(PageLifecycleMixin, ctk.CTkFrame):
             query = self.search_var.get().strip()
             if query:
                 msg = "No matching projects found."
-                btn_text = "Clear Search"
-                cmd = self._clear_search
+                btn_text = "Clear Filters"
+                cmd = self._clear_filters
             elif not self._all_rows:
                 msg = "No projects found.\nCreate your first engineering project to get started."
                 btn_text = "+ New Project"
                 cmd = self.on_new_project
             else:
-                msg = "No projects match the current filters."
+                msg = "No projects found for the selected filters."
                 btn_text = "Clear Filters"
                 cmd = self._clear_filters
             ctk.CTkLabel(
@@ -260,12 +283,6 @@ class ProjectHub(PageLifecycleMixin, ctk.CTkFrame):
             return f"{title} ({detail})"
         return title or detail or "—"
 
-    def _clear_filters(self) -> None:
-        self.engineer_var.set("All Engineers")
-        self.status_var.set("All Status")
-        self.search_var.set("")
-        self._apply_filters()
-
     def _status_badge(self, label: str) -> str:
         return STATUS_BADGES.get(label, label)
 
@@ -277,13 +294,14 @@ class ProjectHub(PageLifecycleMixin, ctk.CTkFrame):
 
         values = [
             pid,
+            row.get("created_display", row.get("date", "—"))[:10],
             row.get("project_name", ""),
             row.get("client_name", "") or "—",
-            row.get("project_type_label", "—"),
             row.get("engineer_name", "") or "—",
+            row.get("project_type_label", "—"),
             self._status_badge(row.get("status_label", "")),
             row.get("time_taken_display", "—"),
-            self._format_performance(row),
+            row.get("updated_display", "—")[:10],
         ]
         widths = [w for _, w in self._header_columns[:-1]]
         for i, (value, width) in enumerate(zip(values, widths)):
@@ -364,15 +382,16 @@ class ProjectHub(PageLifecycleMixin, ctk.CTkFrame):
 
         body = ctk.CTkFrame(dialog, fg_color="white")
         body.pack(fill="both", expand=True, padx=18, pady=18)
-        ctk.CTkLabel(body, text="Delete Project Permanently?", font=("Arial", 18, "bold"), text_color=BRAND_NAVY).pack(
+        ctk.CTkLabel(body, text="Are you sure you want to delete this project?", font=("Arial", 18, "bold"), text_color=BRAND_NAVY).pack(
             anchor="w", pady=(0, 8)
         )
         ctk.CTkLabel(
             body,
             text=(
-                f"Project:\n{row.get('project_name', '')}\n\n"
-                f"Client:\n{row.get('client_name', '') or '—'}\n\n"
-                f"Engineer:\n{row.get('engineer_name', '') or '—'}"
+                f"Project ID: {project_id}\n"
+                f"Project: {row.get('project_name', '')}\n"
+                f"Client: {row.get('client_name', '') or '—'}\n"
+                f"Engineer: {row.get('engineer_name', '') or '—'}"
             ),
             font=("Arial", 11),
             justify="left",
@@ -407,7 +426,7 @@ class ProjectHub(PageLifecycleMixin, ctk.CTkFrame):
         ctk.CTkButton(buttons, text="Cancel", width=120, fg_color="#95A5A6", command=_cancel).pack(
             side="left", padx=(0, 8)
         )
-        ctk.CTkButton(buttons, text="Delete Permanently", width=160, fg_color="#C0392B", command=_confirm).pack(
+        ctk.CTkButton(buttons, text="Delete", width=100, fg_color="#C0392B", command=_confirm).pack(
             side="right"
         )
 
